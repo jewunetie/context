@@ -10,7 +10,11 @@ The Context connection this plugin adds signs in on its own. Saving sessions
 when they end is separate: the session-end hook runs on this computer and needs
 its own sign-in, which this skill makes.
 
-Run this command with the Bash tool. It opens the user's browser to approve the
+`${CLAUDE_PLUGIN_ROOT}` below is the plugin's folder. Claude Code fills it in;
+if you see it unfilled (Codex and ChatGPT show skills as files), use the folder
+two levels above this `SKILL.md`, the one that contains `cli/`.
+
+Run this command in a shell. It opens the user's browser to approve the
 sign-in and waits up to five minutes for them:
 
 ```bash

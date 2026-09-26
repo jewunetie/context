@@ -19,6 +19,7 @@ import {
   LEGAL_PAGES,
   PRIVATE_PAGE,
   homeLink,
+  noteLinkHref,
   homeTree,
   liveHomeTree,
   pageParam,
@@ -187,6 +188,14 @@ describe("the tree", () => {
 });
 
 describe("links inside a page", () => {
+  test("a link the editor resolved to a note that is not here is followed as its address", () => {
+    expect(noteLinkHref("login.md")).toBe("/login");
+    expect(homeLink(noteLinkHref("login.md"))).toEqual({ kind: "app", href: "/login" });
+    expect(noteLinkHref("Legal/terms.md")).toBe("/Legal/terms");
+    expect(noteLinkHref("index.md")).toBe("/");
+    expect(homeLink(noteLinkHref("workspace/new.md"))).toEqual({ kind: "app", href: "/workspace/new" });
+  });
+
   test("the app's own screens leave the shell", () => {
     expect(homeLink("/login")).toEqual({ kind: "app", href: "/login" });
     expect(homeLink("/privacy")).toEqual({ kind: "app", href: "/privacy" });
@@ -273,6 +282,7 @@ describe("a visit decides once between the site and the copy", () => {
     siteName: "Context",
     revision: "1:1",
     pages: [{ routePath: "/", title: "Welcome", markdown: "# Welcome" }],
+    emoji: {},
   };
   const element = (text: string | null) => ({
     getElementById: (id: string) => (id === HOME_SITE_ELEMENT_ID && text !== null ? ({ textContent: text } as HTMLElement) : null),

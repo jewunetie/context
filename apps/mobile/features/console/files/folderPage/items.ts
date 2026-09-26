@@ -1,9 +1,9 @@
 /** What the List and Board views of a folder page share about one item. */
 
 import type { PropertyValue } from "../listBlock/model";
-import type { OwnerSearch } from "../owners";
+import type { OwnerSearch, OwnerSuggest } from "../owners";
 import type { FolderItem } from "./model";
-import type { StatusMenuSection } from "./statuses";
+import type { StatusGroup, StatusMenuSection } from "./statuses";
 import type { StatusTone } from "./StatusPill";
 
 /** A save older than this is drawn a step quieter (spec: staleness is only a date). */
@@ -22,6 +22,8 @@ export interface ItemActions {
   toneOf(status: string): StatusTone;
   /** Opens the folder's status list for editing; null for somebody who may not. */
   onEditStatuses: (() => void) | null;
+  /** Puts a word nobody placed into a group of the folder's list; null for somebody who may not. */
+  onPlaceStatus: ((word: string, group: StatusGroup) => void) | null;
   /** Where an owner is picked from: people and agents, never a typed word. */
   owners?: OwnerChoice;
 }
@@ -30,6 +32,17 @@ export interface ItemActions {
 export interface OwnerChoice {
   readonly search: OwnerSearch;
   readonly prefer: readonly string[];
+  /** Who a note names as its owner; bound to one note with `ownerChoiceFor`. */
+  readonly suggestFor?: OwnerSuggest;
+  /** Who this note names as its owner, given what the picker prefers. */
+  readonly suggest?: (prefer: readonly string[]) => Promise<string | null>;
+}
+
+/** `choice` for the note at `path`: one that does not exist yet names nobody. */
+export function ownerChoiceFor(choice: OwnerChoice, path: string | null): OwnerChoice {
+  const suggestFor = choice.suggestFor;
+  if (suggestFor === undefined || path === null) return choice;
+  return { ...choice, suggest: (prefer) => suggestFor(path, prefer) };
 }
 
 /** A single-valued property as trimmed text; `""` when unset. */

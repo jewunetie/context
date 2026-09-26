@@ -4,7 +4,7 @@ import { ScreenScroll } from "../app/Screen";
 import type { FileBrowser } from "../console/files/browser";
 import { NoteEditor } from "../console/files/NoteEditor";
 import { Text } from "../design/components/Text";
-import { leading, pointerType as t } from "../design/tokens";
+import { layout, leading, pointerType as t, space } from "../design/tokens";
 import { useThemedStyles, type Colors } from "../design/theme";
 import { noteTitle, parseNote } from "../share/markdown";
 import { NoteBody } from "../share/NoteBody";
@@ -50,6 +50,18 @@ export function HomePage({
 }
 
 /**
+ * The band a workspace note has over it on a pointer layout, kept empty.
+ *
+ * In the console the note's path sits above its title (`BrowseNoteHead`: the
+ * breadcrumb's `space.x4` over a 24pt row of `‹ ›` steps, `space.x2` under,
+ * and never less than a touch target). The homepage has no path to show, and
+ * without the band its title sat that much higher than the same note in the
+ * editor (the owner's report, 2026-09-26). So the height is kept and the words
+ * are not.
+ */
+export const NOTE_HEAD_BAND = Math.max(layout.minTouchTarget, space.x4 + 24 + space.x2);
+
+/**
  * The open note in the app's own editor, writable the moment it opens, as it
  * is for a workspace member. What is typed goes to the tab's copy of the
  * workspace only (`useLocalFileBrowser`), and a reload is the site again.
@@ -67,7 +79,7 @@ export function HomeEditor({
 }) {
   const styles = useThemedStyles(makeStyles);
   return (
-    <View style={[styles.editing, compact && styles.editingCompact]} testID="home-editor">
+    <View style={[styles.editing, compact ? styles.editingCompact : styles.editingPointer]} testID="home-editor">
       <NoteEditor
         state={files.editor}
         canEdit={files.canEdit}
@@ -76,6 +88,9 @@ export function HomeEditor({
         onDiscard={files.discard}
         onUseTheirs={noop}
         onKeepMine={noop}
+        // A link in the note's text, which is what the console hands the same
+        // editor (`BrowseDocument`). `onOpenNote` is only the activity list's.
+        onOpenLink={onOpenNote}
         onOpenNote={onOpenNote}
         onLoadImage={files.loadImage}
         onStoreImage={files.storeImage}
@@ -104,4 +119,5 @@ const makeStyles = (colors: Colors) =>
     editing: { flex: 1, backgroundColor: colors.pageSurface },
     // Below the phone's floating top row.
     editingCompact: { paddingTop: 64 },
+    editingPointer: { paddingTop: NOTE_HEAD_BAND },
   });

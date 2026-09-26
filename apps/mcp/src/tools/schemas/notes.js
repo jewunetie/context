@@ -9,6 +9,7 @@ export function noteWriteToolDefinitions() {
   return [
     {
       name: "read_image",
+      title: "Read image",
       description:
         "Fetch one image that a note references. Images live in an opaque store that is never listed or searched, so an image is reachable only through a note you can already read: pass that note's path and the image reference as it appears in it. Returns the image inline.",
       inputSchema: {
@@ -30,6 +31,7 @@ export function noteWriteToolDefinitions() {
     },
     {
       name: "write_note",
+      title: "Write note",
       description:
         "Create or update a markdown note — this is how what you learned in this session survives " +
         "it. Use it when a decision is made, a constraint is discovered, a preference is stated, " +
@@ -106,6 +108,7 @@ export function noteWriteToolDefinitions() {
     },
     {
       name: "set_visibility",
+      title: "Set note visibility",
       description:
         "Personal connection only. Set enforced visibility for one existing note without moving it. Private notes may coexist beside team notes in either folder default. Publishing private to team requires confirm_team_publish=true.",
       inputSchema: {
@@ -123,6 +126,7 @@ export function noteWriteToolDefinitions() {
     },
     {
       name: "set_encryption",
+      title: "Set note encryption",
       description:
         "Personal connection only. Encrypt or decrypt one note's content in place. An encrypted note stays a file at its own path, readable through Context and stored as ciphertext in the bucket \u2014 so the storage provider and a leaked bucket key cannot read it. It is not end-to-end: this is encryption at rest, and people the note is already shared with can still read it through Context. Encrypted notes are not searchable.",
       inputSchema: {
@@ -139,6 +143,7 @@ export function noteWriteToolDefinitions() {
     },
     {
       name: "export_encryption_keys",
+      title: "Export encryption keys",
       description:
         "Personal connection only, owner tier. Export this context's workspace data key(s) in the clear — every generation that opens an encrypted note in this bucket — in a versioned, language-neutral format documented in docs/decisions/encryption.md and readable by the offline decryptor in packages/encryption-decryptor. Exporting widens the blast radius: there is no un-export. Rate limited.",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
@@ -146,6 +151,7 @@ export function noteWriteToolDefinitions() {
     },
     {
       name: "rotate_encryption_keys",
+      title: "Rotate encryption keys",
       description:
         "Personal connection only, owner tier. Rotate this context's workspace data key: mints a new key generation and re-wraps every encrypted note's key toward it, without re-encrypting any note body. Bounded per call — call again to resume an in-progress rotation. The retiring generation stays readable; nothing is deleted.",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
@@ -153,6 +159,7 @@ export function noteWriteToolDefinitions() {
     },
     {
       name: "set_folder_visibility",
+      title: "Set folder visibility",
       description:
         "Personal connection only. Dry-run or atomically set a folder's inherited visibility in privacy.md without a source checkout or rclone. Use visibility=inherit to remove that folder's direct rule. Applying requires the privacy etag returned by dry-run; any private-to-team publication also requires confirm_team_publish=true. Redundant exact-note overrides are compacted.",
       inputSchema: {

@@ -234,9 +234,18 @@ belong to a folder.
   statuses…", not "New value…".
 - **Words nobody declared are never guessed into a group silently.** Ordinary
   lifecycle words (`active`, `shipped`: `KNOWN_WORDS`) are drawn in their
-  group, and an owner or editor is offered "Merge into In progress" or "Keep as
-  a status". Anything else is drawn in **Needs a group** after Done, and asked
-  once. Merging rewrites notes, so it names the count first.
+  group like any status, with no prompt. Anything else is drawn in **No group
+  yet** after Done, and the one question it raises is a Choose group control
+  on its own heading (the List band, or its Board column), for an owner or
+  editor only.
+- **Nothing about a folder's words is ever said above its contents.** The
+  first cut stacked a sentence per word between the header and the list
+  ("is on 4 items here and reads as In progress. Merge into In progress ·
+  Keep as a status"), and the owner rejected it outright (2026-09-26): a page
+  that nags on every visit is worse than a word left where it is. Tidying
+  (adding a known word to the list, or merging it into its group's first
+  status) lives in "Edit statuses…" under "Used here, not in this list".
+  Merging rewrites notes, so it names the count first.
 - **An edit goes where the list lives**: the front note that declared it, or
   this folder's own front note while it only has the defaults. A subfolder
   never quietly forks its parent's list.
@@ -255,9 +264,10 @@ A "simplification" back to free words costs the board its order and its
 meaning: `apps/mcp/test/listStatuses.test.mjs` fails if a group loses its
 default, if inheritance stops at the folder, if `status is done` stops reading
 the group, or if an agent is told a list from a front note it cannot see;
-`folderPageStatuses.test.ts` pins the bands, Needs a group, and which notes a
-rename rewrites; `folderPageView.test.ts` pins the grouped menu and the board's
-bands.
+`folderPageStatuses.test.ts` pins the bands, No group yet, and which notes a
+rename rewrites; `folderPageView.test.ts` pins the grouped menu, the board's
+bands, and that a word nobody placed asks only on its own heading, never to a
+member and never in a sentence on the page.
 
 ## An owner is picked, never typed
 
@@ -279,9 +289,18 @@ note. There is no field for a new owner anywhere.
   a to z. A folder word that is somebody's first name counts as them, so a
   hand-typed `Seyi` offers the member `Seyi Olujide` first. With something
   typed: whole name, start of the name, start of any word, start of the
-  address, anywhere — accents and case ignored. "Jev smarts" was asked for and
-  nothing by that name exists in the repository or the owner's notes; this
-  ranking is the stand-in until it is named.
+  address, anywhere — accents and case ignored.
+- **On Premium, the picker leads with who the note names.** Under
+  "Suggested", above everybody else and not repeated below, is the owner Jev
+  picked from the note being assigned (`owners.suggestOwner`, the
+  `ownerSuggest` feature in `lib/jev/`). Jev chooses among the same people
+  and agents the search offers with nothing typed, plus "any agent" and an
+  explicit "none of these", which is no suggestion; confidence is not
+  thresholded, because the way out is how Jev says it does not know. It
+  reads that one note at the asker's own clearance, only an editor may ask,
+  a locked note or one with `organize: off` is never sent, and nothing is
+  written until the suggestion is picked. The search says whether to ask
+  (`suggests`), so a workspace without it makes no call at all.
 - **Agent names come only from grants the reader could already list.**
   `grants.listGrants` shows an owner every grant and anybody else only their
   own, because a colleague's tooling is theirs to disclose; the picker keeps
@@ -302,3 +321,6 @@ offered, if more than the limit comes back, or if an editor is shown a
 colleague's agent; `apps/mobile/__tests__/ownerPicker.test.ts` fails if the
 picker offers a way to type an owner, stops asking the server, or drops a
 hand-typed owner; `listEdit.test.ts` pins the same in a list block.
+`apps/convex/__tests__/ownerSuggest.test.ts` fails if a locked, opted-out or
+unseen note reaches Jev, if an answer that is not a candidate is suggested, if
+a member who cannot write asks, or if the suggestion runs without Premium.

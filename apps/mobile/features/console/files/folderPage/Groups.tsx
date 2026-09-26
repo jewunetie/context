@@ -1,7 +1,7 @@
 /**
  * A folder's children grouped by status — the List view of a folder page,
  * drawn the way a grouped list block draws (spec A1): a heading per status
- * group (Not started, In progress, Done, then Needs a group) with its count,
+ * group (Not started, In progress, Done, then No group yet) with its count,
  * and under it a status's own heading only where the group holds more than
  * one; rows on hairlines, the status and owner at the right, the last save
  * at the far right. Everything with no status leads Not started, each row
@@ -20,10 +20,11 @@ import { radii, space } from "../../../design/tokens";
 import { useColors, useThemedStyles, type Colors } from "../../../design/theme";
 import { shortWhen } from "../listBlock/words";
 import { NEW_FRONT_NOTE, type FolderGroup, type FolderItem } from "./model";
+import { ChooseGroup } from "./ChooseGroup";
 import { PropertyValue } from "./PropertyValue";
 import type { StatusBand } from "./statuses";
 import { StatusPill, toneColor } from "./StatusPill";
-import { isStale, textOf, type ItemActions } from "./items";
+import { isStale, ownerChoiceFor, textOf, type ItemActions } from "./items";
 
 export function FolderGroups({
   bands,
@@ -43,6 +44,10 @@ export function FolderGroups({
       {bands.map((band, index) => {
         const tone = band.group ?? "unplaced";
         const count = band.columns.reduce((sum, column) => sum + column.items.length, 0);
+        // A word nobody placed is asked about on its own heading, never above the page.
+        const place = band.group === null ? actions.onPlaceStatus : null;
+        const choose = (word: string) =>
+          place === null ? null : <ChooseGroup word={word} onPlace={place} onEditList={actions.onEditStatuses} />;
         return (
           <View key={band.group ?? "unplaced"} style={index > 0 && styles.groupGap} testID="folder-group">
             <View style={styles.groupHead}>
@@ -52,6 +57,7 @@ export function FolderGroups({
               <Text variant="tree" style={styles.count}>
                 {String(count)}
               </Text>
+              {band.columns.length === 1 ? <View style={styles.headEnd}>{choose(band.columns[0].value)}</View> : null}
             </View>
             {band.columns.map((column) => (
               <View key={column.value.toLowerCase()} style={band.columns.length > 1 && styles.status} testID="folder-status">
@@ -61,6 +67,7 @@ export function FolderGroups({
                     <Text variant="meta" style={styles.count}>
                       {String(column.items.length)}
                     </Text>
+                    <View style={styles.headEnd}>{choose(column.value)}</View>
                   </View>
                 ) : null}
                 <Rows group={column} compact={compact} now={now} actions={actions} />
@@ -116,7 +123,7 @@ function GroupRow({ item, compact, now, actions }: { item: FolderItem; compact: 
       property="owner"
       value={owner}
       choices={actions.choices("owner")}
-      {...(actions.owners === undefined ? {} : { owners: actions.owners })}
+      {...(actions.owners === undefined ? {} : { owners: ownerChoiceFor(actions.owners, item.creates ? null : item.target) })}
       savesTo={item.creates ? NEW_FRONT_NOTE : null}
       onChoose={edit === null ? null : (value) => edit(item, "owner", value)}
       quiet={owner === "" && !hovered}
@@ -181,6 +188,7 @@ const makeStyles = (colors: Colors) =>
       paddingTop: space.x2,
     },
     count: { color: colors.chromeMuted },
+    headEnd: { marginLeft: "auto", alignSelf: "center" },
     status: { marginTop: space.x3 },
     statusHead: { flexDirection: "row", alignItems: "center", gap: space.x2, paddingBottom: space.x2 },
     rows: { borderTopWidth: 1, borderTopColor: colors.line },

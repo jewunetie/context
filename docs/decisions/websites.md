@@ -131,6 +131,40 @@ is served, or if a member can publish; `websiteNarrowing.test.ts` fails if a
 restriction waits for Publish or a new page does not; `siteHome.test.ts` fails
 if a save moves the homepage's revision or its words.
 
+## Every site's pages are kept at the edge per Publish
+
+_Decided by the owner, 2026-09-26: "same functionality for all the websites
+… even individual user sites face the same issue."_
+
+A visitor who is not signed in reads a page of any site (`/@handle/...` and a
+customer's domain alike) from `/_site/page` on the router
+(`infra/router/src/sitePages.ts`), not from Convex. Each visit asks
+`/site/revision` (one database read) and serves the copy the colo keeps under
+that revision; only a miss asks `/site/page`, which resolves the address
+**exactly as for an anonymous visitor, whatever arrives with the request**
+(`lib/publicRoutes/sitePage.ts`) and is the one request that reads the bucket.
+A signed-in visitor asks Convex directly, because a members-only page is not
+the same page for everybody, and so does anyone the router cannot answer.
+
+What may be kept is decided by Convex, not the router: never "unavailable"
+(it is also what a bucket outage looks like), and nothing while a restriction
+is pending or before a site's first scan, when a page is judged from its live
+bytes on every visit. A copy is also dropped after five minutes whatever the
+revision says. That is the bound on the one restriction a revision cannot see:
+one written straight to the bucket, outside Context, before a sweep notices
+it. Every restriction made through Context moves the revision and takes effect
+on the next visit. The copy is a CDN's copy of a public page, like the
+homepage's: it is never the only copy of anything, and it holds nothing an
+anonymous visitor could not already read.
+
+On a customer's domain the handle is the domain's binding and the only legacy
+slug is the one its owner chose for `/`; neither is read from the request.
+
+`sitePage.test.ts` fails if a member's answer is kept, if "unavailable" or a
+pending restriction is kept, or if the route grows a field; the router's
+`sitePages.test.ts` fails if a second visit reads the page again, if a new
+revision does not, or if a customer's domain can ask for another handle.
+
 ## A fallback never reverses an explicit restriction
 
 Last-known-good is an availability rule, not permission to keep publishing
@@ -333,3 +367,23 @@ route grows a field; `homeLocalBrowser.test.ts` fails if the site rewrites a
 tree the visitor has changed; `homeSite.test.ts` in the router fails
 if a page's words can close the block; `homeSite.test.ts` in the app fails if
 the copy can replace the site or the site the copy.
+
+## A page's emoji travel with the page
+
+Decided 2026-09-26, when a workspace's own emoji showed as `:name:` on its
+published site. A site loads no images, so the pictures a page shows arrive
+inside its answer as `data:` URLs (`lib/websites/emoji.ts`): the resolver adds
+them to a page, and the homepage snapshot adds those its pages use. Only names
+the published text uses outside code are read, so publishing a page publishes
+the pictures in it and no other emoji in the workspace. A picture over 128 KB,
+past 768 KB in one answer, or past 48 names is left out and shows as its name.
+The router and the app each re-check every entry and keep only an inline PNG,
+JPEG, GIF or WebP under an emoji name, so no answer can make a visitor's
+browser fetch an address. A standard `:shortcode:` is drawn as its character.
+
+**What a simplification costs.** Serving emoji from a URL makes each view a
+request to us the visitor did not ask for, and a route that answers for any
+name publishes every emoji the workspace has. Reading names inside code
+publishes pictures the page does not show. `apps/convex/__tests__/websiteEmoji.test.ts`,
+`apps/mobile/__tests__/websiteEmoji.test.ts` and `infra/router/src/homeSite.test.ts`
+fail if either comes back, or if a non-inline picture gets through.

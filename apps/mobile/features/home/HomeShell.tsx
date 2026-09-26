@@ -23,6 +23,7 @@ import {
   homeLink,
   homeTree,
   liveHomeTree,
+  noteLinkHref,
   pageParam,
   routeFromParam,
 } from "./homeSite";
@@ -147,6 +148,16 @@ export function HomeShell() {
     [openRoute, router],
   );
 
+  // A link in a note: a note here opens; anything else is the address it was
+  // written as (`noteLinkHref`), never a new empty note to type into.
+  const openFromNote = useCallback(
+    (path: string) => {
+      if (local.notes[path] !== undefined) openPath(path);
+      else followLink(noteLinkHref(path));
+    },
+    [followLink, local.notes, openPath],
+  );
+
   const [paletteOpen, setPaletteOpen] = useState(false);
   useSearchShortcut(() => setPaletteOpen(true));
   const paletteItems = useMemo<PaletteItem[]>(
@@ -226,7 +237,7 @@ export function HomeShell() {
           // Keyed by note, so a new one opens at its top rather than at the
           // last one's scroll position.
           <CustomEmojiContext.Provider value={emoji}>
-            <HomeEditor key={activePath} files={browser} compact={compact} onOpenNote={openPath} />
+            <HomeEditor key={activePath} files={browser} compact={compact} onOpenNote={openFromNote} />
           </CustomEmojiContext.Provider>
         ) : (
           <HomePage key={routePath} markdown={emptyMarkdown} compact={compact} onLink={followLink} />

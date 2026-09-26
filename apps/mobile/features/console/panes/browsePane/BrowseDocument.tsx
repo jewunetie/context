@@ -235,16 +235,21 @@ export function BrowseDocument({
         />
       </DocumentPage>
     ) : commsRoute?.kind === "channel-day" ? (
-      <DocumentPage key={selected.path}>
-        <ChannelDayView
-          channel={commsRoute.channel}
-          account={commsRoute.account}
-          date={commsRoute.date}
-          path={selected.path}
-          files={files}
-          anchor={anchor}
-        />
-      </DocumentPage>
+      /*
+        Not in a DocumentPage: a channel's day owns its scroller, to scroll to
+        an anchored message on open, and pads its own page, as a note does. A
+        wrapper here would take the height that scroller needs. See
+        `documentOwnsScroller` in DocumentSurface.
+      */
+      <ChannelDayView
+        key={selected.path}
+        channel={commsRoute.channel}
+        account={commsRoute.account}
+        date={commsRoute.date}
+        path={selected.path}
+        files={files}
+        anchor={anchor}
+      />
     ) : commsRoute?.kind === "contact" ? (
       <DocumentPage>
         <ContactPageView slug={commsRoute.slug} files={files} onOpenActivity={handleOpenComms} />

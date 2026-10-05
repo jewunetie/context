@@ -20,6 +20,17 @@
  * the Step 1a ied/ies rule to always replace by "i" failed "Step 1a suffix
  * families" (ties stemmed to ti). Emptying the exceptional-forms list failed
  * "exceptional forms from the page" (skis stemmed to skis).
+ *
+ * One table entry per step (fix round 1): Step 1b "ingly" changed to "ingli"
+ * failed "Step 1b suffix families and exceptions" (surprisingly stemmed to
+ * surprising). Step 2 anci replaced by "ence" failed "Step 2 suffix families"
+ * (vacancy stemmed to vacenc). Step 3 "icate" changed to "icade" failed
+ * "Step 3 suffix families" (certificate stemmed to certific). Step 4 "ous"
+ * changed to "ius" failed "Step 4 suffix families" (dangerous stemmed to
+ * dangerous). The first tries for Steps 2 and 3 were checked against
+ * hesitancy and duplicate only, and passed under sabotage because Step 4
+ * removes ance/ence and ate either way; vacancy and certificate were added
+ * because their Step 4 suffix is not in R2.
  */
 
 import assert from "node:assert/strict";
@@ -93,7 +104,7 @@ test("special R1 prefixes keep gener, univers, past and inter words apart", () =
   // in R2 (p2=9). Unchanged after that: universiti.
   assert.equal(porter2("university"), "universiti");
   // pasted: p1=4 (prefix past). Step 1b deletes ed, past; R1 is empty and
-  // shortv matches 'past', add e: paste. Step 5 e at 4: p2=5 so not R2, in
+  // shortv matches 'past', add e: paste. Step 5 e at 4: p2=6 so not R2, in
   // R1 but preceded by a short syllable ('past'), keep: paste.
   assert.equal(porter2("pasted"), "paste");
   // internal: p1=5 (prefix inter), p2=8. Step 4 al at 6 not in R2; Step 5 l
@@ -184,6 +195,16 @@ test("Step 1b suffix families and exceptions", () => {
   // troubled: p1=5, p2=8. delete ed, troubl ends bl, add e: trouble. Step 5
   // e at 6: not R2, in R1, troubl not a short syllable, delete: troubl.
   assert.equal(porter2("troubled"), "troubl");
+  // agreedly: p1=2 (a, g), p2=6 (from 2: e at 3, d at 5). y after l stays y.
+  // Step 1b longest is eedly at 3, in R1, agr is not proc/exc/succ: agree.
+  // Steps 1c to 4: no suffix. Step 5 e at 4: not R2, in R1, agre does not end
+  // in a short syllable (last letter e is a vowel), delete: agre.
+  assert.equal(porter2("agreedly"), "agre");
+  // surprisingly: p1=3 (u, r), p2=7 (from 3: i at 5, s at 6). Step 1b longest
+  // is ingly at 7; surpris has a vowel, delete: surpris. Not at/bl/iz, no
+  // double, R1 not empty (length 7 is not p1=3), so no e. Steps 1c to 5: no
+  // suffix applies: surpris.
+  assert.equal(porter2("surprisingly"), "surpris");
 });
 
 test("Step 2 suffix families", () => {
@@ -204,6 +225,63 @@ test("Step 2 suffix families", () => {
   // geologi, ogi at 4 after l: geolog (page: conflate geologist with geology).
   assert.equal(porter2("geologist"), "geolog");
   assert.equal(porter2("geology"), "geolog");
+  // hesitancy: p1=3 (e, s), p2=5 (from 3: i at 3, t at 4). Step 1c y after c:
+  // hesitanci. Step 2 anci at 5 in R1: hesitance. Step 3 none. Step 4 ance at
+  // 5 in R2: hesit. Step 5 none: hesit.
+  assert.equal(porter2("hesitancy"), "hesit");
+  // vacancy: p1=3 (a, c), p2=5 (from 3: a at 3, n at 4). Step 1c y after c:
+  // vacanci. Step 2 anci at 3 in R1: vacance. Step 3 none. Step 4 ance at 3
+  // not in R2. Step 5 e at 6 in R2, delete: vacanc.
+  assert.equal(porter2("vacancy"), "vacanc");
+  // reasonably: p1=4 (e, a, s), p2=6 (from 4: o at 4, n at 5). Step 1c y after
+  // l: reasonabli. Step 2 longest is abli at 6, in R1: reasonable. Step 3 none.
+  // Step 4 able at 6 in R2: reason. Step 5 none: reason.
+  assert.equal(porter2("reasonably"), "reason");
+  // organizer: p1=5 (prefix organ), p2=7 (from 5: i at 5, z at 6). Step 2
+  // izer at 5 in R1: organize. Step 3 none. Step 4 ize at 5 not in R2. Step 5
+  // e at 7 in R2, delete: organiz.
+  assert.equal(porter2("organizer"), "organiz");
+  // organization: p1=5, p2=7. Step 2 longest is ization at 5 (longer than
+  // ation at 7), in R1: organize. Then as organizer: organiz.
+  assert.equal(porter2("organization"), "organiz");
+  // operator: p1=2 (o, p), p2=4 (from 2: e at 2, r at 3). Step 2 ator at 4 in
+  // R1: operate. Step 3 none. Step 4 ate at 4 in R2: oper. Step 5 none: oper.
+  assert.equal(porter2("operator"), "oper");
+  // formalism: p1=3 (o, r), p2=6 (from 3: a at 4, l at 5). Step 2 alism at 4
+  // in R1: formal. Step 3 none. Step 4 al at 4 not in R2. Step 5 l at 5 not
+  // in R2: formal.
+  assert.equal(porter2("formalism"), "formal");
+  // formality: p1=3, p2=6. Step 1c y after t: formaliti. Step 2 aliti at 4 in
+  // R1: formal. Then as formalism: formal.
+  assert.equal(porter2("formality"), "formal");
+  // formally: p1=3, p2=6. Step 1c y after l: formalli. Step 2 longest is alli
+  // at 4 (not li at 6), in R1: formal. Then as formalism: formal.
+  assert.equal(porter2("formally"), "formal");
+  // callousness: p1=3 (a, l), p2=7 (from 3: o at 4, s at 6). Step 1a ss does
+  // nothing. Step 2 ousness at 4 in R1: callous. Step 3 none. Step 4 ous at 4
+  // not in R2. Step 5 none: callous.
+  assert.equal(porter2("callousness"), "callous");
+  // effectiveness: p1=2 (e, f), p2=5 (from 2: e at 3, c at 4). Step 1a ss.
+  // Step 2 iveness at 6 in R1: effective. Step 3 none. Step 4 ive at 6 in R2:
+  // effect. Step 5 none: effect.
+  assert.equal(porter2("effectiveness"), "effect");
+  // sensitivity: p1=3 (e, n), p2=6 (from 3: i at 4, t at 5). Step 1c y after
+  // t: sensitiviti. Step 2 iviti at 6 in R1: sensitive. Step 3 none. Step 4
+  // ive at 6 in R2: sensit. Step 5 none: sensit.
+  assert.equal(porter2("sensitivity"), "sensit");
+  // visibly: p1=3 (i, s), p2=5 (from 3: i at 3, b at 4). Step 1c y after l:
+  // visibli. Step 2 longest is bli at 4 (abli does not match), in R1: visible.
+  // Step 3 none. Step 4 ible at 3 not in R2. Step 5 e at 6 in R2: visibl.
+  assert.equal(porter2("visibly"), "visibl");
+  // hopefully: p1=3 (o, p), p2=5 (from 3: e at 3, f at 4). Step 1c y after l:
+  // hopefulli. Step 2 longest is fulli at 4, in R1: hopeful. Step 3 ful at 4
+  // in R1: hope. Step 4 none. Step 5 e at 3 not R2, hop ends in a short
+  // syllable, keep: hope.
+  assert.equal(porter2("hopefully"), "hope");
+  // carelessly: p1=3 (a, r), p2=5 (from 3: e at 3, l at 4). Step 1c y after l:
+  // carelessli. Step 2 longest is lessli at 4, in R1: careless. Steps 3 to 5
+  // none: careless.
+  assert.equal(porter2("carelessly"), "careless");
 });
 
 test("Step 3 suffix families", () => {
@@ -216,6 +294,33 @@ test("Step 3 suffix families", () => {
   // formative: p1=3, p2=6. Step 3 ative at 4 is not in R2, kept. Step 4 ive at
   // 6 in R2: format.
   assert.equal(porter2("formative"), "format");
+  // conditionally: p1=3 (o, n), p2=6 (from 3: i at 4, t at 5). Step 1c y after
+  // l: conditionalli. Step 2 longest is alli at 9, in R1: conditional. Step 3
+  // longest is tional at 5 (ational does not match), in R1: condition. Step 4
+  // ion at 6 in R2 after t: condit. Step 5 none: condit.
+  assert.equal(porter2("conditionally"), "condit");
+  // relationally: p1=3 (e, l), p2=5 (from 3: a at 3, t at 4). Step 1c y after
+  // l: relationalli. Step 2 alli at 8: relational. Step 3 longest is ational at
+  // 3, in R1: relate. Step 4 ate at 3 not in R2. Step 5 e at 5 in R2: relat.
+  assert.equal(porter2("relationally"), "relat");
+  // normalize: p1=3 (o, r), p2=6 (from 3: a at 4, l at 5). Step 2 none. Step
+  // 3 alize at 4 in R1: normal. Step 4 al at 4 not in R2. Step 5 l at 5 not
+  // in R2: normal.
+  assert.equal(porter2("normalize"), "normal");
+  // duplicate: p1=3 (u, p), p2=6 (from 3: i at 4, c at 5). Step 2 none. Step 3
+  // icate at 4 in R1: duplic. Step 4 ic at 4 not in R2. Step 5 none: duplic.
+  assert.equal(porter2("duplicate"), "duplic");
+  // certificate: p1=3 (e, r), p2=6 (from 3: i at 4, f at 5). Step 2 none.
+  // Step 3 icate at 6 in R1: certific. Step 4 ic at 6 in R2: certif. Step 5
+  // none: certif.
+  assert.equal(porter2("certificate"), "certif");
+  // electricity: p1=2 (e, l), p2=4 (from 2: e at 2, c at 3). Step 1c y after
+  // t: electriciti. Step 2 none. Step 3 iciti at 6 in R1: electric. Step 4 ic
+  // at 6 in R2: electr. Step 5 none: electr.
+  assert.equal(porter2("electricity"), "electr");
+  // kindness: p1=3 (i, n), p2=7 (from 3: e at 5, s at 6). Step 1a ss. Step 2
+  // none. Step 3 ness at 4 in R1: kind. Steps 4 and 5 none: kind.
+  assert.equal(porter2("kindness"), "kind");
 });
 
 test("Step 4 suffix families", () => {
@@ -225,6 +330,34 @@ test("Step 4 suffix families", () => {
   assert.equal(porter2("adoption"), "adopt");
   // opinion: p1=2, p2=4. ion at 4 in R2 but after n: opinion.
   assert.equal(porter2("opinion"), "opinion");
+  // allowance: p1=2 (a, l), p2=5 (from 2: o at 3, w at 4). Steps 2 and 3 none.
+  // Step 4 ance at 5 in R2: allow. Step 5 none: allow.
+  assert.equal(porter2("allowance"), "allow");
+  // observer: p1=2 (o, b), p2=5 (from 2: e at 3, r at 4). Step 4 er at 6 in
+  // R2: observ. Step 5 none: observ.
+  assert.equal(porter2("observer"), "observ");
+  // adjustable: p1=2, p2=5 (from 2: u at 3, s at 4). Steps 2 and 3 none. Step
+  // 4 able at 6 in R2: adjust. Step 5 none: adjust.
+  assert.equal(porter2("adjustable"), "adjust");
+  // defensible: p1=3 (e, f), p2=5 (from 3: e at 3, n at 4). Step 4 ible at 6
+  // in R2: defens. Step 5 none: defens.
+  assert.equal(porter2("defensible"), "defens");
+  // irritant: p1=2 (i, r), p2=5 (from 2: i at 3, t at 4). Step 4 ant at 5 in
+  // R2: irrit. Step 5 none: irrit.
+  assert.equal(porter2("irritant"), "irrit");
+  // replacement: p1=3 (e, p), p2=6 (from 3: a at 4, c at 5). Step 4 longest
+  // is ement at 6 (not ment at 7), in R2: replac. Step 5 none: replac.
+  assert.equal(porter2("replacement"), "replac");
+  // criticism: p1=4 (i, t), p2=6 (from 4: i at 4, c at 5). Steps 2 and 3 none.
+  // Step 4 ism at 6 in R2: critic. Step 5 none: critic.
+  assert.equal(porter2("criticism"), "critic");
+  // dangerous: p1=3 (a, n), p2=6 (from 3: e at 4, r at 5). Step 1a us does
+  // nothing. Step 4 ous at 6 in R2: danger. Step 5 none: danger.
+  assert.equal(porter2("dangerous"), "danger");
+  // fertilize: p1=3 (e, r), p2=6 (from 3: i at 4, l at 5). Steps 2 and 3 none
+  // (alize does not match). Step 4 ize at 6 in R2: fertil. Step 5 l at 5 not
+  // in R2: fertil.
+  assert.equal(porter2("fertilize"), "fertil");
 });
 
 test("Step 5", () => {

@@ -83,6 +83,14 @@ APP_ORIGIN = "https://context.lc"
 # deferred half included, still stays inside it.
 SEARCH_SUBREQUEST_BUDGET = "600"
 
+# The search index format switch (src/search/CONTRACT-v3.md, ruling OPEN-57).
+# Unset everywhere: search reads and writes today's index under
+# `.context/search/v2/`. Setting either to a non-default value builds a second
+# index under `.context/search/v3/` while v2 keeps serving, and search switches
+# to it only once a full pass has built it. Staging is set per Task 35.
+# SEARCH_TOKENIZER = "2"        # "1" (today) or "2"
+# SEARCH_CHUNK_CHARS = "2000"   # "0" or unset (no chunking), "1000", "2000", "4000"
+
 # ── Presence: who else has this note open ───────────────────────────────────
 #
 # One Durable Object per note, addressed by `idFromName(workspaceId + path)`.

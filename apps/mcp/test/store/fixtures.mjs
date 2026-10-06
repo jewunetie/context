@@ -118,6 +118,8 @@ export function memoryBucket({
       if (expected && !ignoreIfMatch && !shapeOnlyIfMatch && objects.get(key)?.etag !== expected) {
         return null;
       }
+      // Create-only, refused over an existing key; B2 and Wasabi ignore it too.
+      if (options?.onlyIf?.absent && !ignoreIfMatch && objects.has(key)) return null;
       const body = typeof value === "string" ? value : new TextDecoder().decode(value);
       const etag = `m${++counter}`;
       objects.set(key, { body, etag });

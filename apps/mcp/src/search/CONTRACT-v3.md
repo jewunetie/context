@@ -54,7 +54,9 @@ A layout is `{ namespace, manifestKey, docmapKey, shardKeyFor(id, manifest) }`
 without a store op.
 
 `loadIndexManifest` keeps its signature. When `store.searchIndexFormat` is
-non-default and usable it reads the v3 manifest first and serves it only if it
+non-default and usable (`usesV3`; a usable format with `namespace: "v3"` also
+counts, which is the bench and test hook for tokenizer 1 without chunking in
+this namespace, and no deployment var sets it) it reads the v3 manifest first and serves it only if it
 parses, its `format` equals the configured one and `built` is true. Every other
 outcome (absent, unparseable, a read that throws, not built, another format)
 reads and serves v2 exactly as before. With the default format no `v3/` key is
@@ -69,4 +71,52 @@ whose length is not `shardCount` and any entry whose key or digest is not a
 string. The v2 reader (`parseManifest`) refuses version 4. A gateway that
 predates this never looks under `v3/`, so rolling the code back serves v2.
 
-The writer is Task 31; until it lands nothing writes under `v3/`.
+A query is parsed, scored and its snippet lines cut with the tokenizer of the
+manifest actually served (`manifest.format.tokenizer`), never the configured
+one: tokenizer 2 configured while v2 still serves queries with tokenizer 1.
+
+## The writer (Task 31)
+
+`route.js` sets `store.searchIndexFormat = indexFormatFor(env)` per request,
+beside `searchSubrequestBudget`. `syncShardedIndex` asks `writerFor(store)`
+(`shards/revisions.js`) where to write. With the default format that is v2,
+byte for byte as before (fixed shard keys, unconditional shard writes, the
+manifest conditional on its etag and unconditional when absent, v1 cleanup);
+nothing under `v3/` is read or written. When `usesV3` holds, the same pass
+runs against the v3 layout with these differences only:
+
+- **Revisions.** A touched shard is stored at
+  `.context/search/v3/shards/<nnn>-<hex16>.json`, `nnn` the zero-padded shard
+  id and `hex16` the first 16 hex characters of the SHA-256 of the stored body
+  (ruling OPEN-58). `shards[id]` names that key and the full 64-hex digest;
+  readers trust the key and do not re-hash. An unchanged shard keeps its
+  entry. Revision keys always stay under `.context/search/v3/shards/` and never
+  contain a `..` segment; `parseManifestV4` refuses one that does not.
+- **Never rewritten.** A revision put is create-only where
+  `store.capabilities.conditionalCreate`; refused means the same content
+  address is already stored. A body equal to the one the manifest already
+  names is not written again.
+- **One commit point.** The manifest is written after every revision it names
+  has landed, conditional on the etag read at the top of the pass, or
+  create-only (`onlyIf: { absent: true }`) where none existed and the store
+  supports it, else unconditionally. A pass that loses writes no docmap and
+  leaves its revisions unreferenced; Task 32 collects them. A pass that dies
+  partway leaves the previous manifest serving, with every revision it names.
+- **`built`** becomes true on the first full (listing) pass that ends with
+  `pending === 0` and the listing not truncated, and stays true.
+- **Tokenizer and chunks.** Notes are indexed with the format's tokenizer. A
+  chunked format indexes each ordinary note as the chunks
+  `chunkNote(path, text, format.chunk)` returns, one document `path#c<n>` per
+  chunk with `notePath: path`; channel-day notes keep their message
+  documents, and a note with no chunks (empty or encrypted) keeps its one
+  whole-note document. Chunk titles, anchors and per-note dedupe are Tasks 33
+  and 36.
+- **v1 cleanup** is the v2 writer's job only.
+- One log line per pass, `{"event":"search-index-format", workspace,
+  namespace, tokenizer, chunk}`, with no path or term.
+
+Revisioning applies to v3 only (ruling OPEN-74): the v2 writer keeps fixed-key
+unconditional shard writes in Phase 5. While the switch is on, the v2 index is
+no longer maintained by those passes; it keeps serving as it last was until v3
+is built. On a store that ignores preconditions (B2, Wasabi) the v3 pass
+completes but coherence between concurrent passes is not claimed, as for v2.

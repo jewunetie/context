@@ -17,14 +17,17 @@ export function noteTitle(path, text) {
   return path.split("/").pop().replace(/\.md$/, "");
 }
 
-/** Lines of a freshly read note that actually carry one of the matched terms. */
-export function snippetLinesFor(text, matchedTerms) {
+/**
+ * Lines of a freshly read note that actually carry one of the matched terms,
+ * tokenized as the served index was (`tokenizer`, 1 when absent).
+ */
+export function snippetLinesFor(text, matchedTerms, tokenizer = 1) {
   const wanted = new Set(matchedTerms || []);
   if (wanted.size === 0) return [];
   const lines = [];
   for (const line of comments.stripComments(String(text)).split("\n")) {
     if (!line.trim()) continue;
-    if (!termsOf(line).some((term) => wanted.has(term))) continue;
+    if (!termsOf(line, tokenizer).some((term) => wanted.has(term))) continue;
     lines.push(line.trim().slice(0, 200));
     if (lines.length === 3) break;
   }

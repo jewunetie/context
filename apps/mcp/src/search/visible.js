@@ -381,9 +381,9 @@ async function answerFromIndex(store, options) {
   // comment above on why it must not be gated on that.
   const reducedRecallNotes = [...new Set(shedNotePathsOf(manifest).filter(isVisible))].sort();
 
-  // Parsed once and asked of every shard, so no two shards can be asked a
-  // different question — and never re-tokenized per shard.
-  const { phrases, terms } = parseQuery(query);
+  // Parsed once, with the served index's own tokenizer, and asked of every
+  // shard, so no two shards can be asked a different question.
+  const { phrases, terms } = parseQuery(query, manifest.format?.tokenizer);
   const queryTerms = [...new Set([...terms, ...phrases.flat()])];
   const collections = [];
   // A shard this answer could not look inside. Not the same as one the routing
@@ -545,7 +545,7 @@ async function answerFromIndex(store, options) {
       }
     }
   }
-  const ranked = scoreCollected(collections, query);
+  const ranked = scoreCollected(collections, query, { tokenizer: manifest.format?.tokenizer });
   const visible = rankedVisibleTo(ranked, isVisible, prefix);
   // Every op is taken before any read starts, so a wave can never overspend the
   // counter, and the reads themselves overlap: ten sequential GETs is ten round
@@ -588,7 +588,7 @@ async function answerFromIndex(store, options) {
         if (isEncryptedNote(text)) return null;
 
         if (typeof anchor !== "string") {
-          return { key: readPath, title: noteTitle(readPath, text), snippets: snippetLinesFor(text, matchedTerms) };
+          return { key: readPath, title: noteTitle(readPath, text), snippets: snippetLinesFor(text, matchedTerms, manifest.format?.tokenizer) };
         }
 
         // The specific message, re-read from a fresh copy of the note — never
@@ -604,7 +604,7 @@ async function answerFromIndex(store, options) {
           // (docs/decisions/communications.md, "Search must index messages").
           key: `${readPath}#${anchor}`,
           title: segment.title,
-          snippets: snippetLinesFor(segment.snippetText, matchedTerms),
+          snippets: snippetLinesFor(segment.snippetText, matchedTerms, manifest.format?.tokenizer),
         };
       } catch {
         return null;

@@ -1,11 +1,10 @@
 import { indexableText } from "../../encryption.js";
 import { buildTermFilter } from "../filter.js";
 import { addDoc, removeDocsForNote } from "../indexer.js";
-import { indexVolumeOf, subDocumentsFor } from "../commsIndex.js";
+import { indexVolumeOf } from "../commsIndex.js";
 import { createSearchBudget, defaultIsIndexable, exceedsUtf8Bytes } from "../maintain.js";
+import { writerFor } from "./revisions.js";
 import {
-  MANIFEST_KEY,
-  DOCMAP_KEY,
   LEGACY_V1_KEY,
   SHARD_PARSE_BYTE_CAP,
   MANIFEST_PARSE_BYTE_CAP,
@@ -19,8 +18,8 @@ import {
   NEUTRAL_RANK,
 } from "./constants.js";
 import { emptyManifest, emptyShard } from "./shapes.js";
-import { chooseShardCount, growManifest, placeUnclaimed, shardOf, shardKey } from "./placement.js";
-import { serializeManifest, serializeDocmap, parseDocmap, parseManifest, serializeShard } from "./serialize.js";
+import { chooseShardCount, growManifest, placeUnclaimed, shardOf } from "./placement.js";
+import { serializeDocmap, parseDocmap, serializeShard } from "./serialize.js";
 import { loadShard } from "./io.js";
 import { listNoteObjects } from "./listing.js";
 import {
@@ -36,7 +35,9 @@ import {
 
 /**
  * Bring `.context/search/v2/` as close to the bucket as one budget allows, and hand back
- * what was built — CONTRACT.md § "The sharded index … Maintenance".
+ * what was built (CONTRACT.md § "The sharded index … Maintenance"). With the
+ * index format switch on it is `v3/` instead, with revisioned shards: see
+ * `revisions.js` and CONTRACT-v3.md "The writer".
  *
  * GET the manifest, list the notes, diff the listing against `docsByShard`,
  * group what changed by shard, and then per shard in id order: read it, fetch
@@ -211,6 +212,7 @@ export async function syncShardedIndex(
     : MANIFEST_PARSE_BYTE_CAP;
   const ops = typeof budget === "object" && budget ? budget : createSearchBudget(budget);
   const shards = new Map();
+  const writer = writerFor(store); // v2, or v3 behind the switch (`revisions.js`)
 
   if (!ops.take(reserve)) {
     return {
@@ -231,7 +233,7 @@ export async function syncShardedIndex(
   // Not wrapped in a `try`: an unreadable manifest object is a storage failure
   // rather than a corrupt derivative — a revoked key or a 500 — and the caller
   // catches it and falls back to the bounded scan, exactly as it does for v1.
-  const storedManifest = await store.get(MANIFEST_KEY);
+  const storedManifest = await store.get(writer.manifestKey);
   const manifestExisted = Boolean(storedManifest);
   const manifestEtag =
     typeof storedManifest?.etag === "string" && storedManifest.etag ? storedManifest.etag : null;
@@ -240,7 +242,7 @@ export async function syncShardedIndex(
     const bytes = await storedManifest.arrayBuffer();
     manifest =
       (bytes.byteLength <= manifestCap &&
-        parseManifest(new TextDecoder().decode(bytes), manifestCap)) ||
+        writer.parseManifest(new TextDecoder().decode(bytes), manifestCap)) ||
       null;
   }
 
@@ -279,7 +281,7 @@ export async function syncShardedIndex(
   // converges, which is the direction an unknown falls everywhere in this file.
   let externalDocmapExisted = false;
   if (manifest && !manifest.docmapLoaded && ops.take(reserve)) {
-    const storedDocmap = await store.get(DOCMAP_KEY);
+    const storedDocmap = await store.get(writer.docmapKey);
     externalDocmapExisted = Boolean(storedDocmap);
     if (storedDocmap) {
       const bytes = await storedDocmap.arrayBuffer();
@@ -305,8 +307,8 @@ export async function syncShardedIndex(
   // If the first pass had no room to retire v1, it deliberately left the
   // recoverable docmap cache absent as the retry signal. A later pass holding
   // that signal keeps both physical marker operations through its writes.
-  const legacyCleanupNeeded =
-    !manifestExisted || Boolean(manifest && !migratingFromV2 && !externalDocmapExisted);
+  const legacyCleanupNeeded = !writer.v3 && // v1 is retired by the v2 writer only
+    (!manifestExisted || Boolean(manifest && !migratingFromV2 && !externalDocmapExisted));
   const legacyCleanupReserve = manifestExisted && legacyCleanupNeeded ? 2 : 0;
   const postCleanupReserve = reserve + perShard * occupiedShards;
   const callerReserve = postCleanupReserve + legacyCleanupReserve;
@@ -502,7 +504,7 @@ export async function syncShardedIndex(
     // object to read, and a GET to prove it is a subrequest spent on a 404.
     const hasStored = manifest.docsByShard[id].size > 0;
     const loaded = hasStored
-      ? await loadShard(store, ops, callerReserve + MANIFEST_WRITE_RESERVE, id, shardCap)
+      ? await loadShard(store, ops, callerReserve + MANIFEST_WRITE_RESERVE, id, shardCap, manifest)
       : null;
     if (targeted && hasStored && !loaded) {
       // Unreadable. A full pass rebuilds it from a listing; this one only
@@ -628,7 +630,7 @@ export async function syncShardedIndex(
         // longer parses as one) must not leave a stale sub-document behind
         // under an anchor the fresh set does not name.
         removeDocsForNote(shard, result.path);
-        for (const sub of subDocumentsFor(result.path, result.full)) {
+        for (const sub of writer.subDocuments(result.path, result.full)) {
           addDoc(shard, sub.key, {
             etag: result.version,
             uploaded: result.uploaded,
@@ -636,6 +638,7 @@ export async function syncShardedIndex(
             notePath: sub.notePath,
             anchor: sub.anchor,
             comms: sub.comms,
+            tokenizer: writer.tokenizer,
           });
           // No `computeRanks`: the link graph is global and v2 never holds
           // every shard at once. Neutral for every doc, as CONTRACT.md pins.
@@ -677,11 +680,9 @@ export async function syncShardedIndex(
         // `remaining` is peeked before the op is charged, so a refused shard
         // does not take a subrequest from the caller's snippet reads.
         if (ops.take(callerReserve + MANIFEST_WRITE_RESERVE)) {
-          // Unconditional: the manifest is the concurrency point, and a shard
-          // written by a pass whose manifest write then loses the race is
-          // re-derived by the pass that won.
-          await store.put(shardKey(id), body);
-          persisted = true;
+          // v2: unconditional at a fixed key, re-derived by whichever pass wins
+          // the manifest. v3: a new revision the manifest names once it lands.
+          persisted = await writer.putShard(store, manifest, id, body);
         }
       } else {
         oversizedShards += 1;
@@ -751,7 +752,7 @@ export async function syncShardedIndex(
     // before the manifest is what makes that the only direction the two can
     // disagree in. It is skipped where there is no op for it, which leaves the
     // next pass re-fetching what this one indexed — expensive and correct.
-    const body = serializeManifest(manifest);
+    const body = writer.serializeManifest(manifest, { pending, truncated, targeted });
     if (exceedsUtf8Bytes(body, manifestCap)) {
       // The same both-directions rule as a shard. Nothing is lost — the shards
       // were written — but the diff cannot record it, so the next pass re-does
@@ -760,15 +761,13 @@ export async function syncShardedIndex(
       manifestOverflow = true;
     } else if (ops.remaining > 0) {
       ops.take(0);
-      // Conditional on the etag read at the top; unconditional where no
-      // manifest existed, because the ContextStore surface offers
-      // `onlyIf.etagMatches` and nothing else — there is no create-only
-      // precondition to use. A `null` back means somebody else synced first:
+      // Conditional on the etag read at the top. Where no manifest existed v2
+      // writes unconditionally and v3 create-only if the store can (see
+      // `revisions.js`). A `null` back means somebody else synced first:
       // serve the query from what was built and skip. A lost write is one extra
       // sync later; a retry loop is this query's budget spent on plumbing.
-      const written = await (manifestEtag
-        ? store.put(MANIFEST_KEY, body, { onlyIf: { etagMatches: manifestEtag } })
-        : store.put(MANIFEST_KEY, body));
+      // Only after every shard this pass stored has landed: each was awaited.
+      const written = await writer.putManifest(store, body, manifestEtag);
       // The diff, and only once the manifest that vouches for it has landed.
       //
       // The order is the whole safety argument and it is the opposite of the
@@ -813,7 +812,7 @@ export async function syncShardedIndex(
       ) {
         const docmap = serializeDocmap(manifest);
         if (!exceedsUtf8Bytes(docmap, manifestCap) && ops.take(postCleanupReserve + 1)) {
-          await store.put(DOCMAP_KEY, docmap);
+          await store.put(writer.docmapKey, docmap);
         }
       }
     }

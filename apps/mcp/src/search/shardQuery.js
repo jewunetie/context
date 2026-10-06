@@ -373,16 +373,16 @@ function recencyMultiplier(uploaded, now) {
  *
  * @param {ReturnType<typeof collectShardCandidates>[]} perShardCollections
  * @param {string} query
- * @param {{ now?: Date|number }} [options]
+ * @param {{ now?: Date|number, tokenizer?: 1 | 2 }} [options] `tokenizer` is the served index's
  * @returns {{ path: string, score: number, matchedTerms: string[] }[]}
  */
-export function scoreCollected(perShardCollections, query, { now } = {}) {
+export function scoreCollected(perShardCollections, query, { now, tokenizer } = {}) {
   const collections = Array.isArray(perShardCollections) ? perShardCollections : [];
 
   const N = sumAcross(collections, (c) => c.visibleN);
   if (N === 0) return [];
 
-  const { phrases, terms } = parseQuery(query);
+  const { phrases, terms } = parseQuery(query, tokenizer);
   const queryTerms = [...new Set([...terms, ...phrases.flat()])]; // first-occurrence order preserved
   if (queryTerms.length === 0) return [];
 

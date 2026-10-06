@@ -52,6 +52,7 @@ import {
 import { localIngestionStore } from "../ingestion/inbox.js";
 import { publishMeetingNote, resolveMeetingNotePath } from "../meetings/notes.js";
 import { searchBudgetFor } from "../search/budget.js";
+import { indexFormatFor } from "../search/format.js";
 import { transcriptionForwarder } from "../ingestion/transcription.js";
 import { toolSuggestDestination } from "../routing/suggestDestination.js";
 import { PINNED_CONTEXT_NAME } from "../orient/globalNote.js";
@@ -255,6 +256,7 @@ export async function route(request, env, ctx) {
       // `store.actor` does: the tool layer never sees `env`, and the store dies
       // with the request, so a reused isolate carries nothing across tenants.
       store.searchSubrequestBudget = searchBudgetFor(env);
+      store.searchIndexFormat = indexFormatFor(env); // the index format switch, CONTRACT-v3.md
       attachGatewayJobQueue(store, session, controlPlane, env);
       attachLinkCalls(store, session, controlPlane, env);
       // The one way anything in this worker gets to keep working after the
@@ -465,6 +467,7 @@ export async function route(request, env, ctx) {
         if (target === session) return { session, store };
         const targetStore = await storeForSession(target, env, controlPlane);
         targetStore.searchSubrequestBudget = searchBudgetFor(env);
+        targetStore.searchIndexFormat = indexFormatFor(env);
         attachGatewayJobQueue(targetStore, target, controlPlane, env);
         attachLinkCalls(targetStore, target, controlPlane, env);
         targetStore.defer = store.defer;

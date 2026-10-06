@@ -80,9 +80,10 @@ function dedupe(list) {
  * loose text, where tokenization drops it like any other punctuation.
  *
  * @param {string} query
+ * @param {1 | 2} [tokenizer] the served index's tokenizer (`manifest.format`)
  * @returns {{ phrases: string[][], terms: string[] }}
  */
-export function parseQuery(query) {
+export function parseQuery(query, tokenizer = 1) {
   if (typeof query !== "string" || !query) return { phrases: [], terms: [] };
 
   const phrases = [];
@@ -93,7 +94,7 @@ export function parseQuery(query) {
   while ((m = quoted.exec(query))) {
     rest += `${query.slice(last, m.index)} `;
     last = quoted.lastIndex;
-    const phraseTerms = termsOf(m[1]);
+    const phraseTerms = termsOf(m[1], tokenizer);
     if (phraseTerms.length > 0) phrases.push(phraseTerms);
   }
   rest += query.slice(last);
@@ -108,7 +109,7 @@ export function parseQuery(query) {
     }
   }
 
-  return { phrases: dedupedPhrases, terms: dedupe(termsOf(rest)) };
+  return { phrases: dedupedPhrases, terms: dedupe(termsOf(rest, tokenizer)) };
 }
 
 /**

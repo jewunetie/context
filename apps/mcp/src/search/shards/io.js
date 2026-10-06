@@ -8,7 +8,7 @@ import {
 } from "./constants.js";
 import { parseManifest, parseManifestV4, parseDocmap, parseShard } from "./serialize.js";
 import { shardKey } from "./placement.js";
-import { DEFAULT_FORMAT, formatUsable, formatsEqual } from "../format.js";
+import { DEFAULT_FORMAT, formatsEqual, usesV3 } from "../format.js";
 
 // -- layouts (CONTRACT-v3.md) ------------------------------------------------
 
@@ -74,7 +74,7 @@ export async function loadIndexManifest(store, budget, reserve, byteCap = MANIFE
   // exactly that format; every other outcome, a read failure included, serves
   // v2 exactly as before.
   const format = store?.searchIndexFormat;
-  if (format && !formatsEqual(format, DEFAULT_FORMAT) && formatUsable(format)) {
+  if (usesV3(format)) {
     let v3 = null;
     try {
       v3 = await readManifestAt(store, budget, reserve, cap, V3_LAYOUT.manifestKey, parseManifestV4);

@@ -64,6 +64,17 @@ export function formatsEqual(a, b) {
 }
 
 /**
+ * Whether `format` is read and written under `.context/search/v3/`: any usable
+ * non-default format, or a usable one carrying `namespace: "v3"`. The second
+ * form is the bench and test hook that builds tokenizer 1 without chunking in
+ * the v3 namespace, so the namespace alone can be compared against v2;
+ * `indexFormatFor` never sets it, so no deployment var reaches it.
+ */
+export function usesV3(format) {
+  return formatUsable(format) && (format.namespace === "v3" || !formatsEqual(format, DEFAULT_FORMAT));
+}
+
+/**
  * A stored `format` field as a fresh format object, or `null` when it is not
  * one this build understands. A newer format is refused, never guessed at.
  */

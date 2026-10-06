@@ -260,9 +260,10 @@ function tallyField(tokens, fieldIndex, into) {
  * @param {{etag: string, uploaded: string|null, content: string,
  *   notePath?: string, anchor?: string|null,
  *   comms?: {channel: string|null, date: string|null, threadId: string|null,
- *     participants: string[]}|null}} note
+ *     participants: string[]}|null, tokenizer?: 1 | 2}} note `tokenizer` is the
+ *   index format's (`format.js`), today's 1 when absent.
  */
-export function addDoc(index, path, { etag, uploaded, content, notePath = path, anchor = null, comms = null }) {
+export function addDoc(index, path, { etag, uploaded, content, notePath = path, anchor = null, comms = null, tokenizer = 1 }) {
   if (index.docs.has(path)) removeDoc(index, path);
 
   // The real note's own path/basename decide the filename-fallback title and
@@ -271,10 +272,10 @@ export function addDoc(index, path, { etag, uploaded, content, notePath = path, 
   // no message actually carries.
   const fields = extractFields(notePath, content);
   const tokensByField = [
-    termsOf(fields.title),
-    termsOf(fields.headings),
-    termsOf(fields.tags.join(" ")),
-    termsOf(fields.body),
+    termsOf(fields.title, tokenizer),
+    termsOf(fields.headings, tokenizer),
+    termsOf(fields.tags.join(" "), tokenizer),
+    termsOf(fields.body, tokenizer),
   ];
 
   const counts = new Map();

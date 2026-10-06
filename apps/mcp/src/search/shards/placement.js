@@ -1,6 +1,6 @@
 import { indexVolumeOf, isBundledIndexPath } from "../commsIndex.js";
 import { SEARCH_PREFIX } from "../../../../../packages/shared/src/storageLayout.cjs";
-import { NOTES_PER_SHARD, INDEX_VOLUME_PER_SHARD, MAX_SHARD_COUNT } from "./constants.js";
+import { NOTES_PER_SHARD, INDEX_VOLUME_PER_SHARD, MAX_SHARD_COUNT, V3_SHARD_PREFIX } from "./constants.js";
 import { emptyStats } from "./shapes.js";
 
 // -- placement -------------------------------------------------------------
@@ -246,3 +246,17 @@ export function shardKey(id) {
   return `${SEARCH_PREFIX}v2/shard-${String(id).padStart(3, "0")}.json`;
 }
 
+
+/**
+ * One v3 shard revision: `.context/search/v3/shards/<nnn>-<hex16>.json`, where
+ * `hex16` is the first 16 hex characters of the SHA-256 of the stored body
+ * (ruling OPEN-58). Content addressed, so a new body is always a new key and
+ * an object some manifest references is never rewritten with other bytes.
+ *
+ * @param {number} id
+ * @param {string} digest the body's full 64-hex SHA-256
+ * @returns {string}
+ */
+export function revisionKey(id, digest) {
+  return `${V3_SHARD_PREFIX}${String(id).padStart(3, "0")}-${digest.slice(0, 16)}.json`;
+}

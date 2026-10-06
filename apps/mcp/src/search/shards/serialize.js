@@ -339,8 +339,9 @@ export function serializeManifestV4(manifest) {
  * `null` for anything it cannot fully validate, including a version 3 or older
  * manifest (the v3 namespace never holds one), a newer version, a `format`
  * this build does not understand, a `shards` array whose length is not
- * `shardCount`, an entry whose key or digest is not a string, or a key outside
- * `V3_SHARD_PREFIX`, which this layout does not own.
+ * `shardCount`, an entry whose key or digest is not a string, a key outside
+ * `V3_SHARD_PREFIX` (which this layout does not own) or holding `..`, or a
+ * `null` entry for a shard whose stats count documents.
  *
  * @param {string} text
  * @param {number} [byteCap]
@@ -355,8 +356,11 @@ export function parseManifestV4(text, byteCap = MANIFEST_PARSE_BYTE_CAP) {
   if (manifest === null) return null;
   if (!Array.isArray(parsed.shards) || parsed.shards.length !== manifest.shardCount) return null;
   const shards = [];
-  for (const entry of parsed.shards) {
+  for (const [id, entry] of parsed.shards.entries()) {
     if (entry === null) {
+      // Nothing stored is an empty shard, so a null key over a shard whose
+      // stats count documents would hide them from every query: refused.
+      if (manifest.stats[id].docCount > 0) return null;
       shards.push(null);
       continue;
     }

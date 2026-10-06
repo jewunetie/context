@@ -478,7 +478,7 @@ async function answerFromIndex(store, options) {
     // that, and there is deliberately no second catch here: a shard that could
     // not be read is a floor on this answer, and a rule enforced in two places
     // is a rule that can disagree with itself.
-    const bodies = await Promise.all(wave.map((id) => fetchShardBytes(store, budget, limit, id)));
+    const bodies = await Promise.all(wave.map((id) => fetchShardBytes(store, budget, limit, id, undefined, manifest)));
     for (const bytes of bodies) {
       const shard = bytes && decodeShard(bytes);
       if (!shard) {
@@ -534,7 +534,7 @@ async function answerFromIndex(store, options) {
           shardsUnread = true;
           break;
         }
-        const bytes = await fetchShardBytes(store, budget, limit, id);
+        const bytes = await fetchShardBytes(store, budget, limit, id, undefined, manifest);
         const shard = bytes && decodeShard(bytes);
         if (!shard) {
           shardsUnread = true;

@@ -5,7 +5,9 @@ import {
   SHARD_PARSE_BYTE_CAP,
   MANIFEST_PARSE_BYTE_CAP,
   FIELD_ORDER,
+  V3_SHARD_PREFIX,
 } from "./constants.js";
+import { readFormat } from "../format.js";
 import { emptyFreshness } from "./shapes.js";
 
 // -- (de)serialization -----------------------------------------------------
@@ -194,6 +196,11 @@ function readDocsByShard(value, shardCount) {
  * @returns {ReturnType<typeof emptyManifest>|null}
  */
 export function parseManifest(text, byteCap = MANIFEST_PARSE_BYTE_CAP) {
+  return manifestFromParsed(parseObject(text, byteCap));
+}
+
+/** JSON text under the cap to a plain object, or `null`. Never throws. */
+function parseObject(text, byteCap) {
   const cap = Number.isFinite(byteCap) ? byteCap : MANIFEST_PARSE_BYTE_CAP;
   if (typeof text !== "string") return null;
   if (exceedsUtf8Bytes(text, cap)) return null;
@@ -203,6 +210,11 @@ export function parseManifest(text, byteCap = MANIFEST_PARSE_BYTE_CAP) {
   } catch {
     return null;
   }
+  return isPlainObject(parsed) ? parsed : null;
+}
+
+/** The validation half of `parseManifest`, over an already parsed object. */
+function manifestFromParsed(parsed) {
   if (!isPlainObject(parsed)) return null;
   // Both dialects, and the older one is not deprecated bookkeeping: refusing a
   // v2 manifest would rebuild a working index from the notes on the day this
@@ -297,6 +309,62 @@ export function parseManifest(text, byteCap = MANIFEST_PARSE_BYTE_CAP) {
     // "this index holds nothing".
     docmapLoaded: legacy,
   };
+}
+
+/**
+ * The v3-namespace manifest, **version 4** (CONTRACT-v3.md): every version 3
+ * field, plus the `format` the index was built with, `shards` (one
+ * `{ key, digest }` per shard id, or `null` for nothing stored) and `built`,
+ * which the writer sets once a pass first ends with nothing pending and the
+ * listing complete. Readers serve v3 only once it is true.
+ *
+ * Written from `serializeManifest`'s own output so the shared fields cannot
+ * drift between the two versions.
+ *
+ * @param {ReturnType<typeof emptyManifest> & { format: object, shards: ({ key: string, digest: string }|null)[], built?: boolean }} manifest
+ * @returns {string}
+ */
+export function serializeManifestV4(manifest) {
+  return JSON.stringify({
+    ...JSON.parse(serializeManifest(manifest)),
+    version: 4,
+    format: manifest.format,
+    shards: manifest.shards.map((entry) => (entry ? { key: entry.key, digest: entry.digest } : null)),
+    built: manifest.built === true,
+  });
+}
+
+/**
+ * The inverse of `serializeManifestV4`, and the only reader of version 4.
+ * `null` for anything it cannot fully validate, including a version 3 or older
+ * manifest (the v3 namespace never holds one), a newer version, a `format`
+ * this build does not understand, a `shards` array whose length is not
+ * `shardCount`, an entry whose key or digest is not a string, or a key outside
+ * `V3_SHARD_PREFIX`, which this layout does not own.
+ *
+ * @param {string} text
+ * @param {number} [byteCap]
+ */
+export function parseManifestV4(text, byteCap = MANIFEST_PARSE_BYTE_CAP) {
+  const parsed = parseObject(text, byteCap);
+  if (!parsed || parsed.version !== 4) return null;
+  const format = readFormat(parsed.format);
+  if (format === null) return null;
+  if (parsed.built !== undefined && typeof parsed.built !== "boolean") return null;
+  const manifest = manifestFromParsed({ ...parsed, version: 3 });
+  if (manifest === null) return null;
+  if (!Array.isArray(parsed.shards) || parsed.shards.length !== manifest.shardCount) return null;
+  const shards = [];
+  for (const entry of parsed.shards) {
+    if (entry === null) {
+      shards.push(null);
+      continue;
+    }
+    if (!isPlainObject(entry) || typeof entry.key !== "string" || typeof entry.digest !== "string") return null;
+    if (!entry.key.startsWith(V3_SHARD_PREFIX) || entry.key.includes("..")) return null;
+    shards.push({ key: entry.key, digest: entry.digest });
+  }
+  return { ...manifest, version: 4, format, shards, built: parsed.built === true };
 }
 
 /**

@@ -101,7 +101,6 @@ import { deleteStatements, projectNote, upsertStatements } from "./project.js";
 import { indexableText } from "../../encryption.js";
 import { D1Error, failureDetailOf } from "./client.js";
 import {
-  DOCMAP_KEY,
   MANIFEST_PARSE_BYTE_CAP,
   loadIndexManifest,
   parseDocmap,
@@ -203,7 +202,7 @@ export function censusFromManifest(manifest) {
  * per search**, which is the cost `docs/decisions/search.md` removed from the
  * search path and must not be re-introduced through a side door.
  *
- * `.context/search/v2/docmap.json` is the index's own diff surface and already holds
+ * The served namespace's `docmap.json` (`manifest.layout`) is the index's own diff surface and already holds
  * exactly `[path, version]` for every note. Reading it is the cheapest honest
  * answer to "what notes are there", and it is the same answer the sync uses,
  * so the two cannot disagree about what has been indexed.
@@ -217,7 +216,7 @@ export async function loadCensus(store, budget, reserve = 0) {
   if (!manifest) return null;
   if (!manifest.docmapLoaded) {
     if (!budget.take(reserve)) return null;
-    const stored = await store.get(DOCMAP_KEY);
+    const stored = await store.get(manifest.layout.docmapKey);
     if (!stored) return null;
     const bytes = await stored.arrayBuffer();
     const docsByShard =

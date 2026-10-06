@@ -60,6 +60,9 @@ export {
   MANIFEST_PARSE_BYTE_CAP,
   MAX_SHARD_COUNT,
   SHARD_READ_CONCURRENCY,
+  V3_MANIFEST_KEY,
+  V3_DOCMAP_KEY,
+  V3_SHARD_PREFIX,
 } from "./shards/constants.js";
 export { fnv1a32, shardOf, chooseShardCount, shardKey } from "./shards/placement.js";
 export { emptyShard, indexIsBehind, shedNotePathsOf, emptyManifest } from "./shards/shapes.js";
@@ -70,6 +73,16 @@ export {
   parseManifest,
   serializeShard,
   parseShard,
+  serializeManifestV4,
+  parseManifestV4,
 } from "./shards/serialize.js";
-export { loadIndexManifest, loadDocmapPaths, loadShard, fetchShardBytes, decodeShard } from "./shards/io.js";
+export {
+  V2_LAYOUT,
+  V3_LAYOUT,
+  loadIndexManifest,
+  loadDocmapPaths,
+  loadShard,
+  fetchShardBytes,
+  decodeShard,
+} from "./shards/io.js";
 export { syncShardedIndex } from "./shards/sync.js";

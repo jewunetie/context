@@ -196,7 +196,7 @@ v1's single object has a hard ceiling: it must be parsed whole, so
 bound plateaus at partial coverage forever — measured live at roughly a
 thousand docs of contact-heavy vocabulary. v2 removes the whole-object parse:
 many small shards, each always under its own cap, streamed at query time so
-peak memory is one shard.
+peak memory is one shard. Opt-in formats (v3, `.context/search/v3/`): [`CONTRACT-v3.md`](./CONTRACT-v3.md).
 
 ## Objects
 

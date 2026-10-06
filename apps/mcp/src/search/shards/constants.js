@@ -75,6 +75,17 @@ export const MANIFEST_KEY = `${SEARCH_PREFIX}v2/manifest.json`;
  * a note not yet found, never a note reported missing.
  */
 export const DOCMAP_KEY = `${SEARCH_PREFIX}v2/docmap.json`;
+/**
+ * Index format v3 (CONTRACT-v3.md, ruling OPEN-56): any non-default format
+ * lives in its own namespace, so v2 above stays exactly where and how it is and
+ * keeps serving while a v3 index builds. The manifest is version 4; the docmap
+ * keeps the v2 docmap's shape; shard revisions live under the prefix and the
+ * manifest names each one's exact key. Today's gateway never reads under
+ * `v3/`, so rolling the code back serves v2.
+ */
+export const V3_MANIFEST_KEY = `${SEARCH_PREFIX}v3/manifest.json`;
+export const V3_DOCMAP_KEY = `${SEARCH_PREFIX}v3/docmap.json`;
+export const V3_SHARD_PREFIX = `${SEARCH_PREFIX}v3/shards/`;
 /** v1's single object, deleted once a v2 manifest exists — dead weight. */
 export const LEGACY_V1_KEY = `${SEARCH_PREFIX}search-v1.json`;
 

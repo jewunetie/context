@@ -1,7 +1,7 @@
 import { isDrawingPath } from "@context/drawings";
 import type { SearchAnswer } from "../console/files/browser";
 import { noteHeading, splitNote } from "../console/files/frontmatter";
-import { termsOf } from "../../../mcp/src/search/text.js";
+import { DEFAULT_TOKENIZER, termsOf } from "../../../mcp/src/search/text.js";
 
 /**
  * Search over the homepage's notes, which are all in the tab.
@@ -20,14 +20,6 @@ import { termsOf } from "../../../mcp/src/search/text.js";
  * indexer and the query parser switch tokenizer together: a note matches when
  * every term of the query is a prefix of some term of its title or body.
  */
-
-/**
- * The tokenizer version the app searches with. Stays 1 until the owner flips
- * the default (Task 39); the gateway's default is flipped in the same change.
- * lean: lives here because `search/text.js` has no shared constant yet; move
- * it there when the gateway switch (OPEN-57) lands.
- */
-export const DEFAULT_TOKENIZER: 1 | 2 = 1;
 
 /** The terms of `text`, from the gateway's tokenizer. */
 export function localTerms(text: string, tokenizer: number = DEFAULT_TOKENIZER): string[] {
@@ -87,13 +79,13 @@ function bodyLines(body: string, title: string, tokenizer: number): BodyLine[] {
 }
 
 /** The snippet of the first line whose terms cover the query, else the first line that has any of them. */
-function snippetOf(lines: readonly BodyLine[], query: readonly string[], needle: string): string | null {
+function snippetOf(lines: readonly BodyLine[], query: readonly string[]): string | null {
   const whole = lines.find((l) => coversQuery(query, l.terms));
   const hit = whole ?? lines.find((l) => query.some((q) => coversQuery([q], l.terms)));
   if (!hit) return null;
   const lower = hit.line.toLowerCase();
   const at = matchAt(lower, query);
-  return windowOf(hit.line, at, query.find((q) => lower.startsWith(q, at))?.length ?? needle.length);
+  return windowOf(hit.line, at, query.find((q) => lower.startsWith(q, at))?.length ?? 0);
 }
 
 /**
@@ -108,7 +100,7 @@ export function snippetFor(
 ): string | null {
   const query = localTerms(needle, tokenizer);
   if (query.length === 0) return null;
-  return snippetOf(bodyLines(body, title, tokenizer), query, needle);
+  return snippetOf(bodyLines(body, title, tokenizer), query);
 }
 
 export function searchLocalNotes(
@@ -127,7 +119,7 @@ export function searchLocalNotes(
       const title = noteHeading(text, path);
       const lines = bodyLines(splitNote(text).body, title, tokenizer);
       const inBody = coversQuery(terms, lines.flatMap((l) => l.terms));
-      const snippet = inBody ? snippetOf(lines, terms, query) : null;
+      const snippet = inBody ? snippetOf(lines, terms) : null;
       if (coversQuery(terms, localTerms(title, tokenizer))) {
         byTitle.push({ path, title, snippets: snippet === null ? [] : [snippet] });
       } else if (snippet !== null) {

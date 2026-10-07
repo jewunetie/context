@@ -25,10 +25,17 @@
  *   v3 layout check removed from `collectShardRevisions`                     1
  *   budget floor ignored (`take(0)`)                                         1
  *   GC failure not caught in `maintainNow`                                   1
- *   `layout`/`built` gate in `maintainNow` removed: 0 failing, by design;
- *     `collectShardRevisions` refuses a non-v3 manifest itself, and v3 is only
- *     the pass's manifest once it is built (the dual-mode pass returns the v2
- *     manifest while v3 builds), so the gate only saves the call.
+ *   (the `layout` gate in `maintainNow` was removed in fix round 1: it was
+ *   dead, `collectShardRevisions` refuses a non-v3 manifest itself)
+ *
+ *   Fix round 1:
+ *   cursor not stored between passes (always restart)                        3
+ *   cursor kept after a finished listing (no wrap to the start)              2
+ *   supersession protection ignored (retained keys and `after`)             16
+ *   first pass with no state protects nothing                               15
+ *   cursor bounds in `readState` removed (cursor 100k long or with a newline) 1
+ *   (`retained` count bound and `isKeyList(current)` removal: 0 failing, the
+ *   per-entry checks reject the same inputs; the bounds only cap size)
  */
 
 import assert from "node:assert/strict";
@@ -37,6 +44,7 @@ import { test } from "node:test";
 import {
   REVISION_RETENTION_MS,
   GC_BUDGET_FLOOR,
+  GC_STATE_KEY,
   collectShardRevisions,
 } from "../src/search/shards/gc.js";
 import { writerFor } from "../src/search/shards/revisions.js";
@@ -50,6 +58,7 @@ import {
 } from "../src/search/shards.js";
 import { createSearchBudget } from "../src/search/maintain.js";
 import { maintainIndexAfter } from "../src/search/maintenance.js";
+import { withLogicalDelete } from "../src/store/logicalDelete.js";
 import { memoryBucket } from "./store/fixtures.mjs";
 
 const FORMAT = { tokenizer: 1, chunk: null, namespace: "v3" };
@@ -64,10 +73,12 @@ function bucketWithClock() {
   bucket.searchIndexFormat = FORMAT;
   bucket.uploadedAt = new Map();
   bucket.listed = [];
+  bucket.cursors = [];
   bucket.deleted = [];
   const list = bucket.list.bind(bucket);
   bucket.list = async (options) => {
     bucket.listed.push(options?.prefix);
+    bucket.cursors.push(options?.cursor);
     const page = await list(options);
     for (const object of page.objects) {
       const at = bucket.uploadedAt.has(object.key) ? bucket.uploadedAt.get(object.key) : OLD;
@@ -102,6 +113,15 @@ const manifestOf = (bucket) => ({ ...parseManifestV4(bucket.objects.get(V3_MANIF
 const revisionKeys = (bucket) => [...bucket.objects.keys()].filter((key) => key.startsWith(V3_SHARD_PREFIX));
 const referencedKeys = (manifest) => manifest.shards.filter(Boolean).map((entry) => entry.key);
 
+/**
+ * The first pass over a store has no record of what was current before it, so
+ * it protects every unreferenced revision for one window and deletes nothing
+ * (fix round 1). Tests that want deletions run this long before `NOW`.
+ */
+function prime(store, manifest) {
+  return collectShardRevisions(store, createSearchBudget(100), { manifest, now: NOW - 2 * REVISION_RETENTION_MS });
+}
+
 /** Build v3, then edit a note and sync again: one superseded, unreferenced revision. */
 async function withSupersededRevision() {
   const bucket = bucketWithClock();
@@ -113,6 +133,8 @@ async function withSupersededRevision() {
   const manifest = manifestOf(bucket);
   const stale = before.filter((key) => !referencedKeys(manifest).includes(key));
   assert.ok(stale.length >= 1, "an edit leaves a superseded revision behind");
+  const first = await prime(bucket, manifest);
+  assert.equal(first.deleted, 0, "the first pass only records what is current");
   return { bucket, manifest, stale };
 }
 
@@ -209,12 +231,13 @@ test("the budget bounds the pass: one listing, then deletes, never below the flo
   const { bucket, manifest, stale } = await withSupersededRevision();
   for (let i = 0; i < 5; i += 1) await bucket.put(`${V3_SHARD_PREFIX}1${i}0-0123456789abcdef.json`, "x");
   const total = stale.length + 5;
-  const budget = createSearchBudget(GC_BUDGET_FLOOR + 3);
+  const budget = createSearchBudget(GC_BUDGET_FLOOR + 5);
   bucket.deleted.length = 0;
   const report = await collectShardRevisions(bucket, budget, { manifest, now: NOW });
-  // One listing and two deletes spend three, which leaves exactly the floor.
+  // The state read, one listing, two deletes and the state write spend five,
+  // which leaves exactly the floor.
   assert.equal(report.deleted, 2);
-  assert.equal(budget.spent, 3);
+  assert.equal(budget.spent, 5);
   assert.equal(budget.remaining, GC_BUDGET_FLOOR);
   assert.equal(bucket.deleted.length, 2);
   assert.ok(total > 2);
@@ -359,4 +382,174 @@ test("a create-only revision put refused because the same bytes exist is recorde
   const again = { shards: [] };
   await writer.putShard(bucket, again, 0, "body one");
   assert.deepEqual(again.shards[0], first.shards[0]);
+});
+
+// -- fix round 1: progress through the listing, retention from supersession --------
+
+/** A bucket that pages by cursor like a provider, so the real wrapper can sit on it. */
+function pagedBucket() {
+  const objects = new Map();
+  let counter = 0;
+  const raw = {
+    objects,
+    uploadedAt: new Map(),
+    capabilities: { conditionalWrite: true, conditionalCreate: true },
+    async get(key) {
+      if (!objects.has(key)) return null;
+      const o = objects.get(key);
+      return { etag: o.etag, size: o.body.length, contentType: o.contentType, text: async () => o.body, arrayBuffer: async () => new TextEncoder().encode(o.body).buffer };
+    },
+    async head(key) {
+      if (!objects.has(key)) return null;
+      const o = objects.get(key);
+      return { etag: o.etag, size: o.body.length, contentType: o.contentType };
+    },
+    async put(key, value, options = {}) {
+      const expected = options.onlyIf?.etagMatches;
+      if (expected && objects.get(key)?.etag !== expected) return null;
+      if (options.onlyIf?.absent && objects.has(key)) return null;
+      counter += 1;
+      objects.set(key, { body: typeof value === "string" ? value : new TextDecoder().decode(value), etag: `m${counter}`, contentType: options.contentType });
+      return { etag: `m${counter}` };
+    },
+    async delete(key) {
+      objects.delete(key);
+    },
+    async list({ prefix = "", cursor, limit = 1000 } = {}) {
+      if (cursor !== undefined && !(typeof cursor === "string" && (cursor === "" || objects.has(cursor) || cursor.startsWith(prefix)))) {
+        throw new Error("invalid continuation token");
+      }
+      const keys = [...objects.keys()].filter((key) => key.startsWith(prefix)).sort().filter((key) => !cursor || key > cursor);
+      const page = keys.slice(0, limit);
+      return {
+        objects: page.map((key) => ({ key, size: objects.get(key).body.length, uploaded: raw.uploadedAt.get(key) ?? OLD })),
+        truncated: keys.length > limit,
+        cursor: keys.length > limit ? page.at(-1) : undefined,
+      };
+    },
+  };
+  return raw;
+}
+
+const hex = (i) => i.toString(16).padStart(16, "0");
+const revision = (i) => `${V3_SHARD_PREFIX}000-${hex(i)}.json`;
+const liveBodies = (raw) => [...raw.objects.entries()].filter(([key, o]) => key.startsWith(V3_SHARD_PREFIX) && o.body === "x".repeat(300)).length;
+
+function pagedFixture({ stale, young = 0 }) {
+  const raw = pagedBucket();
+  const store = withLogicalDelete(raw);
+  // Young keys sort first (low hex), so they sit at the front of every listing.
+  for (let i = 1; i <= young; i += 1) {
+    raw.objects.set(revision(i), { body: "x".repeat(300), etag: `y${i}` });
+    raw.uploadedAt.set(revision(i), YOUNG);
+  }
+  for (let i = 1; i <= stale; i += 1) raw.objects.set(revision(1000 + i), { body: "x".repeat(300), etag: `e${i}` });
+  const live = revision(5000);
+  raw.objects.set(live, { body: "x".repeat(300), etag: "live" });
+  const manifest = { layout: V3_LAYOUT, shards: [{ key: live, digest: "d" }] };
+  return { raw, store, manifest, live };
+}
+
+async function passes(store, manifest, count, now = NOW) {
+  const reports = [];
+  for (let pass = 0; pass < count; pass += 1) {
+    reports.push(await collectShardRevisions(store, createSearchBudget(2000), { manifest, now }));
+  }
+  return reports;
+}
+
+test("real logical-delete store: 260 stale revisions are all collected across passes", async () => {
+  const { raw, store, manifest, live } = pagedFixture({ stale: 260 });
+  await prime(store, manifest);
+  // Tombstones stay in the provider listing, so a pass without a stored cursor
+  // would re-list the same first 200 keys forever.
+  await passes(store, manifest, 6);
+  assert.equal(liveBodies(raw), 1, "only the referenced revision still has a body");
+  assert.ok(raw.objects.has(live));
+});
+
+test("real logical-delete store: kept keys at the front do not stop collection behind them", async () => {
+  const { raw, store, manifest } = pagedFixture({ stale: 100, young: 250 });
+  await prime(store, manifest);
+  await passes(store, manifest, 8);
+  assert.equal(liveBodies(raw), 250 + 1, "the 250 young and the referenced revision remain, nothing else");
+});
+
+test("the cursor is stored between passes and cleared when the listing ends", async () => {
+  const { raw, store, manifest } = pagedFixture({ stale: 260 });
+  const state = () => JSON.parse(raw.objects.get(GC_STATE_KEY).body);
+  await prime(store, manifest);
+  assert.equal(typeof state().cursor, "string", "a truncated listing leaves a cursor");
+  await collectShardRevisions(store, createSearchBudget(2000), { manifest, now: NOW });
+  assert.equal(state().cursor, undefined, "the end of the listing wraps to the start");
+});
+
+test("a stored state that is garbage is ignored and replaced, and deletes nothing that pass", async () => {
+  const { bucket, manifest, stale } = await withSupersededRevision();
+  for (const garbage of [
+    "not json",
+    "null",
+    "[]",
+    JSON.stringify({ version: 1, cursor: 12345, retained: "x", current: {} }),
+    JSON.stringify({ version: 99, cursor: "c" }),
+    JSON.stringify({ version: 1, cursor: "a".repeat(100_000), retained: Array.from({ length: 5000 }, () => ({ keys: [1], at: "no" })) }),
+    // Valid except for a cursor too long to hand to a provider.
+    JSON.stringify({ version: 1, observedAt: 1, current: [], retained: [], cursor: "a".repeat(100_000) }),
+    JSON.stringify({ version: 1, observedAt: 1, current: [], retained: [], cursor: "line\nbreak" }),
+  ]) {
+    bucket.cursors.length = 0;
+    await bucket.put(GC_STATE_KEY, garbage);
+    const report = await collectShardRevisions(bucket, createSearchBudget(100), { manifest, now: NOW });
+    assert.equal(report.deleted, 0, garbage.slice(0, 30));
+    assert.deepEqual(bucket.cursors, [undefined], "a cursor outside the bounds is never handed to the store");
+    for (const key of stale) assert.ok(bucket.objects.has(key));
+    const rewritten = JSON.parse(bucket.objects.get(GC_STATE_KEY).body);
+    assert.equal(rewritten.version, 1);
+    assert.ok(JSON.stringify(rewritten).length < 20_000);
+  }
+});
+
+test("a stored cursor the provider refuses restarts from the front", async () => {
+  const { raw, store, manifest } = pagedFixture({ stale: 10 });
+  await prime(store, manifest);
+  const state = JSON.parse(raw.objects.get(GC_STATE_KEY).body);
+  state.cursor = "!!bogus!!";
+  raw.objects.set(GC_STATE_KEY, { body: JSON.stringify(state), etag: "s" });
+  await passes(store, manifest, 1);
+  assert.equal(liveBodies(raw), 1);
+});
+
+test("the first pass, with no record of what was current, deletes nothing", async () => {
+  const { bucket, manifest, stale } = await withSupersededRevision();
+  bucket.objects.delete(GC_STATE_KEY);
+  const report = await collectShardRevisions(bucket, createSearchBudget(100), { manifest, now: NOW });
+  assert.equal(report.deleted, 0);
+  for (const key of stale) assert.ok(bucket.objects.has(key), "protected for one window from the first observation");
+  const later = await collectShardRevisions(bucket, createSearchBudget(100), { manifest, now: NOW + REVISION_RETENTION_MS + 1000 });
+  assert.equal(later.deleted, stale.length);
+});
+
+test("a revision superseded seconds ago is kept however old its upload; collected after the window", async () => {
+  const bucket = bucketWithClock();
+  await seed(bucket);
+  await syncUntilBuilt(bucket);
+  const before = manifestOf(bucket);
+  await prime(bucket, before);
+  // A reader pins `before` now. An edit supersedes it seconds later; the old
+  // revisions were uploaded long ago (OLD), so upload age alone would free them.
+  await bucket.put("notes/n0.md", "# Note 0\n\nrewritten words about delta\n");
+  await syncUntilBuilt(bucket);
+  const after = manifestOf(bucket);
+  const superseded = referencedKeys(before).filter((key) => !referencedKeys(after).includes(key));
+  assert.ok(superseded.length >= 1);
+
+  const seen = await collectShardRevisions(bucket, createSearchBudget(100), { manifest: after, now: NOW });
+  assert.equal(seen.deleted, 0);
+  const seconds = await collectShardRevisions(bucket, createSearchBudget(100), { manifest: after, now: NOW + 30_000 });
+  assert.equal(seconds.deleted, 0);
+  for (const key of superseded) assert.ok(bucket.objects.has(key), `${key} still readable by the pinned reader`);
+
+  const done = await collectShardRevisions(bucket, createSearchBudget(100), { manifest: after, now: NOW + REVISION_RETENTION_MS + 1000 });
+  assert.equal(done.deleted, superseded.length);
+  for (const key of superseded) assert.ok(!bucket.objects.has(key));
 });

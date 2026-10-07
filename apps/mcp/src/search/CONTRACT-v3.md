@@ -167,27 +167,46 @@ completes but coherence between concurrent passes is not claimed, as for v2.
   fall in two chunks of one note misses the coverage multiplier that a
   whole-note index would give it; Task 37 measures that.
 
-## Collecting revisions (Task 32, ruling OPEN-59)
+## Collecting revisions (Task 32, ruling OPEN-59; fix round 1)
 
 `collectShardRevisions(store, budget, { manifest, now })` (`shards/gc.js`)
-lists one page (200 keys) of `.context/search/v3/shards/` and deletes a
+looks at one page (200 keys) of `.context/search/v3/shards/` and deletes a
 revision only when all of these hold: its key is under that prefix and has the
 revision name shape `<nnn>-<hex16>.json`; the current manifest does not name
 it; its listed `uploaded` is known and older than the retention window of
-15 minutes (`REVISION_RETENTION_MS`). A listing with no usable `uploaded`
-(missing, epoch 0, unparsable, in the future) keeps the revision. The window
-is what "retained manifests" means: a reader pinned to the previous manifest
-finishes inside it, so every revision that manifest named is still stored.
-Nothing outside the prefix is ever listed or deleted, and a manifest that is
-absent or not the v3 layout means nothing is known to be referenced, so
-nothing is listed.
+15 minutes (`REVISION_RETENTION_MS`); and it is not protected as recently
+superseded. A listing with no usable `uploaded` (missing, epoch 0,
+unparsable, in the future) keeps the revision. Nothing outside the prefix is
+ever listed or deleted, and a manifest that is absent or not the v3 layout
+means nothing is known to be referenced, so nothing is read or listed.
 
-`maintainNow` calls it after the search sync, with the sync's own manifest,
-only when that manifest is the v3 layout (v3 is built and served) and
-`budget.remaining` exceeds `GC_BUDGET_FLOOR` (2) plus the projection reserve.
-Each listing and each delete takes one op and leaves the floor untouched. A
-failure is swallowed: it never changes the maintenance result. The cursor is
-not stored between passes; deletes shrink the next first page.
+**The window runs from supersession.** A reader that pinned a manifest seconds
+before it was replaced may read every revision it names, however old their
+upload. The state object `.context/search/v3/gc.json` (beside the shard prefix,
+never listed by the collector) records `current`, the revision keys the
+manifest named when a pass last looked, and `observedAt`. A pass that finds a
+different set adds `{ at: now, after: observedAt, keys: <old set> }` to
+`retained`; those keys, and any unreferenced revision uploaded after
+`observedAt` (a manifest that came and went between two passes), are kept
+until the window has passed since `at`. A pass with no valid state protects
+everything for one window and deletes nothing.
+
+**Progress is stored.** A logical-delete tombstone stays in the provider's
+listing, and a run of kept keys at the front would pin a cursor-less pass to
+the same first page. The state keeps the listing cursor between passes; a
+finished listing clears it, which wraps the next pass to the start; a pass cut
+short by the budget keeps its old cursor and reads the page again. A cursor the
+provider refuses restarts the listing. The object is read from the bucket, so
+only the exact shape and bounds the collector writes are accepted (at most 512
+keys per list, 8 `retained` entries, 1024 characters of printable cursor);
+anything else is no state.
+
+`maintainNow` calls it after the search sync, with the sync's own manifest, when
+`budget.remaining` exceeds `GC_BUDGET_FLOOR` (2) plus the projection reserve
+(while v3 builds the sync returns the v2 manifest, which the collector
+refuses). A pass spends one op for the state read, one for the listing, one per
+delete and one for the state write, and every op leaves the floor untouched. A
+failure is swallowed: it never changes the maintenance result.
 
 **Deletes are logical where the store wraps them.** `store.delete` through
 `withLogicalDelete` writes a tombstone, and a create-only put over a tombstone

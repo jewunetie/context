@@ -72,6 +72,11 @@ export async function toolSearchNotes(store, scope, rules, overrides, query, pre
       `these is not proof the content is gone, only that this search cannot reach all of it: ` +
       `${shown.join(", ")}${rest ? ` (+${rest} more)` : ""}]`;
   }
+  // Graph-assisted ranking on, and its graph answer withheld (Task 29): one
+  // bit, never which part of the graph was short.
+  if (found.graphIncomplete) {
+    out += "\n\n[note: link-based ranking was unavailable for this search, so these results are ranked by their text alone]";
+  }
   if (found.degraded && (found.totalCount > found.scannedCount || found.totalIsFloor)) {
     out += `\n\n[note: scanned ${found.scannedCount} of ${found.totalCount}${
       found.totalIsFloor ? "+" : ""

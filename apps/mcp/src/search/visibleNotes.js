@@ -11,6 +11,7 @@ import { indexIsBehind, loadIndexManifest } from "./shards.js";
 import { maintainIndexAfter } from "./maintenance.js";
 import { noteUnderPrefix, searchMoveJobs } from "../moves/jobs.js";
 import { SEARCH_SUBREQUEST_BUDGET, searchIndexedNotes } from "./visible.js";
+import { retrieveCandidates, SEARCH_VARIANTS } from "../graph/retrieve.js";
 
 /**
  * The one search path, shared by `search_notes` and the ChatGPT-dialect
@@ -31,6 +32,10 @@ export async function searchVisibleNotes(store, scope, rules, overrides, query, 
   // the tool layer never sees `env`, and a fresh store is built per request, so
   // nothing here survives into another tenant's call.
   const budget = createSearchBudget(store.searchSubrequestBudget ?? SEARCH_SUBREQUEST_BUDGET);
+  // Graph-assisted ranking (Task 29, OPEN-68): `SEARCH_GRAPH_BOOST` resolved
+  // onto the store per request; absent, "off" or anything unknown is off, and
+  // off this function is byte-identical to before it existed.
+  const boost = Object.hasOwn(SEARCH_VARIANTS, store.searchGraphBoost ?? "") ? store.searchGraphBoost : null;
   // Logical-delete stores may need a raw read before a conditional write, or
   // extra marker/prefix probes while filtering a list. Their public operation
   // is already prepaid by the search budget; charge only those additional
@@ -97,7 +102,9 @@ export async function searchVisibleNotes(store, scope, rules, overrides, query, 
    * R2 search below was going to need. See `fastSearchAnswer`.
    */
   const fastSpan = trace.span("fast");
-  const fast = hasActiveLogicalMoves
+  // With the graph on, the D1 projection is not asked: graph candidates are
+  // filtered by the R2 index's docmap, which the fast path never reads.
+  const fast = hasActiveLogicalMoves || boost
     ? null
     : await fastSearchAnswer(store, scope, rules, overrides, query, prefix, budget, trace);
   fastSpan();
@@ -191,7 +198,7 @@ export async function searchVisibleNotes(store, scope, rules, overrides, query, 
   }
 
   const answered = trace.span("answer");
-  const found = await searchIndexedNotes(store, {
+  const searchOptions = {
     // The gateway's own privacy engine, bound to this caller's scope. Passed in
     // rather than imported by that module, because the control plane holds a
     // ported copy of these two — see `search/visible.js` on why injecting them
@@ -207,7 +214,10 @@ export async function searchVisibleNotes(store, scope, rules, overrides, query, 
     // is current. See `searchIndexedNotes`: a miss may pay for a listing, a hit
     // never does.
     refreshOnMiss: true,
-  });
+  };
+  const found = boost
+    ? await retrieveCandidates(store, { seed: { query }, intent: "search", variant: boost, scope, moveJobs: activeLogicalMoves, search: searchOptions })
+    : await searchIndexedNotes(store, searchOptions);
   answered();
 
   if (found.indexed) {
@@ -216,6 +226,7 @@ export async function searchVisibleNotes(store, scope, rules, overrides, query, 
     trace.set("matches", found.matchCount);
     trace.set("matchesIsFloor", Boolean(found.matchCountIsFloor));
     trace.set("index", found.index);
+    if (boost) trace.set("graph", { boost, incomplete: found.graphIncomplete });
     // Read before the maintenance pass is started, because starting it spends
     // its first op synchronously — this number is what the caller waited for,
     // and folding the background half into it would make the trace unable to
@@ -234,6 +245,7 @@ export async function searchVisibleNotes(store, scope, rules, overrides, query, 
       reducedRecall: Boolean(found.reducedRecall),
       reducedRecallNotes: found.reducedRecallNotes ?? [],
       degraded: false,
+      ...(boost && { graphIncomplete: found.graphIncomplete }),
     };
   }
 

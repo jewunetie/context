@@ -47,9 +47,10 @@ const baseName = (path) => path.slice(path.lastIndexOf("/") + 1).replace(/\.md$/
  * empty. A seed the caller cannot see gets the empty answer with no store op.
  * An encrypted body yields incoming only (OPEN-32, arch 7.6). `bodyOnly`
  * returns the body's own outgoing links and unresolved references and reads
- * nothing.
+ * nothing. `occurrences`, when given, stands in for the body's references
+ * (search reads them from the seed's node record, not its body, Task 29).
  */
-export async function graphNeighbors(store, budget, { path, body, catalog, canSeeKey, scope, limits, bodyOnly = false }) {
+export async function graphNeighbors(store, budget, { path, body, catalog, canSeeKey, scope, limits, bodyOnly = false, occurrences = undefined }) {
   // A throwing canSeeKey counts as not visible (the never-throws contract).
   if (!(await Promise.resolve().then(() => canSeeKey(path)).catch(() => false))) {
     return { incoming: new Map(), outgoing: new Map(), sharedTargets: new Map(), sharedUrls: new Map(), unresolved: [], complete: false, health: unavailableHealth(store) };
@@ -58,8 +59,8 @@ export async function graphNeighbors(store, budget, { path, body, catalog, canSe
   const unresolved = [];
   const targets = [];
   const urls = [];
-  if (!isEncryptedNote(body)) {
-    for (const occ of extractReferences(body)) {
+  if (occurrences || !isEncryptedNote(body)) {
+    for (const occ of occurrences ?? extractReferences(body)) {
       const r = resolveReference(occ, path, catalog);
       if (r.state === "resolved") {
         if (r.path === path) continue;

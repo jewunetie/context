@@ -236,17 +236,6 @@ async function maintainNow(store, budget, isIndexable, found, visibilityOf, opti
     // projection still gets its turn below, because a failed listing is not a
     // reason to stop copying the notes that were already indexed.
   }
-  // Housekeeping on the same side of the response: it never changes the pass's
-  // outcome, so a failure here is swallowed like the sync's above. `collectShardRevisions`
-  // refuses any manifest that is not the v3 layout (while v3 builds, the sync
-  // returns the v2 one), so nothing is listed or deleted then.
-  try {
-    if (budget.remaining > GC_BUDGET_FLOOR + reserve) {
-      await collectShardRevisions(store, budget, { manifest: synced?.manifest, now: Date.now(), reserve });
-    }
-  } catch {
-    // Unreferenced revisions only cost storage; the next pass tries again.
-  }
   if (projecting) {
     try {
       await projectAfterSync(store, budget, synced, visibilityOf, options);
@@ -255,7 +244,7 @@ async function maintainNow(store, budget, isIndexable, found, visibilityOf, opti
       // failure into a reported code; this is the belt to that pair of braces.
     }
   }
-  // The link graph last, on what search and D1 left, over the census this
+  // The link graph next, on what search and D1 left, over the census this
   // sync just produced. A derivative: its failure changes nothing above. Not
   // on the inline path (`backfillOps` set: no `waitUntil`, someone waiting).
   // WRITE_ENRICH_SUBREQUEST_BUDGET=0 is the graph's kill switch: the write
@@ -279,6 +268,19 @@ async function maintainNow(store, budget, isIndexable, found, visibilityOf, opti
     } catch {
       // Reconciliation repairs it on a later pass.
     }
+  }
+  // Housekeeping last, after the graph: superseded revisions only cost storage,
+  // so the graph (correctness) gets the budget first. It never changes the pass's
+  // outcome, so a failure here is swallowed like the sync's above. `collectShardRevisions`
+  // refuses any manifest that is not the v3 layout (while v3 builds, the sync
+  // returns the v2 one), so nothing is listed or deleted then.
+  // Nothing runs after it, so no `reserve` is kept back (the projection's ran above).
+  try {
+    if (budget.remaining > GC_BUDGET_FLOOR) {
+      await collectShardRevisions(store, budget, { manifest: synced?.manifest, now: Date.now() });
+    }
+  } catch {
+    // Unreferenced revisions only cost storage; the next pass tries again.
   }
 }
 

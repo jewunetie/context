@@ -63,6 +63,8 @@ import {
 } from "../src/search/shards.js";
 import { createSearchBudget } from "../src/search/maintain.js";
 import { maintainIndexAfter } from "../src/search/maintenance.js";
+import { GRAPH_PASS_FLOOR } from "../src/search/pacing.js";
+import { GRAPH_PREFIX } from "../../../packages/shared/src/storageLayout.cjs";
 import { withLogicalDelete } from "../src/store/logicalDelete.js";
 import { memoryBucket } from "./store/fixtures.mjs";
 
@@ -314,6 +316,38 @@ test("maintenance below the budget floor does not collect", async () => {
   await maintain(bucket, 6);
   for (const key of stale) assert.ok(bucket.objects.has(key), "superseded revision kept when the budget is thin");
   assert.ok(!bucket.listed.includes(V3_SHARD_PREFIX) || bucket.deleted.length === 0);
+});
+
+test("maintenance runs the graph pass before collection when v3 is served and only one fits", async () => {
+  let contested = 0;
+  for (let total = 20; total <= 90; total += 1) {
+    const { bucket } = await withSupersededRevision();
+    await bucket.put("notes/n1.md", "# Note 1\n\n[n2](./n2.md) another rewrite\n");
+    const budget = createSearchBudget(total);
+    // Ops left when the sync is done: recorded at the first graph or GC op,
+    // whose own op the budget has already taken.
+    let afterSync = null;
+    let graphRan = false;
+    let collected = false;
+    const mark = (key) => {
+      const graph = typeof key === "string" && key.startsWith(GRAPH_PREFIX);
+      if (afterSync === null && (graph || key === GC_STATE_KEY)) afterSync = budget.remaining + 1;
+      graphRan ||= graph;
+      collected ||= key === GC_STATE_KEY;
+    };
+    for (const op of ["get", "put", "delete"]) {
+      const inner = bucket[op];
+      bucket[op] = async (key, ...rest) => (mark(key), inner(key, ...rest));
+    }
+    const deferred = [];
+    bucket.defer = (promise) => deferred.push(promise);
+    await maintainIndexAfter(bucket, budget, isIndexable, null, undefined);
+    await Promise.all(deferred);
+    if (afterSync === null || afterSync < GRAPH_PASS_FLOOR) continue;
+    if (afterSync < GRAPH_PASS_FLOOR + 3) contested += 1;
+    assert.ok(graphRan, `budget ${total}: ${afterSync} left after the sync, the graph pass ran (collected: ${collected})`);
+  }
+  assert.ok(contested > 0, "a budget that fits the graph pass but not the graph pass after collection was exercised");
 });
 
 test("a garbage-collection failure does not change the maintenance result", async () => {

@@ -621,9 +621,10 @@ test("owner write: one link listing, labels for the note and an anyone-linked fo
   const plainStore = asStore(await bucketWith());
   const plain = await write(plainStore, LABEL_ARGS);
   const store = asStore(await bucketWith());
-  const calls = withLinks(store, async () => [{ entryPath: "notes", audience: "anyone" }]);
+  const calls = withLinks(store, async () => [{ entryPath: "notes", audience: "anyone" }, { entryPath: "notes/fog.md", audience: "name" }, { entryPath: "notes/survey.md", audience: "email" }]);
   const result = await write(store, LABEL_ARGS);
   assert.deepEqual(calls, ["list"]);
+  assert.ok(!result.content[0].text.includes("shared outside team"), "an anyone link wins over a name or email one");
   const text = result.content[0].text;
   // A link opens only what the team can read, so the private note under the
   // linked folder is not shared publicly; its team neighbour is.
@@ -639,8 +640,9 @@ test("owner write: one link listing, labels for the note and an anyone-linked fo
 
 test("a teammate's write makes no link listing and never says shared publicly; a failed listing labels nothing", async () => {
   const store = asStore(await bucketWith());
-  const calls = withLinks(store, async () => [{ entryPath: "notes", audience: "anyone" }]);
+  const calls = withLinks(store, async () => [{ entryPath: "notes", audience: "anyone" }, { entryPath: "notes/fog.md", audience: "email" }]);
   const result = await write(store, LABEL_ARGS, { scope: "team" });
+  assert.ok(!result.content[0].text.includes("shared outside team"), result.content[0].text);
   assert.equal(result.isError, undefined, result.content[0].text);
   assert.deepEqual(calls, []);
   assert.equal(blockOf(result).status, "ready");

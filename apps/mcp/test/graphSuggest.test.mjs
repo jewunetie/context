@@ -39,6 +39,12 @@
  *   public label without the team-visibility check                          1 (shared publicly)
  *   members links counted as public                                         1 (shared publicly)
  *   fit keeping the note label on an emptied block                          1 (fit)
+ * Shared outside team (owner decision 2026-10-07; 4 failing before the change):
+ *   anyone link not winning over name/email                                 1 (outside team)
+ *   members links counted as outside                                        2
+ *   email shares not counted                                                1 (outside team)
+ *   listing read for a teammate                                             2
+ *   no team-visibility check                                                2, writeSuggestions 1
  */
 
 import assert from "node:assert/strict";
@@ -169,9 +175,10 @@ test("a ready block: text matches by section, with excerpt, signals and the etag
     excerpt: "kestrel harbor survey results from the coast",
     visibility: "team",
     sharedPublicly: false,
+    sharedOutsideTeam: false,
     linkBack: true,
   });
-  assert.deepEqual(block.note, { visibility: "team", sharedPublicly: false });
+  assert.deepEqual(block.note, { visibility: "team", sharedPublicly: false, sharedOutsideTeam: false });
   assert.equal(byPath["far/away/fog.md"].section, "Lighthouse");
   assert.ok(!paths(block).includes("far/away/none.md"));
   const text = renderLinkSuggestions(block);
@@ -602,7 +609,7 @@ const byPath = (b) => Object.fromEntries(b.candidates.map((c) => [c.path, c]));
 test("labels: the written note and every candidate carry their visibility (private, team, @group)", async () => {
   const store = await world(GROUPED);
   const block = await suggest(store, { path: "private/seed.md", committed: GROUPED["private/seed.md"], sections: HARBOR, canSeeKey: owner });
-  assert.deepEqual(block.note, { visibility: "private", sharedPublicly: false });
+  assert.deepEqual(block.note, { visibility: "private", sharedPublicly: false, sharedOutsideTeam: false });
   const got = byPath(block);
   assert.deepEqual(Object.keys(got).sort(), ["grp/same.md", "other/text.md", "private/mine.md"]);
   assert.equal(got["grp/same.md"].visibility, "@grp");
@@ -624,13 +631,13 @@ test("shared publicly: the owner's block labels a note or folder with an active 
   ];
   const run = (publicLinks, extra = {}) => suggest(store, { committed: BASE[SEED], sections: SECTIONS, canSeeKey: owner, publicLinks, ...extra });
   const shared = await run(Promise.resolve(links));
-  assert.deepEqual(shared.note, { visibility: "team", sharedPublicly: true });
+  assert.deepEqual(shared.note, { visibility: "team", sharedPublicly: true, sharedOutsideTeam: false });
   assert.equal(byPath(shared)["other/text.md"].sharedPublicly, true);
   assert.equal(byPath(shared)["far/away/fog.md"].sharedPublicly, false);
   // A link opens only what the team can read: a private note under an anyone-linked folder is not shared.
   const privStore = await world(GROUPED);
   const priv = await suggest(privStore, { path: "private/seed.md", committed: GROUPED["private/seed.md"], sections: HARBOR, canSeeKey: owner, publicLinks: [{ entryPath: "private", audience: "anyone" }, { entryPath: "grp", audience: "anyone" }] });
-  assert.deepEqual(priv.note, { visibility: "private", sharedPublicly: false });
+  assert.deepEqual(priv.note, { visibility: "private", sharedPublicly: false, sharedOutsideTeam: false });
   assert.equal(byPath(priv)["private/mine.md"].sharedPublicly, false);
   assert.equal(byPath(priv)["grp/same.md"].sharedPublicly, false);
   const text = renderLinkSuggestions(shared);
@@ -696,4 +703,32 @@ test("4 KiB cap holds with the longest group name (longer than \"team, shared pu
   const rendered = renderLinkSuggestions(block);
   assert.ok(bytes(rendered) <= SUGGESTION_BYTE_CAP, `${bytes(rendered)} bytes`);
   assert.equal(rendered.split("\n").length, 4);
+});
+
+test("shared outside team: name and email links label it for the owner; an anyone link wins; members links and teammates never", async () => {
+  const store = await world(BASE);
+  const links = [
+    { entryPath: "other", audience: "name" },
+    { entryPath: "far", audience: "email" },
+    { entryPath: "far/away/fog.md", audience: "anyone" },
+    { entryPath: SEED, audience: "members" },
+  ];
+  const run = (extra = {}) => suggest(store, { committed: BASE[SEED], sections: SECTIONS, canSeeKey: owner, publicLinks: links, ...extra });
+  const block = await run();
+  assert.deepEqual(block.note, { visibility: "team", sharedPublicly: false, sharedOutsideTeam: false });
+  const got = byPath(block);
+  assert.deepEqual([got["other/text.md"].sharedPublicly, got["other/text.md"].sharedOutsideTeam], [false, true]);
+  assert.deepEqual([got["far/away/fog.md"].sharedPublicly, got["far/away/fog.md"].sharedOutsideTeam], [true, false]);
+  const text = renderLinkSuggestions(block);
+  assert.ok(text.includes("- other/text.md (\"Harbor\"; text_match) [team, shared outside team;"), text);
+  assert.ok(text.includes("- far/away/fog.md (\"Lighthouse\"; text_match) [team, shared publicly;"), text);
+  const byEmail = byPath(await run({ publicLinks: [{ entryPath: "other/text.md", audience: "email" }] }));
+  assert.equal(byEmail["other/text.md"].sharedOutsideTeam, true, "an email share counts as well as a name share");
+  // Same rule as public: a private note under a name-shared folder is not labelled.
+  const priv = await suggest(await world(GROUPED), { path: "private/seed.md", committed: GROUPED["private/seed.md"], sections: HARBOR, canSeeKey: owner, publicLinks: [{ entryPath: "private", audience: "email" }] });
+  assert.equal(byPath(priv)["private/mine.md"].sharedOutsideTeam, false);
+  const teammate = await run({ canSeeKey: team, scope: "team" });
+  assert.equal(teammate.status, "ready");
+  assert.ok(!JSON.stringify(teammate).includes('"sharedOutsideTeam":true'), JSON.stringify(teammate));
+  assert.ok(!renderLinkSuggestions(teammate).includes("shared outside team"));
 });

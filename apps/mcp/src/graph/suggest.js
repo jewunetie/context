@@ -55,12 +55,14 @@ const GUIDANCE =
  * `anyone` link opens it or a folder above it and it is team-visible (a link
  * never opens a narrower note); it is read only for scope
  * `private` (the owner), so a teammate's block never carries the label, and a
- * listing that fails or is not an array labels nothing. `linkBack` holds when
+ * listing that fails or is not an array labels nothing. `sharedOutsideTeam`
+ * is the same rule for `name` and `email` links (a specific outside person),
+ * false whenever `sharedPublicly` holds. `linkBack` holds when
  * the writer may edit the candidate (write_note's destination rule, no read)
  * and every reader of the candidate may read the written note.
  */
 export async function suggestLinks(store, scope, args, budget, clock) {
-  const block = (status, candidates = []) => fit({ status, basedOnEtag: args?.etag ?? null, candidates });
+  const block = (status) => fit({ status, basedOnEtag: args?.etag ?? null, candidates: [] });
   try {
     const { path, committed, sections, audience, canSeeKey, isIndexable, publicLinks } = args;
     // Handled now, awaited only once there are candidates: a listing that
@@ -152,16 +154,20 @@ export async function suggestLinks(store, scope, args, budget, clock) {
       }
     }
     if (picked.size > 0) {
-      const shared = publicEntries(await listing);
+      const links = await listing;
+      const anyone = entries(links, ["anyone"]);
+      const outside = entries(links, ["name", "email"]);
       const visible = (key) => effectiveVisibility(key, audience.rules, audience.overrides);
       // A link opens only what the team can read (a wider locator, never a wider tier).
-      const isShared = (key) => visible(key) === "team" && shared.some((e) => key === e || key.startsWith(`${e}/`));
+      const covered = (list, key) => visible(key) === "team" && list.some((e) => key === e || key.startsWith(`${e}/`));
+      // An anyone link wins: a note with both is "shared publicly" only.
+      const labels = (key) => ({ sharedPublicly: covered(anyone, key), sharedOutsideTeam: !covered(anyone, key) && covered(outside, key) });
       const editable = (key) => writesOneRule(key) && (scope === "private" || visible(key) === "team");
-      const note = { visibility: visible(path), sharedPublicly: isShared(path) };
+      const note = { visibility: visible(path), ...labels(path) };
       const candidates = [...picked.values()].map((c) => ({
         ...c,
         visibility: visible(c.path),
-        sharedPublicly: isShared(c.path),
+        ...labels(c.path),
         linkBack: editable(c.path) && audienceOf(c.path, audience)(path),
       }));
       return fit({ status: incomplete ? "partial" : "ready", basedOnEtag: args.etag ?? null, note, candidates });
@@ -189,10 +195,10 @@ function untilDeadline(store, expired) {
   });
 }
 
-/** The entry paths of `anyone` links in a share-link listing; anything else is none. */
-function publicEntries(links) {
+/** The entry paths of links with one of `audiences` in a share-link listing; anything else is none. */
+function entries(links, audiences) {
   if (!Array.isArray(links)) return [];
-  return links.filter((l) => l?.audience === "anyone" && typeof l.entryPath === "string" && l.entryPath !== "").map((l) => l.entryPath.replace(/\/+$/, ""));
+  return links.filter((l) => audiences.includes(l?.audience) && typeof l.entryPath === "string" && l.entryPath !== "").map((l) => l.entryPath.replace(/\/+$/, ""));
 }
 
 /** Who may be offered as a link target from `path`: every reader of it may read it. */
@@ -211,7 +217,7 @@ function audienceOf(path, { rules, overrides }) {
  */
 export function renderLinkSuggestions({ status, note, candidates }) {
   if (candidates.length === 0) return `Link suggestions: ${status}.`;
-  const label = (x) => `${x.visibility}${x.sharedPublicly ? ", shared publicly" : ""}`;
+  const label = (x) => `${x.visibility}${x.sharedPublicly ? ", shared publicly" : x.sharedOutsideTeam ? ", shared outside team" : ""}`;
   const line = (c) =>
     `- ${escape(c.path)} (${c.section === null ? "opening text" : quote(c.section)}; ${c.signals.join(", ")}) [${label(c)}; link to it from this note${c.linkBack ? ", or back from it" : ""}]${c.excerpt === null ? "" : `: ${quote(c.excerpt)}`}`;
   return [`Link suggestions (${status}): this note is ${label(note)}. ${GUIDANCE}`, ...candidates.map(line)].join("\n");

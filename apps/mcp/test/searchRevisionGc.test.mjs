@@ -36,6 +36,10 @@
  *   cursor bounds in `readState` removed (cursor 100k long or with a newline) 1
  *   (`retained` count bound and `isKeyList(current)` removal: 0 failing, the
  *   per-entry checks reject the same inputs; the bounds only cap size)
+ *
+ *   Fix round 2:
+ *   state size cap removed from the read (over-cap state read with text())   1
+ *   whole-pass budget check removed (read and list without a state write)    1
  */
 
 import assert from "node:assert/strict";
@@ -45,6 +49,7 @@ import {
   REVISION_RETENTION_MS,
   GC_BUDGET_FLOOR,
   GC_STATE_KEY,
+  GC_STATE_MAX_BYTES,
   collectShardRevisions,
 } from "../src/search/shards/gc.js";
 import { writerFor } from "../src/search/shards/revisions.js";
@@ -552,4 +557,55 @@ test("a revision superseded seconds ago is kept however old its upload; collecte
   const done = await collectShardRevisions(bucket, createSearchBudget(100), { manifest: after, now: NOW + REVISION_RETENTION_MS + 1000 });
   assert.equal(done.deleted, superseded.length);
   for (const key of superseded) assert.ok(!bucket.objects.has(key));
+});
+
+// -- fix round 2: a size cap on the state read, the whole pass fits or nothing runs --
+
+test("a stored state over the size cap is never read with text() and counts as no state", async () => {
+  const { bucket, manifest, stale } = await withSupersededRevision();
+  // A valid state with a cursor, so reading it would change what is listed.
+  const state = JSON.parse(bucket.objects.get(GC_STATE_KEY).body);
+  await bucket.put(GC_STATE_KEY, JSON.stringify({ ...state, cursor: `${V3_SHARD_PREFIX}zzz` }));
+  const get = bucket.get.bind(bucket);
+  for (const [size, read] of [
+    [GC_STATE_MAX_BYTES + 1, false],
+    [GC_STATE_MAX_BYTES, true],
+  ]) {
+    let texts = 0;
+    bucket.get = async (key) => {
+      const object = await get(key);
+      if (key !== GC_STATE_KEY || !object) return object;
+      return { ...object, size, text: async () => ((texts += 1), object.text()) };
+    };
+    bucket.cursors.length = 0;
+    const report = await collectShardRevisions(bucket, createSearchBudget(100), { manifest, now: NOW });
+    assert.equal(texts, read ? 1 : 0, `size ${size}`);
+    assert.deepEqual(bucket.cursors, [read ? `${V3_SHARD_PREFIX}zzz` : undefined], `size ${size}`);
+    if (!read) {
+      assert.equal(report.deleted, 0, "no state protects everything for one window");
+      for (const key of stale) assert.ok(bucket.objects.has(key));
+    }
+    bucket.get = get;
+    await bucket.put(GC_STATE_KEY, JSON.stringify({ ...state, cursor: `${V3_SHARD_PREFIX}zzz` }));
+  }
+});
+
+test("a budget that cannot cover read, list and state write touches the store not at all", async () => {
+  const { bucket, manifest } = await withSupersededRevision();
+  const ops = [];
+  for (const name of ["get", "head", "exists", "list", "put", "delete"].filter((name) => bucket[name])) {
+    const original = bucket[name].bind(bucket);
+    bucket[name] = async (...args) => (ops.push(name), original(...args));
+  }
+  const before = bucket.objects.get(GC_STATE_KEY).body;
+  const short = createSearchBudget(GC_BUDGET_FLOOR + 2);
+  await collectShardRevisions(bucket, short, { manifest, now: NOW + 1000 });
+  assert.deepEqual(ops, [], "no read and no list when the state write would not fit");
+  assert.equal(short.spent, 0);
+
+  const enough = createSearchBudget(GC_BUDGET_FLOOR + 3);
+  await collectShardRevisions(bucket, enough, { manifest, now: NOW + 1000 });
+  assert.deepEqual(ops, ["get", "list", "put"]);
+  assert.notEqual(bucket.objects.get(GC_STATE_KEY).body, before, "the pass persists its state");
+  assert.equal(JSON.parse(bucket.objects.get(GC_STATE_KEY).body).observedAt, NOW + 1000);
 });

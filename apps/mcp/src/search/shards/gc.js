@@ -64,6 +64,12 @@ export const GC_STATE_KEY = `${SEARCH_PREFIX}v3/gc.json`;
 const MAX_KEYS = 512;
 const MAX_RETAINED = 8;
 const MAX_CURSOR = 1024;
+/**
+ * The largest state those bounds allow serializes to about 250 KiB (nine full
+ * key lists and a cursor of escaped surrogates); a larger object is not one this
+ * code wrote, so it is never buffered.
+ */
+export const GC_STATE_MAX_BYTES = 256 * 1024;
 
 const REVISION_NAME = /^\d{3}-[0-9a-f]{16}\.json$/;
 
@@ -103,13 +109,17 @@ function readState(text) {
 /** Entries still inside their window, plus the one this observation adds. */
 function retainedAt(state, current, now) {
   const kept = (state?.retained || []).filter((entry) => now - entry.at < REVISION_RETENTION_MS);
+  // lean: only the set current at the last observation is retained, ceiling: a
+  // revert to an older revision between passes is unprotected, upgrade: record
+  // every key named since the last observation.
   if (!state) kept.push({ at: now, after: 0, keys: [] });
   else if (state.current.length !== current.length || state.current.some((key, i) => key !== current[i])) {
     kept.push({ at: now, after: state.observedAt, keys: state.current });
   }
   if (kept.length <= MAX_RETAINED) return kept;
-  // Never drop protection: fold the oldest entries into one that is later and
-  // wider than all of them.
+  // Fold the oldest entries into one that is later and wider than all of them.
+  // lean: the fold keeps at most 512 keys, ceiling: protection can drop after 9+
+  // manifest changes in one window, upgrade: a larger fold or a time per key.
   const [first, ...rest] = kept.slice(0, kept.length - MAX_RETAINED + 1);
   const folded = rest.reduce(
     (all, entry) => ({ at: Math.max(all.at, entry.at), after: Math.min(all.after, entry.after), keys: [...new Set([...all.keys, ...entry.keys])] }),
@@ -133,9 +143,10 @@ export async function collectShardRevisions(store, budget, { manifest, now = Dat
   const report = { deleted: 0, kept: 0, failed: 0 };
   if (!manifest || manifest.layout !== V3_LAYOUT || !Array.isArray(manifest.shards)) return report;
   const floor = GC_BUDGET_FLOOR + reserve;
-  if (!budget.take(floor)) return report;
+  // A read and a listing whose state write cannot follow make no progress.
+  if (budget.remaining < floor + 3 || !budget.take(floor)) return report;
   const stored = await store.get(GC_STATE_KEY);
-  const state = stored ? readState(await stored.text()) : null;
+  const state = stored && !(stored.size > GC_STATE_MAX_BYTES) ? readState(await stored.text()) : null;
 
   const current = [...new Set(manifest.shards.filter(Boolean).map((entry) => entry.key))].filter(isRevisionKey).sort();
   const referenced = new Set(manifest.shards.filter(Boolean).map((entry) => entry.key));

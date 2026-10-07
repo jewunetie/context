@@ -165,6 +165,26 @@ a reviewer.
   bit and the withheld graph bit, budgets 0..80", "a hidden edit that leaves
   the index behind does not drop the seed's rooted links" and "limit applies
   after canSee: hidden strong matches do not reduce the visible count".
+  Move jobs are read first, fail closed (Task 17 fix round 1): candidates are
+  physical paths and read_note answers through the move overlay, so every
+  candidate under an active job's source or destination is withheld and the
+  answer is labelled possibly incomplete; unreadable job state, or a budget
+  too small to read it, gives the empty answer. Whether a move is active, and
+  how many job markers there are to read, is one more workspace-level bit.
+  The tests are "a note under an active move's source or destination is
+  withheld, and the answer is labelled" and "an unreadable move job withholds
+  every candidate; a seed under a move gets nothing".
+  Every job marker is read, whatever the active-move sentinel says, and
+  outside the retrieval budget: the same reads read_note's overlay makes, so
+  related_notes, link suggestions and indexed moves withhold exactly the
+  moves read_note answers through (fix round 3; a sentinel gate tried in
+  round 2 could be removed by a racing refresh before a new move's marker
+  landed). A finished move's marker delete is a logical-delete tombstone that
+  nothing removes, so related_notes and indexed moves pay one unbudgeted read
+  per historical move, like read_note; the answer does not change with move
+  history. The tests are `relatedNotesTool.test.mjs` "one active move plus
+  100 finished ones" and "a refresh racing a new move's first sentinel", and
+  `moveSentinel.test.mjs`.
 
 **What reversing it costs.** Phase 3 backlinks, related notes, and
 index-assisted move repair all read this index; they cannot be built on a

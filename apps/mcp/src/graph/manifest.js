@@ -99,17 +99,19 @@ export async function publishHealth(store, budget, manifest, etag, patch) {
  * moves read to choose index over scan: only a conditional-mode, ready, fully
  * swept graph with no rebuild hint. A best-effort answer is never complete,
  * and a manifest labelled with any version newer than the running code's
- * reads as unavailable (arch 9.6).
+ * reads as unavailable (arch 9.6). `coveredThrough` is set only when
+ * `complete` is.
  */
 export async function graphHealth(store, budget) {
   const manifest = await loadGraphManifest(store, budget);
   // A manifest from newer code: this code cannot vouch for anything it says.
   if (!manifest || isNewer(manifest)) {
-    return { state: "unavailable", generation: null, building: null, mode: graphMode(store), possiblyIncomplete: true, complete: false };
+    return { state: "unavailable", generation: null, building: null, mode: graphMode(store), possiblyIncomplete: true, complete: false, coveredThrough: null };
   }
   // Either side best-effort means writes may have been unconditional.
   const mode = manifest.mode === "conditional" && graphMode(store) === "conditional" ? "conditional" : "best-effort";
-  const { state, sweepComplete, rebuildHint } = manifest.health;
+  const { state, sweepComplete, rebuildHint, sweepCensusAt } = manifest.health;
+  const complete = mode === "conditional" && state === "ready" && sweepComplete === true && !rebuildHint;
   return {
     state,
     generation: manifest.generation,
@@ -117,6 +119,9 @@ export async function graphHealth(store, budget) {
     building: manifest.building?.generation ?? null,
     mode,
     possiblyIncomplete: mode === "best-effort" || state !== "ready",
-    complete: mode === "conditional" && state === "ready" && sweepComplete === true && !rebuildHint,
+    complete,
+    // The listing time of the census the last complete sweep started on
+    // (reconcile.js): every note listed before it is in the postings.
+    coveredThrough: complete ? sweepCensusAt ?? null : null,
   };
 }

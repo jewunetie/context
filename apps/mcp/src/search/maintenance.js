@@ -253,6 +253,7 @@ async function maintainNow(store, budget, isIndexable, found, visibilityOf, opti
       await reconcileGraph(graphView(store, budget), budget, {
         census: censusFromManifest(synced.manifest),
         censusComplete: !synced.listingTruncated && Boolean(freshness?.listedAt) && !freshness?.truncated,
+        censusListedAt: freshness?.listedAt,
         removedHints: synced.removed || [],
         isIndexable,
         now: Date.now(),

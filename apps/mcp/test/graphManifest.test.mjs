@@ -45,7 +45,7 @@ const ready = (s, extra = {}) => s.put(graphManifestKey(), JSON.stringify({ ...s
 
 test("no manifest is unavailable", async () => {
   const h = await graphHealth(cond(), big());
-  assert.deepEqual(h, { state: "unavailable", generation: null, building: null, mode: "conditional", possiblyIncomplete: true, complete: false });
+  assert.deepEqual(h, { state: "unavailable", generation: null, building: null, mode: "conditional", possiblyIncomplete: true, complete: false, coveredThrough: null });
 });
 
 test("an unparseable manifest is unavailable", async () => {
@@ -99,7 +99,7 @@ test("conditional ready sweep with no hint is complete", async () => {
   const s = cond();
   await init(s);
   await ready(s);
-  assert.deepEqual(await graphHealth(s, big()), { state: "ready", generation: "1", building: null, mode: "conditional", possiblyIncomplete: false, complete: true });
+  assert.deepEqual(await graphHealth(s, big()), { state: "ready", generation: "1", building: null, mode: "conditional", possiblyIncomplete: false, complete: true, coveredThrough: null });
 });
 
 test("ready but not swept, or with a rebuild hint, is not complete", async () => {
@@ -210,4 +210,41 @@ test("a hostile manifest with extra or wrong-typed fields cannot claim complete"
   assert.equal((await graphHealth(s, big())).complete, false);
   await s.put(graphManifestKey(), JSON.stringify({ ...stored(s), mode: "turbo" }));
   assert.equal((await graphHealth(s, big())).state, "unavailable");
+});
+
+const AT = "2026-01-01T00:05:00.000Z";
+
+test("coveredThrough is the stored sweepCensusAt when complete; a manifest without it parses and reports null", async () => {
+  const s = cond();
+  await init(s);
+  await ready(s);
+  assert.equal((await graphHealth(s, big())).coveredThrough, null, "old manifest, no field");
+  await ready(s, { sweepCensusAt: AT });
+  assert.equal((await graphHealth(s, big())).coveredThrough, AT);
+});
+
+test("coveredThrough is null whenever complete is false", async () => {
+  const s = cond();
+  await init(s);
+  for (const extra of [{ state: "behind" }, { state: "partial" }, { sweepComplete: false }, { rebuildHint: "reconcile" }]) {
+    await ready(s, { sweepCensusAt: AT, ...extra });
+    const h = await graphHealth(s, big());
+    assert.equal(h.complete, false, JSON.stringify(extra));
+    assert.equal(h.coveredThrough, null, JSON.stringify(extra));
+  }
+  const b = best();
+  await init(b, "best-effort");
+  await ready(b, { sweepCensusAt: AT });
+  assert.equal((await graphHealth(b, big())).coveredThrough, null, "best-effort");
+});
+
+test("a sweepCensusAt that is not an ISO time or null makes the manifest unparseable", async () => {
+  const s = cond();
+  await init(s);
+  for (const bad of [0, 1767225900000, "", "yesterday", {}]) {
+    await ready(s, { sweepCensusAt: bad });
+    assert.equal((await graphHealth(s, big())).state, "unavailable", JSON.stringify(bad));
+  }
+  await ready(s, { sweepCensusAt: null });
+  assert.equal((await graphHealth(s, big())).complete, true);
 });

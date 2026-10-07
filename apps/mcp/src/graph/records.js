@@ -40,6 +40,7 @@ export async function recordText(got) {
 }
 
 const isObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+export const isIsoTime = (v) => typeof v === "string" && Number.isFinite(Date.parse(v)) && new Date(Date.parse(v)).toISOString() === v;
 const isGen = (v) => typeof v === "string" && /^[0-9]+$/.test(v);
 const MODES = ["conditional", "best-effort"];
 const HEALTH_STATES = ["ready", "behind", "unavailable", "partial"];
@@ -51,6 +52,8 @@ export function parseManifest(text) {
   const { generation, building, mode, health } = value;
   if (!isGen(generation) || !MODES.includes(mode)) return null;
   if (!isObject(health) || !HEALTH_STATES.includes(health.state)) return null;
+  // Absent (older manifests) or null, else an ISO time Task 14 subtracts from.
+  if (health.sweepCensusAt !== undefined && health.sweepCensusAt !== null && !isIsoTime(health.sweepCensusAt)) return null;
   if (building !== null && !(isObject(building) && isGen(building.generation) && typeof building.startedAt === "string")) return null;
   return value;
 }

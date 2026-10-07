@@ -48,7 +48,7 @@ import { initGraphManifest, publishHealth, readGraphManifest } from "./manifest.
 import { graphMode, writeHeadroom } from "./mode.js";
 import { setMembership } from "./postings.js";
 import { projectNote, readNode, removeNote, validateEntry } from "./project.js";
-import { parseNode, parsePage, recordText } from "./records.js";
+import { isIsoTime, parseNode, parsePage, recordText } from "./records.js";
 import { BUDGET_EXHAUSTED } from "../search/budget.js";
 import {
   GC_FAILURE_LIMIT, abandonCollect, collectGarbage, cutover, isNewer, matchesCode, needsRebuild, startRebuild,
@@ -80,9 +80,11 @@ const capped = (budget, keep) => ({
 // `recheck`: the building generation's last wrap was clean; the next clean one
 // cuts over once `auditWrapped` says an audit listing begun since then ended.
 // `gcFailures`: consecutive passes whose GC page failed. `gcCursor`: where
-// the GC listing of `collect` resumes (rebuild.js).
+// the GC listing of `collect` resumes (rebuild.js). `sweepCensusAt`: the
+// listing time of the census this sweep started on, "" when unknown or when
+// any pass of it ran on an incomplete census (Task 13).
 const freshCursor = () => ({
-  sweepCursor: "", sweepStartedAt: "", auditCursor: "", sweepPending: false, turn: 0,
+  sweepCursor: "", sweepStartedAt: "", sweepCensusAt: "", auditCursor: "", sweepPending: false, turn: 0,
   recheck: false, auditWrapped: false, gcFailures: 0, gcCursor: "",
 });
 
@@ -105,6 +107,7 @@ async function readCursor(store, budget, gen) {
     ? {
         sweepCursor: value.sweepCursor,
         sweepStartedAt: value.sweepStartedAt,
+        sweepCensusAt: isIsoTime(value.sweepCensusAt) ? value.sweepCensusAt : "",
         auditCursor: value.auditCursor,
         sweepPending: value.sweepPending,
         turn: Number.isInteger(value.turn) && value.turn > 0 ? value.turn % 4 : 0,
@@ -176,7 +179,14 @@ const isCurrent = (node, version) =>
 
 async function sweep(store, budget, ctx, cursor, out) {
   const paths = [...ctx.census.keys()].filter(ctx.isIndexable).sort();
-  if (cursor.sweepCursor === "" && cursor.sweepStartedAt === "") cursor.sweepStartedAt = new Date(ctx.now).toISOString();
+  if (cursor.sweepCursor === "" && cursor.sweepStartedAt === "") {
+    cursor.sweepStartedAt = new Date(ctx.now).toISOString();
+    // Its earliest census, not the wrapping one: a note swept on this pass and
+    // edited before the wrap is not revisited, so coverage ends here.
+    cursor.sweepCensusAt = ctx.censusComplete && isIsoTime(ctx.censusListedAt) ? ctx.censusListedAt : "";
+  } else if (!ctx.censusComplete) {
+    cursor.sweepCensusAt = ""; // paths this census lacked were skipped
+  }
   for (const path of paths) {
     if (path <= cursor.sweepCursor) continue;
     const version = ctx.census.get(path);
@@ -352,12 +362,13 @@ async function garbage(store, budget, manifest, cursor) {
 }
 
 /**
- * One bounded reconciliation pass. Returns `{ projected, pending,
+ * One bounded reconciliation pass. `censusListedAt` is the census's listing
+ * time (the search manifest's `freshness.listedAt`). Returns `{ projected, pending,
  * sweepComplete, cutover? }` (internal, never printed to a caller).
  * `sweepComplete` is true when this pass wrapped the sweep over a complete
  * census; `cutover` is true when it swapped to the building generation.
  */
-export async function reconcileGraph(store, budget, { census, censusComplete, removedHints = [], isIndexable, now }) {
+export async function reconcileGraph(store, budget, { census, censusComplete, censusListedAt, removedHints = [], isIndexable, now }) {
   const out = { projected: 0, pending: 0, sweepComplete: false };
   const mode = graphMode(store);
   let { manifest, etag, absent } = await readGraphManifest(store, budget);
@@ -374,7 +385,7 @@ export async function reconcileGraph(store, budget, { census, censusComplete, re
   if (!read) return out;
   const { cursor } = read;
   const before = JSON.stringify(cursor);
-  const ctx = { census, isIndexable, gen, mode, now, verdicts: new Map() };
+  const ctx = { census, censusComplete, censusListedAt, isIndexable, gen, mode, now, verdicts: new Map() };
   const cursorOnlyIf = mode === "conditional" ? { onlyIf: read.etag ? { etagMatches: read.etag } : { absent: true } } : undefined;
   const reserve = wrapReserve(store, mode, cursorOnlyIf);
   const work = capped(budget, reserve);
@@ -405,7 +416,8 @@ export async function reconcileGraph(store, budget, { census, censusComplete, re
     if (censusComplete) {
       // Ready only when the whole wrap found nothing pending.
       const state = cursor.sweepPending ? "behind" : "ready";
-      const health = { sweepComplete: true, lastSweepAt: new Date(now).toISOString(), state };
+      // Always written, so a wrap with no provable time clears an older one.
+      const health = { sweepComplete: true, lastSweepAt: new Date(now).toISOString(), sweepCensusAt: cursor.sweepCensusAt || null, state };
       if (!building) {
         // A build here was started by newer code (or by another worker since
         // this pass began): this generation is about to be replaced, so it
@@ -428,7 +440,7 @@ export async function reconcileGraph(store, budget, { census, censusComplete, re
     } else {
       cursor.recheck = false;
     }
-    Object.assign(cursor, { sweepCursor: "", sweepStartedAt: "", sweepPending: false });
+    Object.assign(cursor, { sweepCursor: "", sweepStartedAt: "", sweepCensusAt: "", sweepPending: false });
   }
   if (JSON.stringify(cursor) !== before && budget.take()) {
     // A refused write means another pass moved the cursor; this one is dropped.

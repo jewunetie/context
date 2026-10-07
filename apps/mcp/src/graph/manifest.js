@@ -102,12 +102,13 @@ export async function publishHealth(store, budget, manifest, etag, patch) {
  * reads as unavailable (arch 9.6). `coveredThrough` is set only when
  * `complete` is.
  */
+export const unavailableHealth = (store) =>
+  ({ state: "unavailable", generation: null, building: null, mode: graphMode(store), possiblyIncomplete: true, complete: false, coveredThrough: null });
+
 export async function graphHealth(store, budget) {
   const manifest = await loadGraphManifest(store, budget);
   // A manifest from newer code: this code cannot vouch for anything it says.
-  if (!manifest || isNewer(manifest)) {
-    return { state: "unavailable", generation: null, building: null, mode: graphMode(store), possiblyIncomplete: true, complete: false, coveredThrough: null };
-  }
+  if (!manifest || isNewer(manifest)) return unavailableHealth(store);
   // Either side best-effort means writes may have been unconditional.
   const mode = manifest.mode === "conditional" && graphMode(store) === "conditional" ? "conditional" : "best-effort";
   const { state, sweepComplete, rebuildHint, sweepCensusAt } = manifest.health;

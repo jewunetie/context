@@ -179,13 +179,17 @@ const isCurrent = (node, version) =>
 
 async function sweep(store, budget, ctx, cursor, out) {
   const paths = [...ctx.census.keys()].filter(ctx.isIndexable).sort();
+  // A pass whose census is incomplete or carries no time (the caller passes
+  // none while search has notes pending) voids the sweep's time: the paths or
+  // versions that census lacked were skipped.
+  const timed = ctx.censusComplete && isIsoTime(ctx.censusListedAt);
   if (cursor.sweepCursor === "" && cursor.sweepStartedAt === "") {
     cursor.sweepStartedAt = new Date(ctx.now).toISOString();
     // Its earliest census, not the wrapping one: a note swept on this pass and
     // edited before the wrap is not revisited, so coverage ends here.
-    cursor.sweepCensusAt = ctx.censusComplete && isIsoTime(ctx.censusListedAt) ? ctx.censusListedAt : "";
-  } else if (!ctx.censusComplete) {
-    cursor.sweepCensusAt = ""; // paths this census lacked were skipped
+    cursor.sweepCensusAt = timed ? ctx.censusListedAt : "";
+  } else if (!timed) {
+    cursor.sweepCensusAt = "";
   }
   for (const path of paths) {
     if (path <= cursor.sweepCursor) continue;
@@ -416,8 +420,12 @@ export async function reconcileGraph(store, budget, { census, censusComplete, ce
     if (censusComplete) {
       // Ready only when the whole wrap found nothing pending.
       const state = cursor.sweepPending ? "behind" : "ready";
-      // Always written, so a wrap with no provable time clears an older one.
-      const health = { sweepComplete: true, lastSweepAt: new Date(now).toISOString(), sweepCensusAt: cursor.sweepCensusAt || null, state };
+      // Always written, so a wrap with no provable time clears an older one. A
+      // stored time later than this pass's census (a hostile or skewed
+      // cursor) is not provable either.
+      const started = cursor.sweepCensusAt;
+      const provable = started !== "" && isIsoTime(censusListedAt) && Date.parse(started) <= Date.parse(censusListedAt);
+      const health = { sweepComplete: true, lastSweepAt: new Date(now).toISOString(), sweepCensusAt: provable ? started : null, state };
       if (!building) {
         // A build here was started by newer code (or by another worker since
         // this pass began): this generation is about to be replaced, so it

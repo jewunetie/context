@@ -11,13 +11,21 @@
  * ## Sabotage record
  *
  * Run as temporary local edits and reverted. Counts are failing tests in this
- * file plus graphManifest.test.mjs.
+ * file plus graphManifest.test.mjs, measured in fix round 1 (the round-0
+ * record was off by one: "record now" also failed the no-time test).
  *
- *   record the wall clock (`now`) instead of the census time            5
- *   record the wrapping pass's census time instead of the starting one  2 (spanning, truncated)
- *   a truncated pass mid-sweep does not void the recorded time          1 (truncated; measured 0
- *                                                                         before its third case)
- *   maintainNow does not pass the census listing time                   1 (maintainNow)
+ *   record the wall clock (`now`) instead of the census time            6
+ *   record the wrapping pass's census time instead of the starting one  4 (spanning, truncated,
+ *                                                                         no-time, future cursor)
+ *   a truncated pass mid-sweep does not void the recorded time          1 (truncated)
+ *   a pass with no census time mid-sweep does not void it               1 (no-time)
+ *   maintainNow passes no census time                                   1 (maintainNow)
+ *   maintainNow passes the time while search has notes pending          1 (pending)
+ *   maintainNow lets the sync stamp listedAt at the end of the pass     1 (mid-pass edit)
+ *   wrap publishes a cursor time later than its own census              1 (future cursor)
+ *   wrap does not reset sweepCensusAt                                   1 (wrap cursor; the next
+ *                                                                         sweep start overwrites it,
+ *                                                                         so only the cursor shows it)
  *   graphHealth reports coveredThrough when not complete                1 (graphManifest)
  *   parseManifest accepts any sweepCensusAt                             1 (graphManifest)
  */
@@ -28,6 +36,7 @@ import { test } from "node:test";
 import { reconcileGraph } from "../src/graph/reconcile.js";
 import { graphHealth, loadGraphManifest } from "../src/graph/manifest.js";
 import { maintenanceCursorKey } from "../src/graph/keys.js";
+import { readNode } from "../src/graph/project.js";
 import { createSearchBudget, defaultIsIndexable } from "../src/search/maintain.js";
 import { maintainIndexAfter } from "../src/search/maintenance.js";
 import { loadIndexManifest } from "../src/search/shards/io.js";
@@ -140,4 +149,128 @@ test("maintainNow records the search manifest's freshness.listedAt", async () =>
   const listedAt = (await loadIndexManifest(b, big(), 0)).freshness.listedAt;
   assert.equal(typeof listedAt, "string");
   assert.equal((await graphHealth(b, big())).coveredThrough, listedAt);
+});
+
+// Fix round 1 (review 1): every source of a too-late time.
+
+const maintained = (b) => {
+  const deferred = [];
+  const store = Object.assign(Object.create(b), { defer: (p) => deferred.push(p) });
+  return async () => {
+    await maintainIndexAfter(store, createSearchBudget(400), defaultIsIndexable, null);
+    await Promise.all(deferred.splice(0));
+  };
+};
+async function seedMoved(b) {
+  await seed(b, 5);
+  await b.put("a.md", "[old](./target.md)");
+  await b.put("target.md", "t");
+}
+const aNode = async (b) => (await readNode(b, big(), (await loadGraphManifest(b, big())).generation, "a.md")).old;
+
+test("a note search could not fetch (freshness.pending > 0) never lets coveredThrough pass its edit", async () => {
+  const b = bucket();
+  await seedMoved(b);
+  const run = maintained(b);
+  for (let i = 0; i < 8 && !(await graphHealth(b, big())).complete; i += 1) await run();
+  await run();
+  assert.equal((await graphHealth(b, big())).complete, true, "converged");
+  await new Promise((r) => setTimeout(r, 5));
+  const editedAt = new Date().toISOString();
+  await b.put("a.md", "[new](./elsewhere.md)");
+  const currentEtag = b.objects.get("a.md").etag;
+  await new Promise((r) => setTimeout(r, 5));
+  let fail = 1;
+  const realGet = b.get.bind(b);
+  b.get = async (k) => {
+    if (k === "a.md" && fail > 0) {
+      fail -= 1;
+      throw new Error("transient");
+    }
+    return realGet(k);
+  };
+  for (let i = 0; i < 3; i += 1) {
+    fail = 1;
+    await run();
+  }
+  assert.ok((await loadIndexManifest(b, big(), 0)).freshness.pending > 0, "search left a.md pending");
+  const h = await graphHealth(b, big());
+  const node = await aNode(b);
+  assert.ok(!(h.complete && h.coveredThrough > editedAt && node.observedSourceVersion !== currentEtag),
+    "coveredThrough is after a.md's edit while its node holds the pre-edit content");
+});
+
+test("an edit after the listing but before the pass ends is not behind coveredThrough", async () => {
+  const b = bucket();
+  const uploadedAt = new Map();
+  const realPut = b.put.bind(b);
+  b.put = async (k, v, o) => {
+    const r = await realPut(k, v, o);
+    if (r) uploadedAt.set(k, new Date());
+    return r;
+  };
+  const realList = b.list.bind(b);
+  let afterList = null;
+  b.list = async (opts) => {
+    const out = await realList(opts);
+    out.objects = out.objects.map((o) => ({ ...o, etag: b.objects.get(o.key)?.etag, uploaded: uploadedAt.get(o.key) ?? o.uploaded }));
+    if (afterList && !(opts?.prefix || "").startsWith(".context")) {
+      const f = afterList;
+      afterList = null;
+      await f();
+    }
+    return out;
+  };
+  await seedMoved(b);
+  const run = maintained(b);
+  for (let i = 0; i < 8 && !(await graphHealth(b, big())).complete; i += 1) await run();
+  await run();
+  assert.equal((await graphHealth(b, big())).complete, true, "converged");
+  let editedAt = null;
+  afterList = async () => {
+    await b.put("a.md", "[new](./elsewhere.md)");
+    editedAt = uploadedAt.get("a.md").toISOString();
+    await new Promise((r) => setTimeout(r, 20));
+  };
+  await run();
+  assert.ok(editedAt, "the edit landed mid-pass");
+  const h = await graphHealth(b, big());
+  const node = await aNode(b);
+  assert.ok(!(h.complete && h.coveredThrough > editedAt && node.occurrences[0].target === "./target.md"),
+    "a.md was edited before coveredThrough while its node holds the pre-edit references");
+});
+
+test("a mid-sweep cursor time later than the wrapping census is never published", async () => {
+  const b = bucket();
+  await seed(b, 5);
+  for (let i = 0; i < 6 && !(await graphHealth(b, big())).complete; i += 1) await pass(b, big(), at(0));
+  const cur = cursor(b);
+  await b.put(maintenanceCursorKey("1"), JSON.stringify({ ...cur, sweepCursor: "n000.md", sweepStartedAt: "x", sweepCensusAt: "2099-01-01T00:00:00.000Z" }));
+  await pass(b, big(), at(0));
+  assert.notEqual((await graphHealth(b, big())).coveredThrough, "2099-01-01T00:00:00.000Z");
+  assert.equal((await health(b)).sweepCensusAt, null);
+});
+
+test("a pass mid-sweep with no census time voids the sweep's time", async () => {
+  const b = bucket();
+  await seed(b, 40);
+  await pass(b, big(), at(0));
+  for (const [key] of [...b.objects].filter(([k]) => defaultIsIndexable(k))) await b.put(key, `${b.objects.get(key).body} edited`);
+  assert.equal((await pass(b, createSearchBudget(15), at(1))).sweepComplete, false);
+  assert.equal(cursor(b).sweepCensusAt, at(1));
+  assert.equal((await pass(b, createSearchBudget(15), undefined)).sweepComplete, false);
+  assert.equal(cursor(b).sweepCensusAt, "", "a pass without a time voids it");
+  let wrapped = false;
+  for (let i = 3; i < 400 && !wrapped; i += 1) wrapped = (await pass(b, createSearchBudget(15), at(i))).sweepComplete;
+  assert.ok(wrapped);
+  assert.equal((await health(b)).sweepCensusAt, null);
+});
+
+test("the cursor a wrap leaves names no sweep time", async () => {
+  const b = bucket();
+  await seed(b, 3);
+  const out = await pass(b, big(), at(0));
+  assert.equal(out.sweepComplete, true);
+  assert.equal((await health(b)).sweepCensusAt, at(0));
+  assert.deepEqual([cursor(b).sweepCursor, cursor(b).sweepStartedAt, cursor(b).sweepCensusAt], ["", "", ""]);
 });

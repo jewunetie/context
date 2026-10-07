@@ -221,9 +221,13 @@ async function maintainNow(store, budget, isIndexable, found, visibilityOf, opti
       ? Math.min(D1_PASS_RESERVE_CAP, Math.floor(budget.remaining / 4))
       : 0;
   let synced = null;
+  // Taken before the listing, so `freshness.listedAt` is never later than it:
+  // the graph records it as coverage (Task 13), and an edit landing during the
+  // pass must sort at or after it.
+  const startedAt = Date.now();
   try {
     if (syncingIndex) {
-      synced = await syncShardedIndex(store, { budget, isIndexable, reserve, ...options });
+      synced = await syncShardedIndex(store, { budget, isIndexable, reserve, now: startedAt, ...options });
     }
   } catch {
     // A storage failure after the answer is already out changes nothing about
@@ -253,7 +257,9 @@ async function maintainNow(store, budget, isIndexable, found, visibilityOf, opti
       await reconcileGraph(graphView(store, budget), budget, {
         census: censusFromManifest(synced.manifest),
         censusComplete: !synced.listingTruncated && Boolean(freshness?.listedAt) && !freshness?.truncated,
-        censusListedAt: freshness?.listedAt,
+        // Only a census with nothing pending names a time: a note search
+        // could not fetch keeps its old version there, so the sweep skips it.
+        censusListedAt: freshness?.pending === 0 ? freshness.listedAt : undefined,
         removedHints: synced.removed || [],
         isIndexable,
         now: Date.now(),

@@ -12,7 +12,7 @@ import { URL_KEY_VERSION, urlKey } from "./urlKey.js";
 export const PARSER_VERSION = 1;
 export const RESOLVER_VERSION = 1;
 
-const baseName = (path) => path.slice(path.lastIndexOf("/") + 1).replace(/\.md$/, "");
+export const baseName = (path) => path.slice(path.lastIndexOf("/") + 1).replace(/\.md$/, "");
 
 /**
  * Ask `resolveLink` for both answers at once: the path it computes for a

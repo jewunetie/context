@@ -35,7 +35,7 @@ import { toolCreateForm } from "../src/tools/forms/tools.js";
 import { toolMoveNote } from "../src/tools/moves/note.js";
 import { toolArchiveNote } from "../src/tools/moves/archive.js";
 import { initGraphManifest } from "../src/graph/manifest.js";
-import { nodeKey, pathHash } from "../src/graph/keys.js";
+import { graphManifestKey, nodeKey, pathHash } from "../src/graph/keys.js";
 import { parseNode } from "../src/graph/records.js";
 import { createSearchBudget } from "../src/search/maintain.js";
 import { WRITE_ENRICH_SUBREQUEST_BUDGET, writeEnrichBudgetFor } from "../src/search/budget.js";
@@ -227,6 +227,8 @@ test("moves and archive do not call the hook (left to reconciliation)", async ()
   const archived = await toolArchiveNote(store, "private", [{ prefix: "archive", vis: "private" }], new Map(), "notes/m2.md");
   assert.equal(moved.isError, undefined, JSON.stringify(moved));
   assert.equal(archived.isError, undefined, JSON.stringify(archived));
-  assert.equal(store.ops.length, before);
+  // Task 14: a move reads the manifest to choose the index or the scan; it
+  // never projects, so that read is the only graph op.
+  assert.deepEqual(store.ops.slice(before), [["get", graphManifestKey()], ["get", graphManifestKey()]]);
   assert.equal(graphKeys(store).length, keysBefore);
 });

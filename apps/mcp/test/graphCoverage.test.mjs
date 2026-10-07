@@ -35,7 +35,8 @@ import { test } from "node:test";
 
 import { reconcileGraph } from "../src/graph/reconcile.js";
 import { graphHealth, loadGraphManifest } from "../src/graph/manifest.js";
-import { maintenanceCursorKey } from "../src/graph/keys.js";
+import { graphManifestKey, maintenanceCursorKey } from "../src/graph/keys.js";
+import { RESOLVER_VERSION } from "../src/graph/facts.js";
 import { readNode } from "../src/graph/project.js";
 import { createSearchBudget, defaultIsIndexable } from "../src/search/maintain.js";
 import { maintainIndexAfter } from "../src/search/maintenance.js";
@@ -273,4 +274,29 @@ test("the cursor a wrap leaves names no sweep time", async () => {
   assert.equal(out.sweepComplete, true);
   assert.equal((await health(b)).sweepCensusAt, at(0));
   assert.deepEqual([cursor(b).sweepCursor, cursor(b).sweepStartedAt, cursor(b).sweepCensusAt], ["", "", ""]);
+});
+
+test("a rebuild cutover publishes the start census of the building generation's own last sweep", async () => {
+  const b = bucket();
+  await seed(b, 40);
+  await pass(b, big(), at(0));
+  assert.equal((await health(b)).sweepCensusAt, at(0));
+  // An older resolver on the manifest: the next pass starts building generation 2.
+  const m = JSON.parse(b.objects.get(graphManifestKey()).body);
+  await b.put(graphManifestKey(), JSON.stringify({ ...m, resolverVersion: RESOLVER_VERSION - 1 }));
+  const building = () => JSON.parse(b.objects.get(maintenanceCursorKey("2"))?.body ?? "{}");
+  let startedAt = null;
+  for (let i = 1; i < 2000; i += 1) {
+    const c = building();
+    if (!c.sweepCursor && !c.sweepStartedAt) startedAt = i;
+    await pass(b, createSearchBudget(15), at(i));
+    if (JSON.parse(b.objects.get(graphManifestKey()).body).generation !== "2") continue;
+    assert.notEqual(startedAt, i, "the cutover sweep spanned passes");
+    assert.equal((await health(b)).sweepCensusAt, at(startedAt));
+    const h = await graphHealth(b, big());
+    assert.equal(h.complete, true);
+    assert.equal(h.coveredThrough, at(startedAt));
+    return;
+  }
+  assert.fail("no cutover to 2");
 });

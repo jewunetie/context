@@ -472,7 +472,6 @@ export async function route(request, env, ctx) {
         targetStore.searchSubrequestBudget = searchBudgetFor(env);
         targetStore.writeEnrichBudget = writeEnrichBudgetFor(env);
         targetStore.writeEnrichPool = store.writeEnrichPool;
-        targetStore.protocolVersion = store.protocolVersion;
         attachGatewayJobQueue(targetStore, target, controlPlane, env);
         attachLinkCalls(targetStore, target, controlPlane, env);
         targetStore.defer = store.defer;

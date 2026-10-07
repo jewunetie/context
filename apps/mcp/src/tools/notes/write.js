@@ -34,7 +34,7 @@ import { isPersonalCommunicationsPath, normalizePath } from "../../notes/paths.j
 import { parseFormBlocks } from "../../forms.js";
 import { pathUnderActiveMovedSource } from "../../moves/jobs.js";
 import { persistExactVisibility, UNWRITABLE_PATH_REFUSAL, writesOneRule } from "../../privacy/state.js";
-import { projectNoteAfterWriteDeferred, suggestAfterWrite } from "../../graph/afterWrite.js";
+import { claimEnrichment, GRAPH_FLOOR, projectNoteAfterWriteDeferred, suggestAfterWrite } from "../../graph/afterWrite.js";
 import { renderLinkSuggestions } from "../../graph/suggest.js";
 import { createSearchBudget } from "../../search/maintain.js";
 import { WRITE_ENRICH_SUBREQUEST_BUDGET } from "../../search/budget.js";
@@ -457,12 +457,15 @@ export async function toolWriteNote(store, scope, rules, overrides, args, option
   // the write (P5, AGENT-LINKS 13.6): link suggestions first, for the plain
   // write_note call only (OPEN-37), then the link graph's derivative of the
   // committed body on what remains. The budget is the invocation's pool where
-  // the route made one, so a batch of writes shares one ceiling. Budget 0
-  // turns both off, block included.
+  // the route made one, so a batch of writes shares one ceiling, and every
+  // write keeps its graph floor in it until its graph update has run. A
+  // configured budget with nothing above that floor runs no suggestions and
+  // shows no block (a configuration, not a result); budget 0 turns the graph
+  // off as well.
   const enrich = store.writeEnrichBudget ?? WRITE_ENRICH_SUBREQUEST_BUDGET;
-  const budget = store.writeEnrichPool ?? createSearchBudget(enrich);
+  const claim = claimEnrichment(store.writeEnrichPool ?? createSearchBudget(enrich));
   const suggestions =
-    options.linkSuggestions === true && enrich > 0
+    options.linkSuggestions === true && enrich > GRAPH_FLOOR
       ? await suggestAfterWrite(store, scope, rules, overrides, {
           path,
           etag: put.etag,
@@ -472,11 +475,14 @@ export async function toolWriteNote(store, scope, rules, overrides, args, option
           // (its plaintext is never a query); none for a drawing's machine data.
           before: isDrawingPath(path) || (storedBody !== null && isEncryptedNote(storedBody)) ? undefined : base ? base.text : storedBody ?? "",
           committed: collaborationResult?.text ?? content,
-        }, budget, options.now)
+        }, claim.suggestions, options.now)
       : null;
-  await projectNoteAfterWriteDeferred(store, { path, body, version: put.etag, budget });
+  await projectNoteAfterWriteDeferred(store, { path, body, version: put.etag, budget: claim.graph }, claim.release);
   // Whether this created the note, for the live map's "pops in" (`live/activityHint.js`).
-  const result = toolText(
+  // The block rides in the text only, for every revision (fix round 1): a
+  // client that prefers structuredContent would otherwise show its model the
+  // block and drop the write's own lines.
+  return withActivityHint(toolText(
     `written: ${path} (etag ${put.etag})\nvisibility: ${desiredVisibility}` +
       (publishedForLink
         ? " (published to this workspace so the link can open it; the answers note keeps its own visibility)"
@@ -494,12 +500,7 @@ export async function toolWriteNote(store, scope, rules, overrides, args, option
       (shareLines.length ? `\n${shareLines.join("\n")}` : "") +
       (statusLine === null ? "" : `\n${statusLine}`) +
       (suggestions ? `\n${renderLinkSuggestions(suggestions)}` : ""),
-  );
-  // OPEN-43: the same block as data for revisions that define structuredContent.
-  if (suggestions && store.protocolVersion >= "2025-06-18") {
-    result.structuredContent = { saved: { path, etag: put.etag }, linkSuggestions: suggestions };
-  }
-  return withActivityHint(result, { created: !existing });
+  ), { created: !existing });
 }
 
 async function prepareAttachedImages(path, content, images, storedBody) {

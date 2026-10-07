@@ -23,6 +23,7 @@ import { canSee, effectiveVisibility } from "../privacy/engine.js";
 import { extractReferences, indexByName, resolveReference } from "../links.js";
 import { exceedsUtf8Bytes } from "../search/maintain.js";
 import { retrieveCandidates } from "./retrieve.js";
+import { activeMoveJobsOrNull } from "../moves/jobs.js";
 
 export const MAX_CANDIDATES = 3;
 // The whole rendered block, guidance included, in UTF-8 bytes (P6).
@@ -78,6 +79,9 @@ export async function suggestLinks(store, scope, args, budget, clock) {
       take: (reserve = 0) => !expired() && budget.take(reserve),
     };
 
+    // Move jobs once for every section (outside the budget, as retrieval reads
+    // them), not once per section: each read is one op per historical move.
+    const moveJobs = await activeMoveJobsOrNull(timedStore);
     const lists = [];
     let incomplete = false;
     let completed = false;
@@ -94,6 +98,7 @@ export async function suggestLinks(store, scope, args, budget, clock) {
         budget: clocked,
         scope,
         excludeLinked: true,
+        moveJobs,
       });
       if (late) {
         incomplete = true;

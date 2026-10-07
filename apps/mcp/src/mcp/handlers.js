@@ -71,15 +71,15 @@ export async function handleMcp(request, store, session) {
     );
   }
 
-  // The negotiated revision, for tools whose result shape depends on it
-  // (write_note's structuredContent, OPEN-43). A legacy client after
-  // 2025-03-26 sends it on every request; without it, 2025-03-26 is assumed.
-  store.protocolVersion = request.headers.get("MCP-Protocol-Version") ?? "2025-03-26";
-
   // JSON-RPC batching was removed in 2025-06-18 and never existed in the modern
   // era. It survives here only for `2024-11-05` and `2025-03-26`, which are
   // still in `LEGACY_PROTOCOLS` and did define it.
   if (Array.isArray(body)) {
+    // Every call in the batch may be a write whose graph update needs its
+    // floor of the invocation's enrichment pool, so earlier writes' link
+    // suggestions leave it (graph/afterWrite.js claimEnrichment).
+    // lean: counts every tools/call, reads included, so a mixed batch holds back more than it needs.
+    if (store.writeEnrichPool) store.writeEnrichPool.upcoming = body.filter((m) => m?.method === "tools/call").length;
     const results = [];
     for (const msg of body) {
       const r = await handleRpc(msg, store, session);
@@ -143,7 +143,6 @@ async function handleModernMcp(request, msg, store, session) {
     );
   }
 
-  store.protocolVersion = requested;
   const params = msg.params || {};
   try {
     switch (msg.method) {

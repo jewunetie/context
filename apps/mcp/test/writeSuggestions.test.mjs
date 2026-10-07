@@ -33,6 +33,19 @@
  *   more than 40 for two sections); `before` taken from the stored body on a
  *   collaborative note (the stored Markdown equals the merged document here).
  *
+ * Fix round 1 (each new test red first against 91fcec88; counts span this
+ * file, graphSuggest, graphRetrieve and remember):
+ *   the MCP handler does not announce a batch's calls                       1 (JSON-RPC batch)
+ *   upcoming calls left out of the reserve                                  3 (batch, pool, claim views)
+ *   a claim never released after its graph update                           3 (batch, pool, claim views)
+ *   a fixed 40-op cap put back on suggestions                               1 (claim views)
+ *   block shown when the budget has nothing above the floor                 1 (configuration)
+ *   structuredContent put back on the result                                5 (tools/call, appended-only checks)
+ *   move jobs not passed to each section's retrieval                        4 (graphSuggest: read once, unreadable once, budget, CPU deadline)
+ *   a null job list treated as unread (read again)                          1 (graphSuggest: unreadable once)
+ * (Rows above this round's predate it; the structuredContent row there is
+ * superseded: no revision gets structuredContent now.)
+ *
  * RED: 14 of 15 failed before the wiring (the op-bound test passed: the
  * graph hook was already bounded), and the remember check failed on its
  * positive control.
@@ -44,7 +57,7 @@ import { after, before, test } from "node:test";
 import worker from "../src/index.js";
 import { callTool } from "../src/tools/dispatch.js";
 import { toolWriteNote } from "../src/tools/notes/write.js";
-import { renderLinkSuggestions } from "../src/graph/suggest.js";
+import { claimEnrichment } from "../src/graph/afterWrite.js";
 import { initGraphManifest } from "../src/graph/manifest.js";
 import { graphManifestKey, nodeKey, pathHash } from "../src/graph/keys.js";
 import { parseNode } from "../src/graph/records.js";
@@ -99,7 +112,6 @@ function asStore(bucket, { budget = 80, hook = () => {} } = {}) {
   const store = {
     capabilities: bucket.capabilities,
     actor: { workspaceId: WS, userId: "u_owner" },
-    protocolVersion: "2025-06-18",
     writeEnrichBudget: budget,
     log: [],
     objects: bucket.objects,
@@ -119,7 +131,22 @@ function asStore(bucket, { budget = 80, hook = () => {} } = {}) {
 const write = (store, args, { scope = "private", overrides = new Map(), suggest = true, now } = {}) =>
   toolWriteNote(store, scope, RULES, overrides, args, suggest ? { linkSuggestions: true, ...(now && { now }) } : {});
 const textOf = (result) => result.content[0].text.replace(/etag [^)\s]+/g, "etag E");
-const blockOf = (result) => result.structuredContent?.linkSuggestions;
+/**
+ * The appended block read back from the text, the only place it is carried
+ * (fix round 1: no structuredContent): `{ status, candidates: [{ path, section }] }`.
+ */
+function blockOf(result) {
+  const text = result.content[0].text;
+  const at = text.indexOf("\nLink suggestions");
+  if (at < 0) return undefined;
+  const [head, ...lines] = text.slice(at + 1).split("\n");
+  const status = /^Link suggestions(?: \((\w+)\):|: (\w+)\.$)/.exec(head);
+  assert.ok(status, head);
+  return {
+    status: status[1] ?? status[2],
+    candidates: lines.map((line) => ({ path: /^- (\S+) \(/.exec(line)[1], section: /^- \S+ \("((?:[^"\\]|\\.)*)"/.exec(line)?.[1] ?? null })),
+  };
+}
 const paths = (block) => block.candidates.map((c) => c.path);
 const etagOf = (result) => /etag ([^)\s]+)/.exec(result.content[0].text)[1];
 const searchOps = (store) => store.log.filter((op) => op.includes(".context/search/"));
@@ -130,15 +157,14 @@ const enrichOps = (store) => store.log.filter((op) => !op.includes(".context/mov
 const audited = (s) => String(s).replace(/\.context\/audit\/[^"\s]+\.json/g, ".context/audit/A.json");
 const extraSearch = (on, off) => searchOps(on).length - searchOps(off).length;
 
-/** Today's result plus exactly one appended block, rendered from the structured one. */
+/** Today's result plus exactly one appended block, and no other field. */
 function assertAppended(result, baseline) {
   assert.equal(result.isError, undefined, result.content[0].text);
   const got = textOf(result);
   const want = textOf(baseline);
-  assert.ok(got.startsWith(`${want}\n`), `${got}\n---\n${want}`);
-  assert.equal(result.content[0].text.slice(baseline.content[0].text.length + 1), renderLinkSuggestions(blockOf(result)));
-  assert.deepEqual(result.structuredContent.saved, { path: /written: (\S+)/.exec(got)[1], etag: etagOf(result) });
-  assert.equal(blockOf(result).basedOnEtag, etagOf(result));
+  assert.ok(got.startsWith(`${want}\nLink suggestions`), `${got}\n---\n${want}`);
+  assert.ok(blockOf(result));
+  assert.deepEqual(Object.keys(result), Object.keys(baseline));
 }
 
 /** Every stored object outside the derived graph, with times and etags normalised. */
@@ -179,17 +205,17 @@ test("kill switch: budget 0 is today's result exactly, with no graph or search o
   assert.deepEqual(store.log.filter((op) => op.includes(".context/graph/")), []);
 });
 
-test("default budget 8: suggestions skip with no search op and the graph hook keeps its whole budget", async () => {
+test("a budget with nothing above the graph floor (configuration) omits the block; the write is today's exactly", async () => {
   const args = { path: "notes/new.md", content: `${TWO}See [[notes/fog]].\n` };
-  const plain = asStore(await bucketWith(), { budget: 8 });
-  const baseline = await write(plain, args, { suggest: false });
-  const store = asStore(await bucketWith(), { budget: 8 });
-  const result = await write(store, args);
-  assertAppended(result, baseline);
-  assert.equal(blockOf(result).status, "skipped");
-  assert.deepEqual(searchOps(store), searchOps(plain));
-  const graph = (s) => s.log.filter((op) => op.includes(".context/graph/"));
-  assert.deepEqual(graph(store), graph(plain));
+  for (const budget of [1, 8]) {
+    const plain = asStore(await bucketWith(), { budget });
+    const baseline = await write(plain, args, { suggest: false });
+    const store = asStore(await bucketWith(), { budget });
+    const result = await write(store, args);
+    assert.equal(textOf(result), textOf(baseline), `budget ${budget}`);
+    assert.deepEqual(Object.keys(result), Object.keys(baseline));
+    assert.deepEqual(store.log.map(audited), plain.log.map(audited), `budget ${budget}`);
+  }
 });
 
 test("a search store that throws: the write is today's and the block says so without failing it", async () => {
@@ -311,6 +337,51 @@ test("post-commit ops (suggestions plus graph) never exceed WRITE_ENRICH_SUBREQU
     const spent = enrichOps(store).length - floor;
     assert.ok(spent <= budget, `budget ${budget}: ${spent} ops after commit`);
   }
+});
+
+test("the shared pool keeps a graph floor for every write of a batch still to project: six writes at 80 all project", async () => {
+  const run = async (suggest) => {
+    const store = asStore(await bucketWith());
+    // A batch of six, as the MCP handler announces one.
+    store.writeEnrichPool = Object.assign(createSearchBudget(80), { upcoming: 6 });
+    const deferred = [];
+    store.defer = (promise) => deferred.push(promise);
+    const results = [];
+    for (let i = 0; i < 6; i += 1) {
+      const body = `# W${i}\n\n## Harbor\n\nThe kestrel harbor survey continues ${i} [[notes/survey]].\n\n## Fog\n\nThe lighthouse fog signal sounded ${i}.\n`;
+      results.push(await write(store, { path: `notes/w${i}.md`, content: body }, { suggest }));
+    }
+    await Promise.all(deferred);
+    const projected = [];
+    for (let i = 0; i < 6; i += 1) projected.push(store.objects.has(nodeKey("1", await pathHash(`notes/w${i}.md`))));
+    return { store, results, projected };
+  };
+  const off = await run(false);
+  assert.deepEqual(off.projected, [true, true, true, true, true, true], "control: without suggestions all six project");
+  const on = await run(true);
+  assert.deepEqual(on.projected, [true, true, true, true, true, true]);
+  assert.ok(on.results.every((r) => blockOf(r)), "every write carries a block");
+  assert.equal(blockOf(on.results[0]).status, "ready");
+  assert.ok(on.store.writeEnrichPool.spent <= 80);
+});
+
+test("suggestions get the pool minus every pending graph floor, with no fixed cap", async () => {
+  const pool = createSearchBudget(200);
+  const first = claimEnrichment(pool);
+  assert.equal(first.suggestions.remaining, 192);
+  const second = claimEnrichment(pool);
+  assert.equal(second.suggestions.remaining, 184, "two writes pending: two floors held back");
+  assert.equal(first.graph.remaining, 192, "a graph update may use everything but the other write's floor");
+  first.release();
+  assert.equal(second.suggestions.remaining, 192);
+  for (let i = 0; i < 300 && second.suggestions.take(); i += 1);
+  assert.equal(pool.remaining, 8, "the last pending floor is never taken by suggestions");
+  assert.equal(second.graph.remaining, 8);
+  // Calls announced but not yet made hold their floors too.
+  const batch = Object.assign(createSearchBudget(80), { upcoming: 6 });
+  const head = claimEnrichment(batch);
+  assert.equal(head.suggestions.remaining, 80 - 6 * 8);
+  assert.equal(head.graph.remaining, 80 - 5 * 8);
 });
 
 test("one invocation's pool bounds every write in it together", async () => {
@@ -444,35 +515,50 @@ async function post(headers, body) {
   );
   const parsed = JSON.parse(await response.text());
   await settle();
-  return parsed.result;
+  return parsed;
 }
 
-test("tools/call write_note: text block first; structuredContent.linkSuggestions from 2025-06-18 on only", async () => {
+test("tools/call write_note: the block is in the text for every revision, never structuredContent", async () => {
   const params = (path) => ({ name: "write_note", arguments: { path, content: "# Talk\n\nThe kestrel harbor survey continues.\n" } });
   const cases = [
-    { label: "legacy, no header (2025-03-26)", headers: {}, structured: false },
-    { label: "legacy 2025-06-18", headers: { "MCP-Protocol-Version": "2025-06-18" }, structured: true },
-    { label: "modern 2026-07-28", modern: "2026-07-28", structured: true },
+    { label: "legacy, no header (2025-03-26)", headers: {} },
+    { label: "legacy 2025-06-18", headers: { "MCP-Protocol-Version": "2025-06-18" } },
+    { label: "legacy 2025-11-25", headers: { "MCP-Protocol-Version": "2025-11-25" } },
+    { label: "modern 2026-07-28", modern: "2026-07-28" },
   ];
   for (const [i, c] of cases.entries()) {
     env.SUGGEST_BUCKET = await bucketWith();
     const path = `notes/talk${i}.md`;
     const result = c.modern
-      ? await post(
+      ? (await post(
           { "MCP-Protocol-Version": c.modern, "Mcp-Method": "tools/call", "Mcp-Name": "write_note" },
           { jsonrpc: "2.0", id: 1, method: "tools/call", params: { ...params(path), _meta: { "io.modelcontextprotocol/protocolVersion": c.modern } } },
-        )
-      : await post(c.headers, { jsonrpc: "2.0", id: 1, method: "tools/call", params: params(path) });
+        )).result
+      : (await post(c.headers, { jsonrpc: "2.0", id: 1, method: "tools/call", params: params(path) })).result;
     assert.equal(result.isError, undefined, `${c.label}: ${JSON.stringify(result)}`);
+    assert.equal(result.content.length, 1, c.label);
     assert.equal(result.content[0].type, "text", c.label);
-    assert.match(result.content[0].text, new RegExp(`^written: ${path} \\(etag [^)]+\\)\\nvisibility: private\\nLink suggestions`), c.label);
-    if (c.structured) {
-      const etag = /etag ([^)]+)\)/.exec(result.content[0].text)[1];
-      assert.deepEqual(result.structuredContent.saved, { path, etag }, c.label);
-      assert.equal(result.structuredContent.linkSuggestions.basedOnEtag, etag, c.label);
-      assert.ok(result.content[0].text.endsWith(renderLinkSuggestions(result.structuredContent.linkSuggestions)), c.label);
-    } else {
-      assert.equal(result.structuredContent, undefined, c.label);
-    }
+    assert.match(result.content[0].text, new RegExp(`^written: ${path} \\(etag [^)]+\\)\\nvisibility: private\\nLink suggestions \\(ready\\)`), c.label);
+    assert.equal(result.structuredContent, undefined, c.label);
   }
+});
+
+test("a legacy JSON-RPC batch of six writes at budget 80: every note projects and every write carries a block", async () => {
+  const notes = { ...CORPUS };
+  for (let i = 0; i < 40; i += 1) notes[`notes/n${i}.md`] = `kestrel harbor survey lighthouse fog ${i}`;
+  const bucket = await bucketWith(notes);
+  env.SUGGEST_BUCKET = bucket;
+  const body = (i) => `# W${i}\n\n## Harbor\n\nThe kestrel harbor survey continues ${i} [[notes/n${i}]].\n\n## Fog\n\nThe lighthouse fog signal sounded ${i}.\n`;
+  const batch = Array.from({ length: 6 }, (_, i) => ({
+    jsonrpc: "2.0",
+    id: i + 1,
+    method: "tools/call",
+    params: { name: "write_note", arguments: { path: `notes/w${i}.md`, content: body(i) } },
+  }));
+  const replies = await post({ "MCP-Protocol-Version": "2025-03-26" }, batch);
+  assert.equal(replies.length, 6);
+  for (const reply of replies) assert.match(reply.result.content[0].text, /\nLink suggestions/, JSON.stringify(reply));
+  const projected = [];
+  for (let i = 0; i < 6; i += 1) projected.push(bucket.objects.has(nodeKey("1", await pathHash(`notes/w${i}.md`))));
+  assert.deepEqual(projected, [true, true, true, true, true, true]);
 });

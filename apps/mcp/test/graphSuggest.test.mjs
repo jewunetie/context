@@ -44,6 +44,7 @@ import { canSee } from "../src/privacy/engine.js";
 import { createSearchBudget } from "../src/search/maintain.js";
 import { MANIFEST_KEY, shardKey, syncShardedIndex } from "../src/search/shards.js";
 import { withLogicalDelete } from "../src/store/logicalDelete.js";
+import { moveJobKey, refreshMoveSentinel, writeMoveSentinel } from "../src/moves/jobs.js";
 import { memoryBucket } from "./store/fixtures.mjs";
 
 const gen = "1";
@@ -430,8 +431,8 @@ test("budget.spent and the ops made never exceed the budget, budgets 0..80", asy
     const block = await suggest(c, { committed: BASE[SEED], sections: SECTIONS, budget });
     assert.ok(budget.spent <= B, `B=${B} spent ${budget.spent}`);
     assert.ok(c.ops - c.moveOps.length <= B, `B=${B} ops ${c.ops}`);
-    // One move-job listing per section retrieval run, nothing else outside the budget.
-    assert.ok(c.moveOps.every((k) => k === ".context/moves/") && c.moveOps.length <= SECTIONS.length, `B=${B} ${c.moveOps}`);
+    // One move-job listing per call (Task 23 fix round 1), nothing else outside the budget.
+    assert.ok(c.moveOps.every((k) => k === ".context/moves/") && c.moveOps.length <= 1, `B=${B} ${c.moveOps}`);
     assert.ok(["ready", "none", "skipped", "partial"].includes(block.status), block.status);
   }
 });
@@ -535,3 +536,34 @@ test("privacy invariance: for a team caller hidden notes change the block only b
   }
   assert.ok([...seen].some((o) => o.includes("g")), [...seen].join());
 }));
+
+test("move jobs are read once per call, not once per section: 50 finished moves cost two sections what they cost one", async () => {
+  const raw = await world(BASE);
+  raw.capabilities = { conditionalWrite: true, conditionalCreate: true, conditionalDelete: true };
+  const wrapped = withLogicalDelete(raw);
+  for (let i = 0; i < 50; i += 1) {
+    const id = `job-${String(i).padStart(13, "0")}`;
+    await writeMoveSentinel(wrapped);
+    await wrapped.put(moveJobKey(id), JSON.stringify({ version: 1, id, source: "x/a", destination: "x/b", objects: [], status: "complete" }));
+    await wrapped.delete(moveJobKey(id));
+    await refreshMoveSentinel(wrapped);
+  }
+  const one = counting(raw);
+  await suggest(withLogicalDelete(one), { committed: BASE[SEED], sections: [SECTIONS[0]] });
+  const two = counting(raw);
+  const block = await suggest(withLogicalDelete(two), { committed: BASE[SEED], sections: SECTIONS });
+  assert.ok(one.moveOps.length > 50, `${one.moveOps.length}`);
+  assert.deepEqual(two.moveOps, one.moveOps);
+  assert.equal(block.status, "ready");
+});
+
+test("unreadable move state withholds every section's candidates, read once", async () => {
+  const store = await world(BASE);
+  const c = counting(store, (n, m, args) => {
+    if (m === "list" && String(args[0]?.prefix).startsWith(".context/moves/")) throw new Error("moves down");
+  });
+  const block = await suggest(c, { committed: BASE[SEED], sections: SECTIONS });
+  assert.deepEqual(block.candidates, []);
+  assert.notEqual(block.status, "ready");
+  assert.deepEqual(c.moveOps, [".context/moves/"]);
+});

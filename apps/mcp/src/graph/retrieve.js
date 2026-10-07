@@ -109,9 +109,11 @@ const byScoreThenPath = (map) => [...map].sort(([a, x], [b, y]) => y - x || (a <
  * caps the relations (after authorization), `limits.expand` is graphNeighbors'.
  * `excludeLinked` drops the targets the seed already links to
  * (`linked_from_here`) before that cap, and widens the search by their number.
+ * `moveJobs`, if given, is `activeMoveJobsOrNull`'s answer already read for
+ * this call's caller (null withholds everything, as a failed read does).
  * A seed the caller cannot see gets the empty answer with no store op.
  */
-export async function retrieveCandidates(store, { seed, intent, canSeeKey, isIndexable, budget, limits, scope, excludeLinked = false }) {
+export async function retrieveCandidates(store, { seed, intent, canSeeKey, isIndexable, budget, limits, scope, excludeLinked = false, moveJobs }) {
   // Paths under an active logical move's source or destination (fix round 1).
   // Candidates are physical paths, and read_note answers for these through the
   // move overlay, so one moved into a private folder could be shown here at
@@ -137,7 +139,7 @@ export async function retrieveCandidates(store, { seed, intent, canSeeKey, isInd
   // candidate, and an active job labels the answer. Read on `store` itself,
   // outside the budget: the same reads read_note's overlay makes, so the jobs
   // withheld here are exactly the ones read_note answers through (fix round 3).
-  const jobs = await activeMoveJobsOrNull(store);
+  const jobs = moveJobs === undefined ? await activeMoveJobsOrNull(store) : moveJobs;
   if (jobs === null) return nothing;
   if (jobs.length) {
     moving = jobs;

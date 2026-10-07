@@ -259,3 +259,59 @@ behind the response of the write's own invocation, far inside 10 minutes. If
 that ever changes (a queued hook, a retry loop), raise the margin or read the
 nodes. Test: `moveIndexedReferrers.test.mjs`, "a node still owing
 reverseRepair, edited inside the margin, is read like the scan would".
+
+### Link suggestions ride write_note's text, on one enrichment budget (Task 23)
+
+After a plain `write_note` commits (never `remember`, comments or forms:
+dispatch alone passes `linkSuggestions`, OPEN-37), the changed sections seed
+`suggestLinks` and the block is appended to the existing text result
+(`apps/mcp/src/tools/notes/write.js`, `apps/mcp/src/graph/afterWrite.js`).
+
+**No `structuredContent` (fix round 1, reversing the OPEN-43
+recommendation).** The block is carried in the text block only, for every
+protocol revision. Some clients pass only `structuredContent` to the model
+when a result has one, which would hide the write's own lines (visibility,
+share, form and status) behind the suggestions, and the 2025-06-18 revision
+asks a tool that returns structured content to also return it serialized as
+text. **Reversible** once the target clients are confirmed to keep `content`
+beside `structuredContent`; the block's shape already exists
+(`suggestLinks`' `{ status, basedOnEtag, candidates }`). Test:
+`writeSuggestions.test.mjs`, "tools/call write_note: the block is in the text
+for every revision, never structuredContent".
+
+**The per-write budget model.** Suggestions and the write's graph update
+spend one enrichment pool: `WRITE_ENRICH_SUBREQUEST_BUDGET` per write, or,
+through the route, one pool for the whole invocation, so a legacy JSON-RPC
+batch shares a single ceiling (the agent loop makes no writes; its writes
+are proposals). Every write keeps `GRAPH_FLOOR` (8, the Task 8 default) of
+the pool for its graph update until that update has run, and the MCP handler
+announces a batch's calls in advance, so each one's floor is held before it
+starts; suggestions take only what exceeds every held floor, with no other
+cap. Consequences:
+
+- A configured budget at or under one floor (8, the default where the
+  variable is unset, as on a self-host) runs no suggestions and shows no
+  block: a configuration, not a result, and the write's text is unchanged.
+  `skipped` is kept for runtime causes (no eligible change, a pool spent by
+  earlier writes, the deadline). Budget 0 turns the graph off too.
+- A batch's later writes still project: earlier suggestions cannot take
+  their floors. Ceiling: the handler counts every `tools/call` in the batch,
+  reads included, so a mixed batch holds back more than it needs.
+- Tests: "a budget with nothing above the graph floor (configuration) omits
+  the block", "the shared pool keeps a graph floor for every write of a batch
+  still to project", "a legacy JSON-RPC batch of six writes at budget 80" and
+  "post-commit ops (suggestions plus graph) never exceed
+  WRITE_ENRICH_SUBREQUEST_BUDGET".
+
+**Move jobs are read once per suggestion call**, not once per changed
+section, and passed to each section's retrieval (`retrieveCandidates`'
+`moveJobs`; unreadable state still withholds everything). A write therefore
+pays one unbudgeted read per historical move for its suggestions, beside the
+write's own. Test: `graphSuggest.test.mjs`, "move jobs are read once per
+call".
+
+**The 250 ms deadline can be overrun by one read.** No store op starts after
+the deadline (the budget and the store proxy both refuse), but an op started
+just before it is awaited, so the suggestion step can end one read's latency
+past 250 ms. A `Promise.race` would return earlier but leave the read running
+on the invocation's subrequest counter. That overrun is accepted.

@@ -165,19 +165,25 @@ test("a ready block: text matches by section, with excerpt, signals and the etag
   assert.ok(text.includes('- other/text.md ("Harbor"; text_match): "kestrel harbor survey results from the coast"'), text);
 });
 
-test("an already linked target stays out when the search index is unreadable and the target links back", async () => {
-  const notes = { ...BASE, "t/target.md": "[[notes/seed]] kestrel harbor survey target" };
-  const store = await world(notes);
-  const noIndex = { ...store, get: (k) => (k === MANIFEST_KEY ? null : store.get(k)) };
-  const block = await suggest(noIndex, { committed: notes[SEED], sections: SECTIONS, canSeeKey: owner });
+test("an already linked target that links back stays out, even when only the committed text can resolve the link", async () => {
+  // A path link: retrieval resolves it against the visible docmap and drops
+  // it, and the committed text's own resolution would too.
+  const notes = { ...BASE, "t/target.md": "[[notes/seed]] kestrel harbor survey target", "other/back.md": "[[notes/seed]]" };
+  const block = await suggest(await world(notes), { committed: notes[SEED], sections: SECTIONS, canSeeKey: owner });
   assert.ok(!paths(block).includes("t/target.md"), JSON.stringify(block));
   // The control: a note that links here and is not linked from here is kept.
-  const back = { ...notes, "other/back.md": "[[notes/seed]]" };
-  const store2 = await world(back);
-  const noIndex2 = { ...store2, get: (k) => (k === MANIFEST_KEY ? null : store2.get(k)) };
-  const block2 = await suggest(noIndex2, { committed: back[SEED], sections: SECTIONS, canSeeKey: owner });
+  assert.ok(paths(block).includes("other/back.md"), JSON.stringify(block));
+  assert.deepEqual(block.candidates.find((c) => c.path === "other/back.md").signals, ["links_here"]);
+
+  // A bare name two visible notes share: retrieval cannot resolve it, so
+  // only suggest's resolution against the candidates themselves (where the
+  // name is unique) keeps the linked target out.
+  const seed = BASE[SEED].replace("[[t/target]]", "[[target]]");
+  const named = { ...notes, [SEED]: seed, "far/away/target.md": "nothing shared at all" };
+  const sections = [section("Harbor", "## Harbor\n\nThe kestrel harbor survey moved [[target]] forward.\n"), SECTIONS[1]];
+  const block2 = await suggest(await world(named), { committed: seed, sections, canSeeKey: owner });
+  assert.ok(!paths(block2).includes("t/target.md"), JSON.stringify(block2));
   assert.ok(paths(block2).includes("other/back.md"), JSON.stringify(block2));
-  assert.deepEqual(block2.candidates.find((c) => c.path === "other/back.md").signals, ["links_here"]);
 });
 
 test("audience: a team source never gets a private candidate, even for the owner; a private source does", async () => {

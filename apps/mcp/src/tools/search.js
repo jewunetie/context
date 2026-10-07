@@ -18,8 +18,12 @@ export async function toolSearchNotes(store, scope, rules, overrides, query, pre
   const prefix = prefixArg ? normalizePath(prefixArg) : "";
   if (prefixArg && prefix === null) return toolError("invalid prefix");
   const found = await searchVisibleNotes(store, scope, rules, overrides, query, prefix);
-  const hits = found.hits.map(({ key, snippets, title }) =>
-    snippets.length
+  const hits = found.hits.map(({ key, snippets, title, linked }) =>
+    // Graph-assisted ranking (Task 29): found through a link from a result,
+    // not through its text, so it has no matching line to quote.
+    linked
+      ? `${key}\n    (linked from a result)`
+      : snippets.length
       ? `${key}\n${snippets.map((line) => `    ${line}`).join("\n")}`
       : // Indexed, then edited: it matched when it was indexed and its current
         // text does not carry the term. The title was actually read; a snippet
@@ -30,10 +34,12 @@ export async function toolSearchNotes(store, scope, rules, overrides, query, pre
   // answers from its own head. It is almost always the wrong conclusion — the
   // note exists under a word the user would have used and this query did not —
   // so the miss says what to try instead of stopping the sentence at "no".
+  const linked = found.hits.filter((hit) => hit.linked).length;
+  const textHits = hits.length - linked;
   let out = hits.length
     ? `${found.matchCount}${found.matchCountIsFloor ? "+" : ""} matching note${
         found.matchCount === 1 && !found.matchCountIsFloor ? "" : "s"
-      }${hits.length < found.matchCount ? ` — the ${hits.length} best shown` : ""}\n\n${hits.join(
+      }${textHits < found.matchCount ? ` — the ${textHits} best shown` : ""}${linked ? `, plus ${linked} linked` : ""}\n\n${hits.join(
         "\n\n"
       )}`
     : "(no matches)\n\nA miss usually means the wrong word rather than the wrong assumption — " +

@@ -33,6 +33,14 @@
  *   the switch on by default ("b2" for an absent field)                    6 (off pin, b2, top three, label, both invariance)
  *   kill switch ignored by the search path (red before its fix)            1 (kill switch)
  *
+ * Fix round 1 (each new test red first against a7e0116d):
+ *   move jobs not read by the boosted path (the sentinel-gated list)       1 (fix 1)
+ *   linked hits rendered without their label                               1 (fix 2)
+ *   count line without "plus M linked"                                     1 (fix 2)
+ *   graph candidates under the folder prefix rule                          1 (fix 3)
+ *   graph health not handed to each seed (3 manifest reads)                1 (fix 4)
+ *   an array accepted as a variant                                         1 (off pin)
+ *
  * Not caught on its own: dropping the best-effort check on the graph manifest,
  * because each seed's graphNeighbors answer carries the same health and is
  * checked again (the unavailable-or-best-effort test fails if both go).
@@ -54,6 +62,8 @@ import { createSearchBudget } from "../src/search/maintain.js";
 import { syncShardedIndex } from "../src/search/shards.js";
 import { canSee } from "../src/privacy/engine.js";
 import { memoryBucket } from "./store/fixtures.mjs";
+import { moveJobKey } from "../src/moves/jobs.js";
+import { toolSearchNotes } from "../src/tools/search.js";
 
 const OFF_DIGEST = "f9334545cd74c7fce5b06dd0b1dad6498b2e0085c1572728cb7ed494d0f2a96c";
 const NOW = Date.parse("2026-01-01T00:00:00Z");
@@ -210,6 +220,8 @@ test("off: absent, \"off\" and an unknown value all reproduce the pre-Task-29 st
   assert.equal(digest, OFF_DIGEST);
   assert.equal(await offScenario("off"), OFF_DIGEST);
   assert.equal(await offScenario("B2"), OFF_DIGEST);
+  // Fix round 1: only a string names a variant; an array would coerce to one.
+  assert.equal(await offScenario(["b2"]), OFF_DIGEST);
 });
 
 // ---------------------------------------------------------------- switch on
@@ -224,7 +236,7 @@ test("b2: a note linked from the top lexical hit but lacking the query term come
   assert.deepEqual(keys(b2), ["w/a/kestrel.md", "w/d/kestrel2.md", "w/b/harbor.md", "w/c/other.md"]);
   assert.deepEqual(b2.hits.slice(0, 2), off.hits);
   // A graph-only hit is named by its file, from no body read.
-  assert.deepEqual(b2.hits[2], { key: "w/b/harbor.md", title: "harbor", snippets: [] });
+  assert.deepEqual(b2.hits[2], { key: "w/b/harbor.md", title: "harbor", snippets: [], linked: true });
   assert.equal(b2.graphIncomplete, false);
   assert.equal(b2.matchCount, off.matchCount);
   // b3 adds the shared URL; b4 adds no candidate of its own.
@@ -379,4 +391,58 @@ test("b2: a graph candidate the index's docmap no longer lists is not returned (
     if (p.pending === 0 && !p.listingTruncated) break;
   }
   assert.ok(!keys(await search(store, "kestrel", { boost: "b2" })).includes("w/f/gone.md"));
+});
+
+// ---------------------------------------------------------------- fix round 1
+
+test("fix 1: a move job with no sentinel withholds the graph; a note moving into a private folder is never a linked hit", async () => {
+  // It shares the seed's target and has no query word: a graph-only candidate.
+  const store = await world({ ...BASE, "w/mv/a.md": "# Moving\n\nmoving secret [[w/b/harbor]]\n" });
+  assert.ok(keys(await search(store, "kestrel", { boost: "b2" })).includes("w/mv/a.md"), "positive control: a linked hit before the move");
+  assert.ok(!keys(await search(store, "kestrel")).includes("w/mv/a.md"), "positive control: not a text hit");
+  const job = { version: 1, id: "job-0000000000001", source: "w/mv", destination: "private/mv", status: "logical_active", created_at: "2026-01-01", objects: [{ source: "w/mv/a.md", destination: "private/mv/a.md" }] };
+  await store.put(moveJobKey(job.id), JSON.stringify(job));
+  const off = await search(store, "kestrel");
+  const on = await search(store, "kestrel", { boost: "b2" });
+  assert.ok(!keys(on).includes("w/mv/a.md"));
+  assert.deepEqual(on, { ...off, graphIncomplete: true });
+});
+
+test("fix 2: a linked hit says so, the count line says how many, and off renders as before", async () => {
+  const store = await world(BASE);
+  const text = async (boost) => {
+    const view = Object.create(store);
+    if (boost) view.searchGraphBoost = boost;
+    view.defer = () => {};
+    return (await toolSearchNotes(view, "workspace", RULES, OVERRIDES, "kestrel")).content[0].text;
+  };
+  const off = await text();
+  assert.ok(off.startsWith("2 matching notes\n\nw/a/kestrel.md\n"), off);
+  assert.doesNotMatch(off, /linked/);
+  const on = await text("b2");
+  assert.ok(on.startsWith("2 matching notes, plus 2 linked\n\nw/a/kestrel.md\n"), on);
+  assert.match(on, /\n\nw\/b\/harbor\.md\n {4}\(linked from a result\)/);
+  assert.match(on, /\n\nw\/c\/other\.md\n {4}\(linked from a result\)/);
+});
+
+test("fix 3: graph candidates use search's own prefix rule (a string prefix, not a folder)", async () => {
+  const store = await world(BASE);
+  const whole = keys(await search(store, "kestrel", { boost: "b2" }));
+  assert.deepEqual(keys(await search(store, "kestrel", { boost: "b2", prefix: "w/" })), whole);
+  assert.deepEqual(keys(await search(store, "kestrel", { boost: "b2", prefix: "w/a/kes" })), ["w/a/kestrel.md"]);
+});
+
+test("fix 4: one graph manifest read per boosted search, whatever the number of seeds", async () => {
+  const store = await world(BASE);
+  let reads = 0;
+  const view = Object.create(store);
+  view.get = async (key) => {
+    if (key === graphManifestKey()) reads += 1;
+    return store.get(key);
+  };
+  const canSeeKey = (k) => canSee(k, "workspace", RULES, OVERRIDES);
+  const found = await retrieveCandidates(view, { seed: { query: "kestrel" }, intent: "search", variant: "b3", scope: "workspace", search: { isVisible: canSeeKey, isIndexable: indexable, query: "kestrel", prefix: "", budget: createSearchBudget(600), refreshOnMiss: true } });
+  assert.equal(found.graphIncomplete, false);
+  assert.ok(keys(found).includes("w/b/harbor.md"), "positive control: two seeds, graph used");
+  assert.equal(reads, 1);
 });

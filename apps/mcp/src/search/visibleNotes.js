@@ -11,7 +11,7 @@ import { indexIsBehind, loadIndexManifest } from "./shards.js";
 import { maintainIndexAfter } from "./maintenance.js";
 import { noteUnderPrefix, searchMoveJobs } from "../moves/jobs.js";
 import { SEARCH_SUBREQUEST_BUDGET, searchIndexedNotes } from "./visible.js";
-import { retrieveCandidates, SEARCH_VARIANTS } from "../graph/retrieve.js";
+import { graphBoost, retrieveCandidates } from "../graph/retrieve.js";
 
 /**
  * The one search path, shared by `search_notes` and the ChatGPT-dialect
@@ -33,9 +33,10 @@ export async function searchVisibleNotes(store, scope, rules, overrides, query, 
   // nothing here survives into another tenant's call.
   const budget = createSearchBudget(store.searchSubrequestBudget ?? SEARCH_SUBREQUEST_BUDGET);
   // Graph-assisted ranking (Task 29, OPEN-68): `SEARCH_GRAPH_BOOST` resolved
-  // onto the store per request; absent, "off" or anything unknown is off, and
-  // off this function is byte-identical to before it existed.
-  const boost = Object.hasOwn(SEARCH_VARIANTS, store.searchGraphBoost ?? "") ? store.searchGraphBoost : null;
+  // onto the store per request (route.js); absent, "off" or anything but the
+  // exact strings "b2", "b3", "b4" is off, and off this function is
+  // byte-identical to before it existed.
+  const boost = graphBoost(store.searchGraphBoost);
   // Logical-delete stores may need a raw read before a conditional write, or
   // extra marker/prefix probes while filtering a list. Their public operation
   // is already prepaid by the search budget; charge only those additional
@@ -216,7 +217,7 @@ export async function searchVisibleNotes(store, scope, rules, overrides, query, 
     refreshOnMiss: true,
   };
   const found = boost
-    ? await retrieveCandidates(store, { seed: { query }, intent: "search", variant: boost, scope, moveJobs: activeLogicalMoves, search: searchOptions })
+    ? await retrieveCandidates(store, { seed: { query }, intent: "search", variant: boost, scope, search: searchOptions })
     : await searchIndexedNotes(store, searchOptions);
   answered();
 

@@ -56,6 +56,8 @@ export const SEARCH_VARIANTS = {
   b3: ["linked_from_here", "links_here", "shares_target", "shares_url"],
   b4: ["linked_from_here", "links_here", "shares_target", "shares_url", "nearby"],
 };
+/** The variant `value` names, or null (off): only these exact strings, never a coerced array. */
+export const graphBoost = (value) => (typeof value === "string" && Object.hasOwn(SEARCH_VARIANTS, value) ? value : null);
 
 const REASONS = ["links_here", "linked_from_here", "shares_target", "shares_url", "related_text", "nearby"];
 const EXPLICIT = new Set(["links_here", "linked_from_here"]);
@@ -130,7 +132,7 @@ const byScoreThenPath = (map) => [...map].sort(([a, x], [b, y]) => y - x || (a <
  * A seed the caller cannot see gets the empty answer with no store op.
  */
 export async function retrieveCandidates(store, { seed, intent, canSeeKey, isIndexable, budget, limits, scope, excludeLinked = false, moveJobs = undefined, variant = undefined, search = undefined }) {
-  if (intent === "search") return searchWithGraph(store, { query: seed?.query, variant, scope, moveJobs, search });
+  if (intent === "search") return searchWithGraph(store, { query: seed?.query, variant, scope, search });
   // Paths under an active logical move's source or destination (fix round 1).
   // Candidates are physical paths, and read_note answers for these through the
   // move overlay, so one moved into a private folder could be shown here at
@@ -302,34 +304,37 @@ export async function retrieveCandidates(store, { seed, intent, canSeeKey, isInd
  * graph manifest, each seed's node record (its outgoing references, never its
  * body), and postings through `graphNeighbors`, whose entries are filtered by
  * visibility before anything is counted (README 12.4). Candidates must be
- * visible, in the index's docmap, under the search prefix and outside any
- * active move. Anything short of a complete graph answer (unavailable or
+ * visible, in the index's docmap and under the search prefix (search's own
+ * string rule). Move jobs are read here, fail closed and outside the budget,
+ * as read_note reads them (Task 17 round 3), never the sentinel-gated list
+ * search_notes uses: any active job withholds the graph. The graph manifest
+ * is read once and its generation handed to every seed. Anything short of a complete graph answer (unavailable or
  * best-effort graph, unreadable docmap or node record, an unfinished chain,
  * an active move) returns search's hits unchanged with `graphIncomplete: true`,
  * for every caller: one bit, the residual docs/decisions/link-graph.md
  * records, never a partial graph contribution.
  */
-async function searchWithGraph(store, { query, variant, scope, moveJobs, search }) {
+async function searchWithGraph(store, { query, variant, scope, search }) {
   const found = await searchIndexedNotes(store, { ...search, query });
   if (!found.indexed) return found;
   const lexical = found.hits.map((h) => h.key);
   const seeds = [...new Set(lexical.slice(0, SEARCH_SEEDS).map(notePathOf))];
-  const families = SEARCH_VARIANTS[variant] ?? [];
+  const families = SEARCH_VARIANTS[graphBoost(variant)] ?? [];
   if (!seeds.length || !families.length) return { ...found, graphIncomplete: false };
   const withheld = { ...found, graphIncomplete: true };
   // The kill switch: a frozen graph is not served (Phase 3 final review).
   if (store.writeEnrichBudget === 0) return withheld;
   // Never throws: after the answer above, any failure is a withheld graph.
   try {
-    return await fuseWithGraph(store, found, withheld, { lexical, seeds, families, scope, moveJobs, search });
+    return await fuseWithGraph(store, found, withheld, { lexical, seeds, families, scope, search });
   } catch {
     return withheld;
   }
 }
 
-async function fuseWithGraph(store, found, withheld, { lexical, seeds, families, scope, moveJobs, search }) {
+async function fuseWithGraph(store, found, withheld, { lexical, seeds, families, scope, search }) {
   const { budget, isVisible, prefix = "" } = search;
-  const jobs = moveJobs === undefined ? await activeMoveJobsOrNull(store) : moveJobs;
+  const jobs = await activeMoveJobsOrNull(store);
   if (jobs === null || jobs.length) return withheld;
   const see = (key) => {
     try {
@@ -354,8 +359,9 @@ async function fuseWithGraph(store, found, withheld, { lexical, seeds, families,
   const catalog = { byName: indexByName([...shown]), paths: shown, partial };
 
   let gen = null;
+  let health = null;
   try {
-    const health = await graphHealth(view, budget);
+    health = await graphHealth(view, budget);
     if (health.state !== "unavailable" && !health.possiblyIncomplete) gen = health.generation;
   } catch {
     // An unreadable manifest is an unavailable graph.
@@ -370,15 +376,15 @@ async function fuseWithGraph(store, found, withheld, { lexical, seeds, families,
       // A refused or failed read is an unfinished graph.
     }
     if (!node?.old) return withheld;
-    const graph = await graphNeighbors(view, budget, { path, body: "", occurrences: node.old.occurrences, catalog, canSeeKey: see, scope });
-    if (!graph.complete || graph.health.possiblyIncomplete) return withheld;
+    const graph = await graphNeighbors(view, budget, { path, body: "", occurrences: node.old.occurrences, catalog, canSeeKey: see, scope, health });
+    if (!graph.complete || graph.health.possiblyIncomplete || graph.health.generation !== gen) return withheld;
     neighbours.push({ path, graph });
   }
 
   // A note already in the lexical list is boosted under its own hit's key.
   const keyOf = new Map();
   for (const key of lexical) if (!keyOf.has(notePathOf(key))) keyOf.set(notePathOf(key), key);
-  const allowed = (p) => shown.has(p) && noteUnderPrefix(p, prefix) && see(p);
+  const allowed = (p) => shown.has(p) && (!prefix || p.startsWith(prefix)) && see(p);
   const list = (pick) => neighbours.flatMap(({ graph }) => pick(graph)).filter(allowed).map((p) => keyOf.get(p) ?? p);
   const lists = {
     linked_from_here: list((g) => [...g.outgoing.keys()]),
@@ -393,7 +399,8 @@ async function fuseWithGraph(store, found, withheld, { lexical, seeds, families,
 
   const fused = fuseRanks(lexical, families.map((f) => lists[f]), { pinned: SEARCH_PINNED, k: RRF_K, weight: GRAPH_WEIGHT });
   const hitOf = new Map(found.hits.map((h) => [h.key, h]));
-  // A graph-only hit is named by its file: no note body is read for it.
-  const hits = fused.slice(0, Math.max(SEARCH_RESULT_LIMIT, found.hits.length)).map((key) => hitOf.get(key) ?? { key, title: noteTitle(key, ""), snippets: [] });
+  // A graph-only hit is named by its file (no note body is read for it) and
+  // marked, so search_notes can say why it is there.
+  const hits = fused.slice(0, Math.max(SEARCH_RESULT_LIMIT, found.hits.length)).map((key) => hitOf.get(key) ?? { key, title: noteTitle(key, ""), snippets: [], linked: true });
   return { ...found, hits, graphIncomplete: false };
 }

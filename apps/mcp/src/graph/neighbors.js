@@ -49,8 +49,10 @@ const baseName = (path) => path.slice(path.lastIndexOf("/") + 1).replace(/\.md$/
  * returns the body's own outgoing links and unresolved references and reads
  * nothing. `occurrences`, when given, stands in for the body's references
  * (search reads them from the seed's node record, not its body, Task 29).
+ * `health`, when given, is a `graphHealth` answer the caller already read, so
+ * several seeds share one manifest read and one generation.
  */
-export async function graphNeighbors(store, budget, { path, body, catalog, canSeeKey, scope, limits, bodyOnly = false, occurrences = undefined }) {
+export async function graphNeighbors(store, budget, { path, body, catalog, canSeeKey, scope, limits, bodyOnly = false, occurrences = undefined, health: given = undefined }) {
   // A throwing canSeeKey counts as not visible (the never-throws contract).
   if (!(await Promise.resolve().then(() => canSeeKey(path)).catch(() => false))) {
     return { incoming: new Map(), outgoing: new Map(), sharedTargets: new Map(), sharedUrls: new Map(), unresolved: [], complete: false, health: unavailableHealth(store) };
@@ -83,11 +85,13 @@ export async function graphNeighbors(store, budget, { path, body, catalog, canSe
   // switch), they are all that is returned, with no store op.
   if (bodyOnly) return { incoming: new Map(), outgoing, sharedTargets: new Map(), sharedUrls: new Map(), unresolved, complete: false, health: unavailableHealth(store) };
   const view = graphView(store, budget);
-  let health;
-  try {
-    health = await graphHealth(view, budget);
-  } catch {
-    health = unavailableHealth(store); // an unreadable manifest is an unavailable graph
+  let health = given;
+  if (!health) {
+    try {
+      health = await graphHealth(view, budget);
+    } catch {
+      health = unavailableHealth(store); // an unreadable manifest is an unavailable graph
+    }
   }
   const empty = { incoming: new Map(), outgoing, sharedTargets: new Map(), sharedUrls: new Map(), unresolved, complete: false, health };
   const gen = health.state === "unavailable" ? null : health.generation;

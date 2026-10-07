@@ -1,7 +1,5 @@
-import { useState } from "react";
-import { Pressable, ScrollView, StyleSheet, View } from "react-native";
-import { Button } from "../../../design/components/Button";
-import { FocusRing } from "../../../design/components/FocusRing";
+import { ScrollView, StyleSheet, View } from "react-native";
+import { Button, PressRow } from "../../../design/components/Button";
 import { Text } from "../../../design/components/Text";
 import { useThemedStyles, type Colors } from "../../../design/theme";
 import { radii, space } from "../../../design/tokens";
@@ -29,7 +27,7 @@ export function RelatedPanel({
   onOpen,
   bounded = false,
 }: {
-  files: Pick<FileBrowser, "relatedNotes" | "sync">;
+  files: Pick<FileBrowser, "relatedNotes" | "sync" | "editor">;
   path: string;
   onOpen: (path: string) => void;
   /**
@@ -49,7 +47,7 @@ export function RelatedPanel({
         Linked and related notes need a connection.
       </Text>
     ) : state.kind === "loading" ? (
-      <Text variant="meta" aria-live="polite" testID="related-loading">
+      <Text variant="meta" testID="related-loading">
         Finding linked and related notes…
       </Text>
     ) : state.kind === "unavailable" ? (
@@ -60,13 +58,27 @@ export function RelatedPanel({
     ) : (
       <Answer answer={state.answer} onOpen={onOpen} />
     );
-  const region = { role: "region", "aria-label": "Linked and related notes", testID: "related-panel" } as const;
+  // Polite live region: what arrives (results, a failure, the incomplete notice) is announced.
+  const region = {
+    role: "region",
+    "aria-label": "Linked and related notes",
+    "aria-live": "polite",
+    testID: "related-panel",
+  } as const;
+  // Level 2 under the note's own level 1 title; the groups below are level 3.
+  const heading = (
+    <Text variant="rowTitle" role="heading" aria-level={2}>
+      Linked and related notes
+    </Text>
+  );
   return bounded ? (
     <ScrollView style={[styles.panel, styles.bounded]} contentContainerStyle={styles.content} {...region}>
+      {heading}
       {body}
     </ScrollView>
   ) : (
     <View style={[styles.panel, styles.content]} {...region}>
+      {heading}
       {body}
     </View>
   );
@@ -136,17 +148,16 @@ function Group({
 
 function Row({ relation, onOpen }: { relation: Relation; onOpen: (path: string) => void }) {
   const styles = useThemedStyles(makeStyles);
-  const [focused, setFocused] = useState(false);
   const folder = parentPath(relation.path);
   const reasons = relation.reasons.map((reason) => REASON_WORDS[reason]).join(", ");
+  // What a screen reader hears is what is drawn: the path, the reasons and the evidence.
+  const label = [`Open ${relation.path}`, reasons, relation.evidence].filter((part) => part !== undefined).join(". ");
   return (
-    <Pressable
-      role="link"
-      accessibilityLabel={`Open ${relation.path}`}
+    <PressRow
+      accessibilityLabel={label}
       onPress={() => onOpen(relation.path)}
-      onFocus={() => setFocused(true)}
-      onBlur={() => setFocused(false)}
-      style={({ pressed }) => [styles.link, pressed && styles.pressed]}
+      style={styles.link}
+      hoverStyle={styles.hover}
     >
       <Text variant="rowTitle" numberOfLines={1}>
         {displayName(baseName(relation.path))}
@@ -159,8 +170,7 @@ function Row({ relation, onOpen }: { relation: Relation; onOpen: (path: string) 
           {relation.evidence}
         </Text>
       )}
-      <FocusRing visible={focused} radius={radii.md} />
-    </Pressable>
+    </PressRow>
   );
 }
 
@@ -178,5 +188,5 @@ const makeStyles = (colors: Colors) =>
     row: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: space.x2 },
     group: { gap: space.x1 },
     link: { paddingVertical: space.x1, paddingHorizontal: space.x2, marginHorizontal: -space.x2, borderRadius: radii.md },
-    pressed: { backgroundColor: colors.surface3 },
+    hover: { backgroundColor: colors.surface3 },
   });

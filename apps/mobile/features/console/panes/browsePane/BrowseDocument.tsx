@@ -472,7 +472,15 @@ export function BrowseDocument({
         notices={compact ? notices : null}
         pathBar={pathBar}
         // Linked here / Related (link-graph Task 19); draws nothing where `files.relatedNotes` is absent.
-        related={<RelatedPanel files={files} path={selected.path} onOpen={files.select} bounded={!compact} />}
+        // A row opens as a followed link does (`onOpenLink` below): a pinned tab beside this one.
+        related={
+          <RelatedPanel
+            files={files}
+            path={selected.path}
+            onOpen={nav ? (path) => nav.follow(path, "foreground") : files.select}
+            bounded={!compact}
+          />
+        }
         onChange={files.setDraft}
         onSave={files.save}
         onTitleCaret={files.setTitleCaret}

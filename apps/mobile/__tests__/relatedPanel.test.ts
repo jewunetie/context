@@ -32,6 +32,18 @@
  *
  *   the empty sentence drawn while loading   "loading never says ..." fails
  *
+ * Fix round 1 (each a temporary edit; exactly the named test failed):
+ *
+ *   answer not keyed on the asker            "a workspace switch ..."
+ *   no refresh on the note's version          "asks again when ... version"
+ *   drawing / encrypted check removed        "does not ask about a drawing" / "... locked or encrypted note"
+ *   row back to role="link"                  "a row is a native button ..."
+ *   label of the path alone                  "a row's accessible name ..."
+ *   aria-live removed, or heading level 3    "arrived results are announced ..."
+ *   rows opened with files.select            "a row follows like a link ..."
+ *   empty reasons, empty path or NaN accepted "rejects empty reasons ..."
+ *   duplicates kept                          "drops a repeated path ..."
+ *
  * RED: the suite failed to load before `relatedAnswer.ts` existed; with the
  * parser and panel written, both reachability tests failed until
  * `BrowseDocument` handed the panel to the note.
@@ -45,7 +57,7 @@
 import { describe, expect, jest, test } from "@jest/globals";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { dataWith, mountConsole, NOTE } from "./noteChrome/fixtures";
+import { dataWith, ENTRY, mountConsole, NOTE } from "./noteChrome/fixtures";
 import { parseRelatedAnswer, type RelatedAnswer } from "../features/console/files/browser/relatedAnswer";
 import { RelatedPanel } from "../features/console/panes/browsePane/RelatedPanel";
 import type { FileBrowser } from "../features/console/files/browser";
@@ -90,27 +102,68 @@ describe("parseRelatedAnswer", () => {
     ];
     for (const raw of bad) expect(() => parseRelatedAnswer(raw)).toThrow();
   });
+
+  test("rejects empty reasons, empty paths and non-finite offsets", () => {
+    const good = wire(ANSWER) as Record<string, unknown>;
+    const bad: unknown[] = [
+      { ...good, relations: [{ path: "a.md", reasons: [] }] },
+      { ...good, relations: [{ path: "", reasons: ["nearby"] }] },
+      { ...good, unresolved: [{ target: "x", start: Number.NaN, end: 1, state: "missing" }] },
+      { ...good, unresolved: [{ target: "x", start: 0, end: Number.POSITIVE_INFINITY, state: "missing" }] },
+    ];
+    for (const raw of bad) expect(() => parseRelatedAnswer(raw)).toThrow();
+  });
+
+  test("drops a repeated path, keeping the first", () => {
+    const parsed = parseRelatedAnswer({
+      kind: "related",
+      relations: [
+        { path: "a.md", reasons: ["links_here"] },
+        { path: "a.md", reasons: ["nearby"] },
+        { path: "b.md", reasons: ["nearby"] },
+      ],
+      unresolved: [],
+      possiblyIncomplete: false,
+    });
+    expect(parsed.relations).toEqual([
+      { path: "a.md", reasons: ["links_here"] },
+      { path: "b.md", reasons: ["nearby"] },
+    ]);
+  });
 });
 
 /* -------------------------------------------------------------------------- */
 
 type Related = NonNullable<FileBrowser["relatedNotes"]>;
 
-function mountPanel(relatedNotes: Related | undefined, reachability: "online" | "offline" = "online") {
+type PanelInputs = {
+  reachability?: "online" | "offline";
+  path?: string;
+  editor?: { path: string; etag: string | null; encrypted: boolean };
+};
+
+function mountPanel(relatedNotes: Related | undefined, reachabilityOrInputs: "online" | "offline" | PanelInputs = "online") {
   const onOpen = jest.fn<(path: string) => void>();
-  const files = {
-    relatedNotes,
-    sync: { reachability, counts: { pending: 0, failed: 0, conflicts: 0 }, durable: true },
-  } as unknown as FileBrowser;
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
-  act(() => root.render(createElement(RelatedPanel, { files, path: NOTE, onOpen })));
+  const render = (ask: Related | undefined, inputs: PanelInputs = {}) => {
+    const path = inputs.path ?? NOTE;
+    const files = {
+      relatedNotes: ask,
+      sync: { reachability: inputs.reachability ?? "online", counts: { pending: 0, failed: 0, conflicts: 0 }, durable: true },
+      editor: inputs.editor ?? { path, etag: "e1", encrypted: false },
+    } as unknown as FileBrowser;
+    act(() => root.render(createElement(RelatedPanel, { files, path, onOpen })));
+  };
+  render(relatedNotes, typeof reachabilityOrInputs === "string" ? { reachability: reachabilityOrInputs } : reachabilityOrInputs);
   const find = (id: string) => container.querySelector<HTMLElement>(`[data-testid="${id}"]`);
   return {
     container,
     find,
     onOpen,
+    render,
+    row: (path: string) => container.querySelector<HTMLElement>(`[aria-label^="Open ${path}"]`),
     text: () => container.textContent ?? "",
     unmount: () => act(() => root.unmount()),
   };
@@ -173,7 +226,7 @@ describe("the related panel", () => {
   test("a row tap opens that note's path", async () => {
     const panel = mountPanel(async () => ANSWER);
     await settle();
-    const row = panel.container.querySelector<HTMLElement>('[aria-label="Open 1-projects/plan-b.md"]')!;
+    const row = panel.row("1-projects/plan-b.md")!;
     expect(row).not.toBeNull();
     act(() => row.click());
     expect(panel.onOpen).toHaveBeenCalledWith("1-projects/plan-b.md");
@@ -234,6 +287,112 @@ describe("the related panel", () => {
 
 /* -------------------------------------------------------------------------- */
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+describe("the related panel: which answer, when", () => {
+  test("a workspace switch on the same path shows loading, never the old workspace's answer", async () => {
+    const panel = mountPanel(async () => ANSWER);
+    await settle();
+    expect(panel.text()).toContain("plan-b");
+    const pending = deferred<RelatedAnswer>();
+    const otherWorkspace = jest.fn<Related>(() => pending.promise);
+    panel.render(otherWorkspace);
+    await settle();
+    expect(otherWorkspace).toHaveBeenCalledWith(NOTE);
+    expect(panel.find("related-loading")).not.toBeNull();
+    expect(panel.text()).not.toContain("plan-b");
+    await act(async () => pending.resolve({ relations: [], unresolved: [], possiblyIncomplete: false }));
+    expect(panel.find("related-empty")).not.toBeNull();
+    panel.unmount();
+  });
+
+  test("asks again when the open note's version changes after a save, keeping the answer meanwhile", async () => {
+    const ask = jest.fn<Related>(async () => ANSWER);
+    const panel = mountPanel(ask, { editor: { path: NOTE, etag: "e1", encrypted: false } });
+    await settle();
+    panel.render(ask, { editor: { path: NOTE, etag: "e1", encrypted: false } });
+    await settle();
+    expect(ask).toHaveBeenCalledTimes(1);
+    panel.render(ask, { editor: { path: NOTE, etag: "e2", encrypted: false } });
+    expect(panel.text()).toContain("plan-b");
+    await settle();
+    expect(ask).toHaveBeenCalledTimes(2);
+    panel.unmount();
+  });
+
+  test("does not ask about a drawing", async () => {
+    const ask = jest.fn<Related>(async () => ANSWER);
+    const drawing = "1-projects/plan.excalidraw.md";
+    const panel = mountPanel(ask, { path: drawing, editor: { path: drawing, etag: "e1", encrypted: false } });
+    await settle();
+    expect(ask).not.toHaveBeenCalled();
+    expect(panel.find("related-panel")).toBeNull();
+    panel.unmount();
+  });
+
+  test("does not ask about a locked or encrypted note", async () => {
+    const ask = jest.fn<Related>(async () => ANSWER);
+    const panel = mountPanel(ask, { editor: { path: NOTE, etag: "e1", encrypted: true } });
+    await settle();
+    expect(ask).not.toHaveBeenCalled();
+    expect(panel.find("related-panel")).toBeNull();
+    panel.unmount();
+  });
+});
+
+describe("the related panel: keyboard and assistive technology", () => {
+  test("a row is a native button, which Enter and Space activate in the browser", async () => {
+    const panel = mountPanel(async () => ANSWER);
+    await settle();
+    const row = panel.row("1-projects/plan-b.md")!;
+    /*
+      react-native-web draws `role="button"` as a real <button>, and a browser
+      turns Enter and Space on one into a click (the reviewer's Chrome and
+      WebKit probe: a div[role=link] got no click from Enter, a <button> did).
+      jsdom does not synthesize that click, so what is asserted is the element
+      and the click it routes.
+    */
+    expect(row.tagName).toBe("BUTTON");
+    expect(row.getAttribute("type")).toBe("button");
+    act(() => row.click());
+    expect(panel.onOpen).toHaveBeenCalledWith("1-projects/plan-b.md");
+    panel.unmount();
+  });
+
+  test("a row's accessible name carries its path, reasons and evidence", async () => {
+    const panel = mountPanel(async () => ANSWER);
+    await settle();
+    const label = panel.row("3-resources/web.md")!.getAttribute("aria-label")!;
+    for (const part of ["3-resources/web.md", "cites the same URL", "related text", "nearby", "<script>alert(1)</script>"]) {
+      expect(label).toContain(part);
+    }
+    expect(panel.row("1-projects/back.md")!.getAttribute("aria-label")).toContain("links here");
+    panel.unmount();
+  });
+
+  test("arrived results are announced, under a level 2 heading with level 3 groups", async () => {
+    const panel = mountPanel(async () => ANSWER);
+    await settle();
+    expect(panel.find("related-panel")!.getAttribute("aria-live")).toBe("polite");
+    const headings = [...panel.container.querySelectorAll('[role="heading"]')].map((node) => [
+      node.getAttribute("aria-level"),
+      node.textContent,
+    ]);
+    expect(headings[0]).toEqual(["2", "Linked and related notes"]);
+    for (const [level] of headings.slice(1)) expect(level).toBe("3");
+    expect(headings.length).toBeGreaterThan(1);
+    panel.unmount();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
 describe("reachability: under a note in the mounted console", () => {
   for (const [layout, width] of [["phone", 390], ["pointer", 1200]] as const) {
     test(`on the ${layout} layout, and a row opens the note`, async () => {
@@ -243,10 +402,29 @@ describe("reachability: under a note in the mounted console", () => {
       await settle();
       expect(relatedNotes).toHaveBeenCalledWith(NOTE);
       expect(app.find("related-panel")).not.toBeNull();
-      app.press(app.find2("Open 1-projects/back.md"));
+      app.press(app.container.querySelector<HTMLElement>('[aria-label^="Open 1-projects/back.md"]'));
       expect(select).toHaveBeenCalledWith("1-projects/back.md");
     });
   }
+
+  test("a row follows like a link: the note opens in a pinned tab beside this one", async () => {
+    const select = jest.fn(() => true);
+    // `back.md` listed beside the note, or the tab strip's prune would close its tab as a deleted note.
+    const listings = {
+      "1-projects": {
+        path: "1-projects",
+        folderDefault: "team" as const,
+        truncated: false,
+        manifestUsable: true,
+        entries: [ENTRY, { ...ENTRY, path: "1-projects/back.md", name: "back.md" }],
+      },
+    };
+    const app = mountConsole(dataWith({ relatedNotes: async () => ANSWER, select, listings } as never), 1200);
+    await settle();
+    app.press(app.container.querySelector<HTMLElement>('[aria-label^="Open 1-projects/back.md"]'));
+    expect(select).toHaveBeenCalledWith("1-projects/back.md");
+    expect(app.find("tab-1-projects/back.md")).not.toBeNull();
+  });
 
   test("not drawn when the browser has no relatedNotes", async () => {
     const app = mountConsole(dataWith(), 1200);

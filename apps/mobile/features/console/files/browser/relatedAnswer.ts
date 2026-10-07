@@ -62,7 +62,15 @@ export function parseRelatedAnswer(raw: unknown): RelatedAnswer {
   if (!Array.isArray(raw.unresolved)) fail("unresolved");
 
   const relations = raw.relations.map((item: unknown) => {
-    if (!isObject(item) || typeof item.path !== "string" || !Array.isArray(item.reasons)) fail("relation");
+    if (
+      !isObject(item) ||
+      typeof item.path !== "string" ||
+      item.path === "" ||
+      !Array.isArray(item.reasons) ||
+      item.reasons.length === 0
+    ) {
+      fail("relation");
+    }
     const reasons = item.reasons.map((reason: unknown) => {
       if (typeof reason !== "string" || !Object.hasOwn(REASON_WORDS, reason)) fail("reason");
       return reason as RelationReason;
@@ -77,15 +85,18 @@ export function parseRelatedAnswer(raw: unknown): RelatedAnswer {
     if (
       !isObject(item) ||
       typeof item.target !== "string" ||
-      typeof item.start !== "number" ||
-      typeof item.end !== "number" ||
+      !Number.isFinite(item.start) ||
+      !Number.isFinite(item.end) ||
       typeof item.state !== "string" ||
       !Object.hasOwn(STATE_WORDS, item.state)
     ) {
       fail("unresolved link");
     }
-    return { target: item.target, start: item.start, end: item.end, state: item.state as UnresolvedState };
+    return { target: item.target, start: item.start as number, end: item.end as number, state: item.state as UnresolvedState };
   });
 
-  return { relations, unresolved, possiblyIncomplete: raw.possiblyIncomplete };
+  // One row per note: a repeated path is dropped, the first kept.
+  const seen = new Set<string>();
+  const unique = relations.filter((relation) => !seen.has(relation.path) && Boolean(seen.add(relation.path)));
+  return { relations: unique, unresolved, possiblyIncomplete: raw.possiblyIncomplete };
 }

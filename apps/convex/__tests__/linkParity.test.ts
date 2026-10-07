@@ -236,15 +236,18 @@ describe("the shared link engine and the gateway's agree", () => {
     }
   });
 
-  test("resolveReference gives the same verdict, with and without a path list", () => {
+  test("resolveReference gives the same verdict, with and without a path list, and with a partial one", () => {
     const sharedCatalog = { byName: shared.indexByName(NAMES) };
     const gatewayCatalog = { byName: gateway.indexByName(NAMES) };
     const states = new Set<string>();
+    // `partial`: the list may lack a note (an index that is behind), so a path
+    // outside it is unknown rather than missing.
+    const lists = [{}, { paths: new Set(NAMES) }, { paths: new Set(NAMES), partial: true }];
     for (const text of CORPUS) {
       for (const occurrence of shared.extractReferences(text)) {
-        for (const withPaths of [false, true]) {
-          const a = withPaths ? { ...sharedCatalog, paths: new Set(NAMES) } : sharedCatalog;
-          const b = withPaths ? { ...gatewayCatalog, paths: new Set(NAMES) } : gatewayCatalog;
+        for (const list of lists) {
+          const a = { ...sharedCatalog, ...list };
+          const b = { ...gatewayCatalog, ...list };
           const verdict = shared.resolveReference(occurrence, NOTE, a);
           expect(verdict, `${text} → ${occurrence.target}`).toEqual(
             gateway.resolveReference(occurrence, NOTE, b),

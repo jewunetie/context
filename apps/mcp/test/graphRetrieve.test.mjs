@@ -36,6 +36,14 @@
  *   candidates under an active move not withheld                            1 (active move)
  *   active move not labelling possiblyIncomplete                            1 (active move)
  *   unreadable job state treated as no jobs (fail open)                     1 (unreadable move job)
+ *
+ * Phase 3 final review (each new test red first against 0f92855a):
+ *   graph candidates not filtered by the visible docmap paths               1 (not in the visible docmap paths)
+ *   writeEnrichBudget 0 ignored by retrieval                                1 (kill switch)
+ *   catalog not partial during an active move                               1 (reads unknown, not missing)
+ *   no label when the catalog is partial and no text query runs              1 (behind index, link-only and encrypted)
+ *   kill switch still reading postings (bodyOnly ignored)                   1 (kill switch); 1 in relatedNotesTool
+ *   kill switch dropping the seed's own links too                           1 (kill switch); 1 in relatedNotesTool
  */
 
 import assert from "node:assert/strict";
@@ -415,6 +423,10 @@ test("a hidden edit that leaves the index behind does not drop the seed's rooted
   assert.deepEqual(after.relations, before.relations);
   // Behind, an absent target is not known to be absent.
   assert.deepEqual(after.unresolved.map((u) => u.state), ["unknown"]);
+  // And the answer is labelled (search reports the index incomplete): the
+  // docmap may still list a moved note (final review).
+  assert.equal(before.possiblyIncomplete, false);
+  assert.equal(after.possiblyIncomplete, true);
 });
 
 test("resolveReference with catalog.partial: a path in the list resolves, one outside it is unknown", () => {
@@ -486,4 +498,73 @@ test("an unreadable move job withholds every candidate; a seed under a move gets
   assert.deepEqual(await ask(store, notes), { relations: [], unresolved: [], possiblyIncomplete: true });
   await store.put(moveJobKey("job-0000000000002"), job("job-0000000000002", "notes", "private/notes"));
   assert.deepEqual(await ask(store, notes), { relations: [], unresolved: [], possiblyIncomplete: true });
+});
+
+// Phase 3 final review fixes.
+const resync = async (store) => {
+  for (let pass = 0; pass < 60; pass += 1) {
+    const p = await syncShardedIndex(store, { budget: createSearchBudget(4000), isIndexable: indexable });
+    if (p.pending === 0 && !p.listingTruncated) break;
+  }
+};
+
+test("a graph candidate that is not in the visible docmap paths is never returned", async () => {
+  const notes = {
+    [SEED]: "# Kestrel\n\nSee [[alpha]].\n",
+    "notes/alpha.md": "# Alpha\n",
+    "notes/back.md": "links [[seed]]\n",
+  };
+  const store = await world(notes, { conditional: true, ready: true });
+  assert.ok(paths(await ask(store, notes)).includes("notes/back.md"), "non-vacuous: a backlink before it goes");
+  // Gone from the bucket and the index; its postings stay until a sweep.
+  await store.delete("notes/back.md");
+  await resync(store);
+  const after = await ask(store, notes);
+  assert.ok(!paths(after).includes("notes/back.md"), JSON.stringify(after));
+  assert.ok(paths(after).includes("notes/alpha.md"));
+});
+
+test("the kill switch (writeEnrichBudget 0) skips the graph: no graph op, labelled possibly incomplete", async () => {
+  const notes = {
+    [SEED]: "# Kestrel migration\n\nThe kestrel migration, see [[alpha]].\n",
+    "notes/alpha.md": "# Alpha\n",
+    "notes/back.md": "kestrel migration [[seed]]\n",
+  };
+  const store = await world(notes, { conditional: true, ready: true });
+  assert.equal((await ask(store, notes)).possiblyIncomplete, false, "non-vacuous: complete with the graph on");
+  store.writeEnrichBudget = 0;
+  const graphOps = [];
+  const watched = { ...store, get: (k) => (k.startsWith(".context/graph") && graphOps.push(k), store.get(k)), list: (o) => (String(o?.prefix).startsWith(".context/graph") && graphOps.push(o.prefix), store.list(o)) };
+  const off = await ask(watched, notes);
+  assert.deepEqual(graphOps, []);
+  assert.equal(off.possiblyIncomplete, true);
+  // Graph-derived reasons go; the seed's own links need no graph read and stay.
+  assert.ok(!off.relations.some((r) => r.reasons.some((x) => ["links_here", "shares_target", "shares_url"].includes(x))), JSON.stringify(off));
+  assert.ok(off.relations.some((r) => r.path === "notes/alpha.md" && r.reasons.includes("linked_from_here")), JSON.stringify(off));
+  assert.ok(off.relations.some((r) => r.reasons.includes("related_text")), "text hits still come back");
+});
+
+test("while a move is active, a link to a note under it reads unknown, not missing", async () => {
+  const notes = {
+    [SEED]: "# Kestrel\n\nSee [a](./mv/a.md) and [g](./gone.md).\n",
+    "notes/mv/a.md": "moving\n",
+  };
+  const store = await world(notes, { conditional: true, ready: true });
+  const states = (r) => Object.fromEntries(r.unresolved.map((u) => [u.target, u.state]));
+  assert.deepEqual(states(await ask(store, notes)), { "./gone.md": "missing" });
+  await writeMoveSentinel(store);
+  await store.put(moveJobKey("job-0000000000004"), job("job-0000000000004", "notes/mv", "private/mv"));
+  assert.deepEqual(states(await ask(store, notes)), { "./mv/a.md": "unknown", "./gone.md": "unknown" });
+});
+
+test("a behind index labels the answer even when no text query runs (link-only and encrypted seeds)", async () => {
+  for (const body of ["[t](../t/target.md) [[t/two]]\n", `${ENCRYPTED}\n`]) {
+    const notes = { [SEED]: body, "t/target.md": "target", "t/two.md": "two" };
+    const store = await world(notes, { conditional: true, ready: true });
+    assert.equal((await ask(store, notes)).possiblyIncomplete, false, "non-vacuous: complete when converged");
+    await store.put("private/new.md", "a hidden edit");
+    await syncShardedIndex(store, { budget: createSearchBudget(3), isIndexable: indexable });
+    assert.ok(indexIsBehind((await loadIndexManifest(store, big(), 0)).freshness));
+    assert.equal((await ask(store, notes)).possiblyIncomplete, true, body);
+  }
 });

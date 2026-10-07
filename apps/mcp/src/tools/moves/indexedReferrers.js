@@ -75,6 +75,9 @@ export async function indexedReferrerKeys(store, { visibleListing, renames, canS
   // since the sweep could miss the top-up. Gateway stores never copy (the
   // logical-delete wrapper and Dropbox declare false); a bare S3 store does.
   if (store.capabilities?.serverSideCopy === "same-store") return null;
+  // WRITE_ENRICH_SUBREQUEST_BUDGET=0 is the graph's kill switch: postings are
+  // frozen, so they cannot vouch for referrers (final review).
+  if (store.writeEnrichBudget === 0) return null;
   try {
     const budget = createSearchBudget(store.searchSubrequestBudget ?? SEARCH_SUBREQUEST_BUDGET);
     const view = graphView(store, budget);

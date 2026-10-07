@@ -67,7 +67,20 @@ a reviewer.
   logical-delete store the wrapper's extra physical calls count against that
   budget too. Setting the budget to 0 is the graph's kill switch (Phase 2 final
   review ruling): the write hook spends nothing and search maintenance skips
-  reconciliation and garbage collection, so no graph store op runs.
+  reconciliation and garbage collection, so no graph store op runs. Readers
+  honour it too (Phase 3 final review), since the graph it leaves is frozen:
+  moves never trust postings (`indexedReferrerKeys` returns null and the
+  move scans, with zero graph ops), and the gateway's `related_notes` reads
+  no graph: it returns text hits and the seed's own links
+  (`linked_from_here`, which need no graph read), never backlinks or shared
+  targets or URLs, labelled possibly incomplete. The console's panel calls the same `retrieveCandidates`
+  through Convex, whose environment has no such switch: it reads the
+  graph whatever the gateway's budget says, and only the docmap filter
+  above keeps its candidates to notes the index lists. The tests are
+  `graphRetrieve.test.mjs` "the kill switch (writeEnrichBudget 0) skips the
+  graph: no graph op, labelled possibly incomplete" and
+  `relatedNotesTool.test.mjs` "with the kill switch on, a move makes no
+  graph op and related_notes serves no graph, labelled".
 - **Moves and archive are left to reconciliation** (controller ruling
   OPEN-20). They go through `recordChange`, which has no body, so the write
   hook does not run for them. The same holds for referrers that a move
@@ -188,8 +201,13 @@ a reviewer.
   nothing removes, so every call pays unbudgeted reads that grow with move
   history: an indexed move one per historical move, and related_notes two
   (one in the seed lookup, which resolves the path through read_note's move
-  overlay, and one in the retrieval). The answer does not change with move
-  history. The tests are `relatedNotesTool.test.mjs`, "one active move plus
+  overlay, and one in the retrieval). Measured on the test fixture through
+  the logical-delete wrapper (a warm call; the first call on a note also
+  creates its collaboration state): related_notes makes 20 raw ops with no
+  move history, the seed lookup's collaboration read included; after the
+  first move, 22 plus 2 per past move (24, 26 and 32 at 1, 2 and 5 moves),
+  the 2 extra being the active-move sentinel's own tombstone, read by both
+  job reads. The answer does not change with move history. The tests are `relatedNotesTool.test.mjs`, "one active move plus
   100 finished ones: the answer at the default budget is the no-history
   answer, the moving note withheld" and "a refresh racing a new move's first
   sentinel never lets related_notes show the moving note", and
@@ -366,8 +384,21 @@ relate to it, and why. It is a convenience, not a new capability (arch 14):
 
 - **Read-only, and nothing else changes.** `readOnlyHint: true`, so read-only
   sessions get it; it is in neither `PRIVATE_TIER_ONLY_TOOLS` nor
-  `EXISTENCE_MASKED_TOOLS`; `search` and `fetch` are untouched. Everything it
-  returns is reachable through `read_note`, `list_notes` and `search_notes`.
+  `EXISTENCE_MASKED_TOOLS`; `search` and `fetch` are untouched. It returns
+  only paths the caller may see that the search index's docmap still lists
+  (a graph candidate outside the visible docmap paths is dropped, because
+  postings outlive a move or delete until a sweep) and that are not under an
+  active move. Those are the notes `list_notes` and `search_notes` show,
+  except while the index is behind: a note moved or deleted since the
+  index's last pass can still be listed until it catches up. Whenever the
+  catalog is partial (the index behind, or a move active) the answer is
+  labelled possibly incomplete, whether or not a text query runs, so a
+  link-only or encrypted seed is labelled too. The tests are
+  `graphRetrieve.test.mjs` "a graph candidate that is not in the visible
+  docmap paths is never returned" and "a behind index labels the answer even
+  when no text query runs (link-only and encrypted seeds)", and
+  `relatedNotesTool.test.mjs` "after a note moves out of sight,
+  related_notes never shows its old path".
 - **A hidden note and a missing one answer the same.** The seed resolves
   exactly as `read_note` resolves a path, move overlay and forwarding
   included, and both refusals are `not found` at the same raw op count. The

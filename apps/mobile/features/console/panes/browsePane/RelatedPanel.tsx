@@ -94,7 +94,7 @@ function Answer({ answer, onOpen }: { answer: RelatedAnswer; onOpen: (path: stri
     <>
       {answer.possiblyIncomplete ? (
         <Text variant="hint" testID="related-incomplete">
-          This may be incomplete: the link index has not finished reading this context.
+          This may be incomplete.
         </Text>
       ) : nothing ? (
         <Text variant="meta" testID="related-empty">

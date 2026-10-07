@@ -14,7 +14,7 @@
 import { isEncryptedNote } from "../encryption.js";
 import { extractReferences, resolveReference } from "../links.js";
 import { nameHash, pathHash, urlHash } from "./keys.js";
-import { graphHealth } from "./manifest.js";
+import { graphHealth, unavailableHealth } from "./manifest.js";
 import { graphView } from "./mode.js";
 import { readPostings } from "./postings.js";
 import { validateEntry } from "./project.js";
@@ -31,16 +31,26 @@ const hubWeight = (d) => 1 / Math.log2(2 + d);
 // text only, so it is not reported as incomplete.
 export const MAX_EXPANDED = 20;
 
+// Graph maps are returned in path order: chain order depends on where hidden
+// entries sat, so it must never reach the caller (fix round 1).
+const byPath = (map) => new Map([...map].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+
 const baseName = (path) => path.slice(path.lastIndexOf("/") + 1).replace(/\.md$/, "");
 
 /**
- * `{ incoming, outgoing, sharedTargets, sharedUrls, unresolved, complete }`
- * for `path` (Task 15 data model). `catalog` holds only what the caller may
- * see (`byName`, and `paths` only when the index is converged). `scope` is the
- * caller's scope; anything but "private" gets the OPEN-27 rule. An encrypted
- * body yields incoming only (OPEN-32, arch 7.6).
+ * `{ incoming, outgoing, sharedTargets, sharedUrls, unresolved, complete, health }`
+ * for `path` (Task 15 data model). `health` is the `graphHealth` answer this
+ * call read; `complete` says every chain finished. `catalog` holds only what
+ * the caller may see (`byName`, and `paths` only when the index is
+ * converged). `scope` is the caller's scope; anything but exactly "private"
+ * gets the OPEN-27 rule: when any chain did not finish, every graph map is
+ * empty. A seed the caller cannot see gets the empty answer with no store op.
+ * An encrypted body yields incoming only (OPEN-32, arch 7.6).
  */
 export async function graphNeighbors(store, budget, { path, body, catalog, canSeeKey, scope, limits }) {
+  if (!(await canSeeKey(path))) {
+    return { incoming: new Map(), outgoing: new Map(), sharedTargets: new Map(), sharedUrls: new Map(), unresolved: [], complete: false, health: unavailableHealth(store) };
+  }
   const outgoing = new Map();
   const unresolved = [];
   const targets = [];
@@ -65,16 +75,15 @@ export async function graphNeighbors(store, budget, { path, body, catalog, canSe
       }
     }
   }
-  const empty = { incoming: new Map(), outgoing, sharedTargets: new Map(), sharedUrls: new Map(), unresolved, complete: false };
-
   const view = graphView(store, budget);
-  let gen = null;
+  let health;
   try {
-    const health = await graphHealth(view, budget);
-    if (health.state !== "unavailable") gen = health.generation;
+    health = await graphHealth(view, budget);
   } catch {
-    // An unreadable manifest is an unavailable graph.
+    health = unavailableHealth(store); // an unreadable manifest is an unavailable graph
   }
+  const empty = { incoming: new Map(), outgoing, sharedTargets: new Map(), sharedUrls: new Map(), unresolved, complete: false, health };
+  const gen = health.state === "unavailable" ? null : health.generation;
   if (!gen) return empty;
 
   const validate = validateEntry(view, budget, gen);
@@ -103,11 +112,14 @@ export async function graphNeighbors(store, budget, { path, body, catalog, canSe
     for (const e of bare.entries) if (e.source !== path) incoming.set(e.source, { exact: incoming.has(e.source), bare: true });
   }
 
-  const expand = limits?.expand ?? MAX_EXPANDED;
+  const expand = Number.isInteger(limits?.expand) && limits.expand >= 0 ? limits.expand : MAX_EXPANDED;
+  // Once the budget is gone nothing more can finish; stop rather than walk on.
+  const gone = () => budget.remaining === 0;
   const shared = async (keys, family, hashOf) => {
     const scores = new Map();
     let ok = true;
     for (const key of keys.slice(0, expand)) {
+      if (gone()) return { scores, ok: false };
       const visible = await read(family, await hashOf(key), () => true);
       ok &&= visible.complete;
       const d = visible.entries.length;
@@ -118,6 +130,7 @@ export async function graphNeighbors(store, budget, { path, body, catalog, canSe
         try {
           valid = await validate(e);
         } catch {
+          if (gone()) return { scores, ok: false };
           ok = false;
         }
         if (valid) scores.set(e.source, (scores.get(e.source) ?? 0) + hubWeight(d));
@@ -128,14 +141,17 @@ export async function graphNeighbors(store, budget, { path, body, catalog, canSe
   const byTarget = await shared(targets, "incoming", pathHash);
   const byUrl = await shared(urls, "urls", urlHash);
 
-  const strict = scope !== "private";
-  const keep = (map, ok) => (ok || !strict ? map : new Map());
+  const complete = incomingOk && byTarget.ok && byUrl.ok;
+  // OPEN-27, fix round 1: all graph families or none, so a strict caller learns
+  // one bit (withheld or not) and never which chain ran long.
+  if (!complete && scope !== "private") return empty;
   return {
-    incoming: keep(incoming, incomingOk),
+    incoming: byPath(incoming),
     outgoing,
-    sharedTargets: keep(byTarget.scores, byTarget.ok),
-    sharedUrls: keep(byUrl.scores, byUrl.ok),
+    sharedTargets: byPath(byTarget.scores),
+    sharedUrls: byPath(byUrl.scores),
     unresolved,
-    complete: incomingOk && byTarget.ok && byUrl.ok,
+    complete,
+    health,
   };
 }

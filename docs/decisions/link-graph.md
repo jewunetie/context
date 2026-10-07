@@ -118,13 +118,18 @@ a reviewer.
   (architecture 12.4, OPEN-27; an owner decision point): posting pages mix
   visible and hidden entries, so how many reads a chain costs, and whether it
   finishes within the budget, depends on hidden data. For a caller other than
-  the owner a reason family any of whose chains did not finish is dropped
-  whole and the answer is labelled incomplete, so no partial list varies with
-  hidden data; what remains is one bit (the label, and the time taken). The
-  tests are `graphNeighbors.test.mjs`, "privacy invariance: hidden notes,
-  links and citations leave a team caller's answer unchanged" and "an
-  incomplete chain drops the whole family for a team caller and keeps it
-  partial for the owner".
+  the owner (any scope but exactly `private`), every graph family is dropped
+  when any chain did not finish, and the answer is labelled incomplete, so no
+  partial list and no choice of surviving family varies with hidden data;
+  what remains is one bit (withheld or not, and the time taken). Graph maps
+  are returned in path order, never chain order, which also depends on hidden
+  history (Task 15 fix round 1). The tests are `graphNeighbors.test.mjs`,
+  "privacy invariance: hidden notes, links and citations leave a team
+  caller's answer unchanged", "one bit at most: hidden notes that add a
+  posting page in any family change nothing but the withheld label, at every
+  budget", "result order does not depend on where hidden entries sat in the
+  chain" and "an incomplete chain empties every graph family for a team
+  caller and keeps partial lists for the owner".
 
 **What reversing it costs.** Phase 3 backlinks, related notes, and
 index-assisted move repair all read this index; they cannot be built on a

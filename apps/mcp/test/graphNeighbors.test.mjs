@@ -18,6 +18,15 @@
  *   graph reads on the shared store instead of graphView                  1
  *   definition URLs expanded like inline ones                             1
  *
+ * Fix round 1 (each new or changed test red first against f1679583):
+ *   per-family drop instead of all-or-nothing                             2 (incomplete chain, one bit)
+ *   graph maps in chain order, not path order                             1 (result order)
+ *   health left out of the answer                                         2 (health, one bit)
+ *   no canSeeKey(path) guard on the seed                                  1
+ *   limits.expand taken as given                                          1
+ *   shared loop walks on after the budget is gone                         1
+ *   "Private", true or undefined scope treated as the owner               1 (incomplete chain)
+ *
  * RED: the file failed to load on the missing module before neighbors.js existed.
  */
 
@@ -26,7 +35,8 @@ import { test } from "node:test";
 
 import { graphNeighbors, HUB_DEGREE_CAP, MAX_EXPANDED } from "../src/graph/neighbors.js";
 import { initGraphManifest } from "../src/graph/manifest.js";
-import { projectNote } from "../src/graph/project.js";
+import { graphManifestKey } from "../src/graph/keys.js";
+import { projectNote, removeNote } from "../src/graph/project.js";
 import { indexByName } from "../src/links.js";
 import { createSearchBudget } from "../src/search/maintain.js";
 import { memoryBucket } from "./store/fixtures.mjs";
@@ -50,12 +60,22 @@ async function world(notes) {
 }
 
 /** The neighbourhood of `seed` as a caller who sees `canSeeKey` would get it. */
-async function neighbours(notes, { seed = SEED, canSeeKey = team, scope = canSeeKey === owner ? "private" : "workspace", paths = true, budget = big(), store, limits } = {}) {
+async function neighbours(notes, options = {}) {
+  const { seed = SEED, canSeeKey = team, paths = true, budget = big(), store, limits } = options;
+  // An explicit `scope: undefined` is passed through as given.
+  const scope = Object.hasOwn(options, "scope") ? options.scope : canSeeKey === owner ? "private" : "workspace";
   const s = store ?? (await world(notes));
   const visible = Object.keys(notes).filter(canSeeKey);
   const catalog = { byName: indexByName(visible), ...(paths && { paths: new Set(visible) }) };
   return graphNeighbors(s, budget, { path: seed, body: notes[seed], catalog, canSeeKey, scope, limits });
 }
+
+/** The whole answer as text, Maps as arrays in their own order: two answers are the same only when this is. */
+const ser = (r) => JSON.stringify({
+  incoming: [...r.incoming], outgoing: [...r.outgoing], sharedTargets: [...r.sharedTargets], sharedUrls: [...r.sharedUrls],
+  unresolved: r.unresolved, complete: r.complete, health: r.health,
+});
+const hidden = (n, body, prefix = "h") => Object.fromEntries(Array.from({ length: n }, (_, i) => [`private/${prefix}${i}.md`, body]));
 
 const plain = (map) => Object.fromEntries([...map].sort(([a], [b]) => a.localeCompare(b)));
 
@@ -140,6 +160,7 @@ test("privacy invariance: hidden notes, links and citations leave a team caller'
     "notes/backlink.md": "[[seed]]",
   };
   const expected = await neighbours(base);
+  assert.equal(expected.complete, true);
   assert.ok(expected.incoming.size > 0 && expected.sharedTargets.size > 0 && expected.sharedUrls.size > 0);
   const variants = {
     "a hidden note": { "private/plain.md": "nothing" },
@@ -150,7 +171,7 @@ test("privacy invariance: hidden notes, links and citations leave a team caller'
     "a hidden duplicate of the seed's name": { "private/seed.md": "twin" },
   };
   for (const [name, extra] of Object.entries(variants)) {
-    assert.deepStrictEqual(await neighbours({ ...base, ...extra }), expected, name);
+    assert.equal(ser(await neighbours({ ...base, ...extra })), ser(expected), name);
   }
 });
 
@@ -190,7 +211,7 @@ test("an unavailable graph leaves graph parts empty and complete false; the body
   assert.equal(r.complete, false);
 });
 
-test("an incomplete chain drops the whole family for a team caller and keeps it partial for the owner", async () => {
+test("an incomplete chain empties every graph family for a team caller and keeps partial lists for the owner", async () => {
   const notes = { [SEED]: "seed" };
   for (let i = 0; i < 5; i += 1) notes[`n/s${i}.md`] = "[[notes/seed]]";
   const store = await world(notes);
@@ -201,6 +222,20 @@ test("an incomplete chain drops the whole family for a team caller and keeps it 
   const forOwner = await neighbours(notes, { store, canSeeKey: owner, budget: createSearchBudget(5) });
   assert.equal(forOwner.incoming.size, 3);
   assert.equal(forOwner.complete, false);
+
+  // Incoming finishes; the shared-target chain does not. Manifest, incoming
+  // head, one validation, bare head, target head, one of three validations.
+  const later = { [SEED]: "[[t/target]]", "t/target.md": "", "n/back.md": "[[notes/seed]]", "n/c0.md": "[[t/target]]", "n/c1.md": "[[t/target]]", "n/c2.md": "[[t/target]]" };
+  const s2 = await world(later);
+  const team6 = await neighbours(later, { store: s2, budget: createSearchBudget(6) });
+  assert.deepEqual([team6.incoming.size, team6.sharedTargets.size, team6.sharedUrls.size, team6.complete], [0, 0, 0, false]);
+  const owner6 = await neighbours(later, { store: s2, canSeeKey: owner, budget: createSearchBudget(6) });
+  assert.deepEqual([owner6.incoming.size, owner6.sharedTargets.size, owner6.complete], [1, 1, false]);
+  // Only "private" exactly is the owner; anything else is strict.
+  for (const scope of [undefined, "Private", "team", true, {}]) {
+    const r = await neighbours(later, { store: s2, canSeeKey: owner, scope, budget: createSearchBudget(6) });
+    assert.equal(r.incoming.size + r.sharedTargets.size + r.sharedUrls.size, 0, String(scope));
+  }
 });
 
 test("never throws: a failing store or an empty budget gives complete false", async () => {
@@ -233,4 +268,113 @@ test("a URL in a reference definition is not expanded (definitions are unsupport
   const r = await neighbours({ [SEED]: "text\n[r]: https://example.com/def\n", "n/x.md": "[x](https://example.com/def)" });
   assert.equal(r.sharedUrls.size, 0);
   assert.deepEqual(r.unresolved, []);
+});
+
+test("one bit at most: hidden notes that add a posting page in any family change nothing but the withheld label, at every budget", async () => {
+  const base = {
+    [SEED]: "[[t/target]] [p](https://example.com/page)",
+    "t/target.md": "target",
+    "notes/back.md": "[[notes/seed]]",
+    "notes/cotarget.md": "[[t/target]]",
+    "notes/courl.md": "[p](https://example.com/page)",
+  };
+  const H = 300; // over POSTING_PAGE_SIZE (256): one more page in the chain
+  const variants = {
+    "hidden backlinks": hidden(H, "[[notes/seed]]"),
+    "hidden bare backlinks": hidden(H, "[[seed]]"),
+    "hidden co-citers": hidden(H, "[[t/target]]"),
+    "hidden URL citers": hidden(H, "[p](https://example.com/page)"),
+  };
+  const noneStore = await world(base);
+  const stores = {};
+  for (const [k, v] of Object.entries(variants)) stores[k] = await world({ ...base, ...v });
+  for (let B = 0; B <= 20; B += 1) {
+    const plainAnswer = await neighbours(base, { store: noneStore, budget: createSearchBudget(B) });
+    const none = ser(plainAnswer);
+    const withheld = ser({ ...plainAnswer, incoming: new Map(), sharedTargets: new Map(), sharedUrls: new Map(), complete: false });
+    for (const [k, v] of Object.entries(variants)) {
+      const out = ser(await neighbours({ ...base, ...v }, { store: stores[k], budget: createSearchBudget(B) }));
+      assert.ok(out === none || out === withheld, `B=${B} ${k}: ${out}`);
+      if (none === withheld) assert.equal(out, withheld, `B=${B} ${k}`);
+      if (B === 20) assert.equal(out, none, k);
+    }
+    if (B === 20) assert.equal(plainAnswer.complete, true);
+  }
+});
+
+test("result order does not depend on where hidden entries sat in the chain", async () => {
+  const seedNotes = { [SEED]: "seed" };
+  const project = async (store, notes) => {
+    for (const [path, body] of Object.entries(notes)) await projectNote(store, path, body, "1", { budget: big(), gen, mode: "conditional", now });
+  };
+  const a = await world(seedNotes);
+  await project(a, { "notes/v1.md": "[[notes/seed]]" });
+  await project(a, { "notes/v2.md": "[[notes/seed]]" });
+  // 256 hidden fill page 0, v1 lands on page 1, a hidden one leaves, v2 lands on page 0.
+  const b = await world(seedNotes);
+  const hid = hidden(256, "[[notes/seed]]");
+  await project(b, hid);
+  await project(b, { "notes/v1.md": "[[notes/seed]]" });
+  assert.equal((await removeNote(b, "private/h0.md", { budget: big(), gen, mode: "conditional" })).state, "projected");
+  await project(b, { "notes/v2.md": "[[notes/seed]]" });
+  const visible = { ...seedNotes, "notes/v1.md": "", "notes/v2.md": "" };
+  const ra = await neighbours(visible, { store: a });
+  const rb = await neighbours({ ...visible, ...hid }, { store: b });
+  assert.deepEqual([...ra.incoming.keys()], ["notes/v1.md", "notes/v2.md"]);
+  assert.equal(ser(rb), ser(ra));
+});
+
+test("the health read is returned with the answer, at no extra read", async () => {
+  const notes = { [SEED]: "x", "n/b.md": "[[notes/seed]]" };
+  const store = await world(notes);
+  const m = JSON.parse(store.objects.get(graphManifestKey()).body);
+  const budget = big();
+  const r = await neighbours(notes, { store, budget });
+  assert.deepEqual([r.health.state, r.health.generation, r.health.complete], ["partial", "1", false]);
+  // Manifest, incoming head, one validation, bare head.
+  assert.equal(budget.spent, 4);
+  const cases = [
+    [{ health: { ...m.health, state: "behind" } }, "behind", "1", 1],
+    [{ building: { generation: "2", startedAt: "x" } }, "partial", "1", 1],
+    [{ health: { ...m.health, state: "unavailable" } }, "unavailable", "1", 0],
+    [{ parserVersion: 99 }, "unavailable", null, 0],
+  ];
+  for (const [patch, state, generation, incoming] of cases) {
+    await store.put(graphManifestKey(), JSON.stringify({ ...m, ...patch }));
+    const got = await neighbours(notes, { store });
+    assert.deepEqual([got.health.state, got.health.generation, got.incoming.size], [state, generation, incoming], JSON.stringify(patch));
+  }
+  assert.equal((await neighbours(notes, { store: memoryBucket() })).health.state, "unavailable");
+});
+
+test("a seed the caller cannot see returns the empty answer with no store op", async () => {
+  const notes = { "private/seed.md": "[[t/target]] [[gone]]", "t/target.md": "", "n/x.md": "[[private/seed]]" };
+  const base = await world(notes);
+  let gets = 0;
+  const store = { get: (k) => ((gets += 1), base.get(k)) };
+  const budget = big();
+  const r = await neighbours(notes, { seed: "private/seed.md", store, budget });
+  assert.deepEqual([gets, budget.spent, r.incoming.size, r.outgoing.size, r.sharedTargets.size, r.sharedUrls.size, r.unresolved.length, r.complete, r.health.state],
+    [0, 0, 0, 0, 0, 0, 0, false, "unavailable"]);
+});
+
+test("limits.expand other than a non-negative integer falls back to the default; 0 expands nothing", async () => {
+  const notes = { [SEED]: "[[t/a]] [[t/b]]", "t/a.md": "", "t/b.md": "", "n/x.md": "[[t/a]]", "n/y.md": "[[t/b]]" };
+  const store = await world(notes);
+  for (const expand of [-1, 1.5, "1", NaN, null]) {
+    assert.equal((await neighbours(notes, { store, limits: { expand } })).sharedTargets.size, 2, String(expand));
+  }
+  assert.equal((await neighbours(notes, { store, limits: { expand: 0 } })).sharedTargets.size, 0);
+});
+
+test("the shared loop stops once the budget is gone", async () => {
+  const notes = { [SEED]: "[[t/a]] [[t/b]] [[t/c]]", "t/a.md": "", "t/b.md": "", "t/c.md": "" };
+  for (let i = 0; i < 40; i += 1) notes[`n/c${i}.md`] = "[[t/a]] [[t/b]] [[t/c]]";
+  const store = await world(notes);
+  const inner = createSearchBudget(8);
+  let takes = 0;
+  const budget = { get remaining() { return inner.remaining; }, get spent() { return inner.spent; }, take: (r) => ((takes += 1), inner.take(r)) };
+  const r = await neighbours(notes, { store, budget });
+  assert.equal(r.complete, false);
+  assert.ok(takes <= 8 + 2, `${takes} takes`);
 });

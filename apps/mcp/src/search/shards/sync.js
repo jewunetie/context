@@ -3,7 +3,7 @@ import { buildTermFilter } from "../filter.js";
 import { addDoc, removeDocsForNote } from "../indexer.js";
 import { indexVolumeOf } from "../commsIndex.js";
 import { createSearchBudget, defaultIsIndexable, exceedsUtf8Bytes } from "../maintain.js";
-import { writerFor } from "./revisions.js";
+import { V2_WRITER } from "./revisions.js";
 import {
   LEGACY_V1_KEY,
   SHARD_PARSE_BYTE_CAP,
@@ -35,9 +35,9 @@ import {
 
 /**
  * Bring `.context/search/v2/` as close to the bucket as one budget allows, and hand back
- * what was built (CONTRACT.md § "The sharded index … Maintenance"). With the
- * index format switch on it is `v3/` instead, with revisioned shards: see
- * `revisions.js` and CONTRACT-v3.md "The writer".
+ * what was built (CONTRACT.md § "The sharded index … Maintenance"). One pass
+ * over one namespace, chosen by `writer`; `syncShardedIndex` (`syncDual.js`)
+ * decides which namespaces a pass covers. See CONTRACT-v3.md "The writer".
  *
  * GET the manifest, list the notes, diff the listing against `docsByShard`,
  * group what changed by shard, and then per shard in id order: read it, fetch
@@ -101,7 +101,7 @@ import {
  *   spent: number,
  * }>} `shards` holds only what this pass loaded or built.
  */
-export async function syncShardedIndex(
+export async function syncPass(
   store,
   {
     budget,
@@ -203,7 +203,8 @@ export async function syncShardedIndex(
      * the version of every note in it, which only a listing has.
      */
     only = null,
-  } = {}
+  } = {},
+  writer = V2_WRITER // which namespace this pass writes; chosen by `syncShardedIndex` (`syncDual.js`)
 ) {
   const targeted = only instanceof Map;
   const shardCap = Number.isFinite(requestedShardCap) ? requestedShardCap : SHARD_PARSE_BYTE_CAP;
@@ -212,7 +213,6 @@ export async function syncShardedIndex(
     : MANIFEST_PARSE_BYTE_CAP;
   const ops = typeof budget === "object" && budget ? budget : createSearchBudget(budget);
   const shards = new Map();
-  const writer = writerFor(store); // v2, or v3 behind the switch (`revisions.js`)
 
   if (!ops.take(reserve)) {
     return {

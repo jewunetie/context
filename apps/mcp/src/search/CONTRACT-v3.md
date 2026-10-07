@@ -78,12 +78,27 @@ one: tokenizer 2 configured while v2 still serves queries with tokenizer 1.
 ## The writer (Task 31)
 
 `route.js` sets `store.searchIndexFormat = indexFormatFor(env)` per request,
-beside `searchSubrequestBudget`. `syncShardedIndex` asks `writerFor(store)`
-(`shards/revisions.js`) where to write. With the default format that is v2,
-byte for byte as before (fixed shard keys, unconditional shard writes, the
-manifest conditional on its etag and unconditional when absent, v1 cleanup);
-nothing under `v3/` is read or written. When `usesV3` holds, the same pass
-runs against the v3 layout with these differences only:
+beside `searchSubrequestBudget`, and the move queue consumer sets it on its
+job store the same way. `syncShardedIndex` (`shards/syncDual.js`) runs one
+`syncPass` (`shards/sync.js`) per namespace that needs it, with the writer
+from `shards/revisions.js`. With the default format that is one v2 pass, byte
+for byte as before (fixed shard keys, unconditional shard writes, the manifest
+conditional on its etag and unconditional when absent, v1 cleanup); nothing
+under `v3/` is read or written. `test/searchV2Frozen.test.mjs` pins that to a
+digest computed from the pre-Task-31 code.
+
+**The served index never freezes.** With the switch on and the v3 manifest
+for this format not yet built, every pass, the write path's targeted one
+included, first runs the v2 pass exactly as with the switch off and then gives
+the v3 build whatever budget is left (an interactive backfill allowance is
+shared, v2 first). The pass reports `pending`, `listingTruncated` and
+`manifestOverflow` over both, so a caller keeps scheduling passes until v3 is
+built too. Once that manifest is built, readers serve v3 and only v3 is
+maintained; deciding this costs one read of the v3 manifest per pass. A v3
+manifest of another format is not built for this one, so v2 maintenance
+resumes on a format change.
+
+The v3 pass runs against the v3 layout with these differences only:
 
 - **Revisions.** A touched shard is stored at
   `.context/search/v3/shards/<nnn>-<hex16>.json`, `nnn` the zero-padded shard
@@ -116,7 +131,8 @@ runs against the v3 layout with these differences only:
   namespace, tokenizer, chunk}`, with no path or term.
 
 Revisioning applies to v3 only (ruling OPEN-74): the v2 writer keeps fixed-key
-unconditional shard writes in Phase 5. While the switch is on, the v2 index is
-no longer maintained by those passes; it keeps serving as it last was until v3
-is built. On a store that ignores preconditions (B2, Wasabi) the v3 pass
+unconditional shard writes in Phase 5. Letting the served v2 index fall behind
+while v3 builds is forbidden (see "The served index never freezes" above): a
+note written while the switch is on must be findable whichever layout is
+served. On a store that ignores preconditions (B2, Wasabi) the v3 pass
 completes but coherence between concurrent passes is not claimed, as for v2.

@@ -1,7 +1,7 @@
 /**
  * Where a sync pass writes, per index format (CONTRACT-v3.md "The writer").
  *
- * `syncShardedIndex` is one loop for both namespaces and asks this module for
+ * `syncPass` (`sync.js`) is one loop for both namespaces and asks this module for
  * the few things that differ: the keys, the manifest codec, how a note becomes
  * documents, how a shard is stored and how the manifest is committed. The v2
  * writer below is today's behaviour exactly; the v3 writer is chosen only when
@@ -35,7 +35,7 @@ import { V3_LAYOUT } from "./io.js";
 import { revisionKey, shardKey } from "./placement.js";
 import { parseManifest, parseManifestV4, serializeManifest, serializeManifestV4 } from "./serialize.js";
 
-const V2_WRITER = Object.freeze({
+export const V2_WRITER = Object.freeze({
   v3: false,
   tokenizer: 1,
   manifestKey: MANIFEST_KEY,

@@ -29,6 +29,8 @@
  *   resolved format not logged                                               1
  *   index built with tokenizer 1 whatever the format says                    1
  *   revision put without the create-only precondition                        2
+ *   fix 1: every switched-on pass goes to v3 only (v2 frozen while building) 4
+ *   fix 1: v2 still maintained after v3 is built and served                  2
  */
 
 import assert from "node:assert/strict";
@@ -54,6 +56,7 @@ import { chunkNote } from "../src/search/chunk.js";
 import { buildTermFilter } from "../src/search/filter.js";
 import { createSearchBudget } from "../src/search/maintain.js";
 import { searchIndexedNotes } from "../src/search/visible.js";
+import { indexWrittenNotes } from "../src/search/writeProjection.js";
 import { sha256Hex } from "../src/ingestion/inbox.js";
 import { generateCorpus } from "../bench/fixtures.js";
 import { memoryBucket } from "./store/fixtures.mjs";
@@ -170,7 +173,6 @@ test("v3 tokenizer 1 answers equal v2 answers on the bench 100-note corpus", asy
   }
   await buildUntilDone(v2, { shardByteCap: undefined });
   await buildUntilDone(v3, { shardByteCap: undefined });
-  assert.deepEqual([...v3.objects.keys()].filter((key) => key.startsWith(".context/search/v2/")), []);
   const served = await loadIndexManifest(v3, createSearchBudget(10), 0);
   assert.equal(served.layout, V3_LAYOUT);
   await assertCoherent(v3);
@@ -192,7 +194,7 @@ test("revision keys are content addressed and the manifest names key and digest"
   assert.equal(manifest.built, true);
   assert.deepEqual(manifest.format, TOKENIZER_2);
   assert.ok(bucket.objects.has(V3_DOCMAP_KEY));
-  assert.equal(bucket.objects.has(MANIFEST_KEY), false, "v2 is not written while the switch is on");
+  assert.ok(bucket.objects.has(MANIFEST_KEY), "v2 is maintained while v3 builds (fix round 1)");
   await assertCoherent(bucket);
 });
 
@@ -463,8 +465,10 @@ test("a chunked format indexes the chunks chunkNote returns for the format", asy
   const long = Array.from({ length: 12 }, (_, i) => `## Part ${i}\n\n${"words ".repeat(60)}section${i}\n`).join("\n");
   await bucket.put("notes/long.md", long);
   await bucket.put("notes/empty.md", "");
-  const result = await buildUntilDone(bucket);
-  const docs = [...result.shards.values()].flatMap((shard) => [...shard.docs.entries()]);
+  await buildUntilDone(bucket);
+  // Read from the published v3 revisions: while v3 builds, a pass returns the served (v2) shards.
+  const docs = v3Manifest(bucket).shards.filter(Boolean)
+    .flatMap((entry) => [...parseShard(bucket.objects.get(entry.key).body).docs.entries()]);
   const chunks = chunkNote("notes/long.md", long, CHUNKED_1000.chunk).chunks;
   assert.ok(chunks.length > 1);
   const longDocs = docs.filter(([, doc]) => doc.notePath === "notes/long.md");
@@ -499,4 +503,45 @@ test("the resolved format is logged once per v3 pass, with no note content", asy
   assert.equal(line.tokenizer, 2);
   assert.equal(line.chunk, null);
   assert.equal(lines[0].includes("notes/"), false);
+});
+
+// -- v2 stays current until v3 is served (fix round 1) ---------------------------
+
+async function writeNote(bucket, path, text) {
+  const { etag } = await bucket.put(path, text);
+  await indexWrittenNotes(bucket, [{ path, version: etag, size: text.length }]);
+}
+
+test("switch on, v3 not built: a note written through the write path is found", async () => {
+  const bucket = conditionalBucket();
+  await seedNotes(bucket, 60);
+  await buildUntilDone(bucket);
+  bucket.searchIndexFormat = TOKENIZER_2;
+  await writeNote(bucket, "notes/new.md", "# New\n\nthe quokka arrived\n");
+  assert.equal((await loadIndexManifest(bucket, createSearchBudget(10), 0)).format.tokenizer, 1, "v2 serves");
+  assert.deepEqual((await search(bucket, "quokka")).hits.map((hit) => hit.key), ["notes/new.md"]);
+});
+
+test("switch on, v3 not built: full passes keep the served v2 index current", async () => {
+  const bucket = conditionalBucket();
+  await seedNotes(bucket, 60);
+  await buildUntilDone(bucket);
+  bucket.searchIndexFormat = TOKENIZER_2;
+  await bucket.put("notes/late.md", "# Late\n\na wombat appeared\n");
+  await sync(bucket, { backfillOps: 12 });
+  assert.equal(v3Manifest(bucket)?.built ?? false, false, "v3 is still building");
+  assert.deepEqual((await search(bucket, "wombat")).hits.map((hit) => hit.key), ["notes/late.md"]);
+});
+
+test("once v3 is built and served, written notes reach v3 and v2 maintenance stops", async () => {
+  const bucket = conditionalBucket();
+  bucket.searchIndexFormat = TOKENIZER_2;
+  await seedNotes(bucket, 60);
+  await buildUntilDone(bucket);
+  assert.equal((await loadIndexManifest(bucket, createSearchBudget(10), 0)).layout, V3_LAYOUT);
+  const v2Before = bucket.objects.get(MANIFEST_KEY).body;
+  await writeNote(bucket, "notes/new.md", "# New\n\nthe quokka arrived\n");
+  assert.deepEqual((await search(bucket, "quokka")).hits.map((hit) => hit.key), ["notes/new.md"]);
+  await sync(bucket);
+  assert.equal(bucket.objects.get(MANIFEST_KEY).body, v2Before);
 });

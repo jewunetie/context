@@ -85,4 +85,4 @@ export {
   fetchShardBytes,
   decodeShard,
 } from "./shards/io.js";
-export { syncShardedIndex } from "./shards/sync.js";
+export { syncShardedIndex } from "./shards/syncDual.js";

@@ -93,6 +93,12 @@ WRITE_ENRICH_SUBREQUEST_BUDGET = "80"
 # SEARCH_TOKENIZER = "2"        # "1" (today) or "2"
 # SEARCH_CHUNK_CHARS = "2000"   # "0" or unset (no chunking), "1000", "2000", "4000"
 
+# Graph-assisted search ranking (Task 29, ruling OPEN-68). Unset everywhere, so
+# search_notes is unchanged; only the exact values "b2", "b3" or "b4" turn it
+# on (anything else is off). Measured in the Phase 5 bench only: never set it
+# in `[vars]` or `[env.staging.vars]` without a bench win (DELIVERY 17.1).
+# SEARCH_GRAPH_BOOST = "b2"     # "off", "b2" links and shared targets, "b3" plus shared URLs, "b4" plus folders
+
 # ── Presence: who else has this note open ───────────────────────────────────
 #
 # One Durable Object per note, addressed by `idFromName(workspaceId + path)`.

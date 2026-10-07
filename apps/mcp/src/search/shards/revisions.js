@@ -118,13 +118,18 @@ function v3Writer(format) {
      * A new revision, and the manifest in memory names it only once it has
      * landed. Create-only where the store supports it, so an object some
      * manifest references is never written again; a refusal there means the
-     * same bytes are already stored under the same content address.
+     * same bytes are already stored under the same content address. Task 32
+     * deletes revisions, and a logical-delete tombstone can make a create-only
+     * put refuse a key whose object is gone, so a refusal is believed only
+     * after `exists` confirms the object; otherwise the shard is reported as
+     * not persisted and the manifest never names it.
      */
     async putShard(store, manifest, id, body) {
       const digest = await sha256Hex(body);
       const key = revisionKey(id, digest);
       if (manifest.shards?.[id]?.key !== key) {
-        await (store.capabilities?.conditionalCreate ? store.put(key, body, createOnly) : store.put(key, body));
+        const created = await (store.capabilities?.conditionalCreate ? store.put(key, body, createOnly) : store.put(key, body));
+        if (created === null && typeof store.exists === "function" && !(await store.exists(key))) return false;
       }
       manifest.shards = manifest.shards || [];
       manifest.shards[id] = { key, digest };

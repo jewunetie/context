@@ -166,3 +166,32 @@ completes but coherence between concurrent passes is not claimed, as for v2.
   `matchCountIsFloor` still reads a full list as a floor. A query whose terms
   fall in two chunks of one note misses the coverage multiplier that a
   whole-note index would give it; Task 37 measures that.
+
+## Collecting revisions (Task 32, ruling OPEN-59)
+
+`collectShardRevisions(store, budget, { manifest, now })` (`shards/gc.js`)
+lists one page (200 keys) of `.context/search/v3/shards/` and deletes a
+revision only when all of these hold: its key is under that prefix and has the
+revision name shape `<nnn>-<hex16>.json`; the current manifest does not name
+it; its listed `uploaded` is known and older than the retention window of
+15 minutes (`REVISION_RETENTION_MS`). A listing with no usable `uploaded`
+(missing, epoch 0, unparsable, in the future) keeps the revision. The window
+is what "retained manifests" means: a reader pinned to the previous manifest
+finishes inside it, so every revision that manifest named is still stored.
+Nothing outside the prefix is ever listed or deleted, and a manifest that is
+absent or not the v3 layout means nothing is known to be referenced, so
+nothing is listed.
+
+`maintainNow` calls it after the search sync, with the sync's own manifest,
+only when that manifest is the v3 layout (v3 is built and served) and
+`budget.remaining` exceeds `GC_BUDGET_FLOOR` (2) plus the projection reserve.
+Each listing and each delete takes one op and leaves the floor untouched. A
+failure is swallowed: it never changes the maintenance result. The cursor is
+not stored between passes; deletes shrink the next first page.
+
+**Deletes are logical where the store wraps them.** `store.delete` through
+`withLogicalDelete` writes a tombstone, and a create-only put over a tombstone
+can be refused for an object that is gone. A revision put that returns `null`
+is therefore believed (the same bytes are already stored) only after
+`store.exists(key)` confirms it; otherwise `putShard` returns `false`, the
+shard counts as not persisted and the manifest never names it.

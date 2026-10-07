@@ -27,6 +27,8 @@ import {
 import { INTERACTIVE_BACKFILL_OPS } from "./visible.js";
 import { listBoundedKeys, listImmediateLayout } from "../notes/storage.js";
 import { syncShardedIndex } from "./shards.js";
+import { GC_BUDGET_FLOOR, collectShardRevisions } from "./shards/gc.js";
+import { V3_LAYOUT } from "./shards/io.js";
 
 /**
  * The fallback scan's key listing.
@@ -227,6 +229,17 @@ async function maintainNow(store, budget, isIndexable, found, visibilityOf, opti
     // the answer. The next search re-diffs from the manifest — and the
     // projection still gets its turn below, because a failed listing is not a
     // reason to stop copying the notes that were already indexed.
+  }
+  // Housekeeping on the same side of the response: it never changes the pass's
+  // outcome, so a failure here is swallowed like the sync's above. Only a v3
+  // manifest reaches here as `synced.manifest` once v3 is built and served.
+  try {
+    const served = synced?.manifest;
+    if (served?.layout === V3_LAYOUT && budget.remaining > GC_BUDGET_FLOOR + reserve) {
+      await collectShardRevisions(store, budget, { manifest: served, now: Date.now(), reserve });
+    }
+  } catch {
+    // Unreferenced revisions only cost storage; the next pass tries again.
   }
   if (!projecting) return;
   try {

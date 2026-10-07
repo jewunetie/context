@@ -455,7 +455,8 @@ const DEFINITION = /^ {0,3}\[(?!\^)[^\]\n]+\]:[ \t]*(<[^>\n]*>|\S+)/gm;
  */
 export function extractReferences(text) {
   const skip = codeRanges(text);
-  const inCode = (index) => skip.some(([from, to]) => index >= from && index < to);
+  // Definitions are matched in document order, so the forward cursor holds.
+  const inCode = within(skip);
   const found = parseLinks(text);
 
   for (const match of text.matchAll(DEFINITION)) {

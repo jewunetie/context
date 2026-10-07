@@ -20,7 +20,7 @@
  * fixture store lacks it, and there `graphView` falls back to the store itself.
  *
  * Off switch. The Convex environment variable WRITE_ENRICH_SUBREQUEST_BUDGET
- * set to "0" turns the console's graph reads off, as the gateway's variable of
+ * read by the gateway's rule (`writeEnrichBudgetFor`) as 0 turns the console's graph reads off, as the gateway's variable of
  * the same name does: `retrieveCandidates` sees `writeEnrichBudget` 0, keeps
  * the seed's own links, skips graph reasons and labels the answer possibly
  * incomplete.
@@ -30,6 +30,7 @@ import { canSee, isPlumbing } from "../privacy";
 import { type Clearance } from "../clearance";
 import { retrieveCandidates } from "../../../../mcp/src/graph/retrieve.js";
 import { createSearchBudget } from "../../../../mcp/src/search/maintain.js";
+import { writeEnrichBudgetFor } from "../../../../mcp/src/search/budget.js";
 import type { FileStore } from "./store";
 import { loadPrivacyState } from "./privacyState";
 import { readFile } from "./reading";
@@ -62,7 +63,8 @@ export async function relatedNotes(
   const state = await loadPrivacyState(store);
   const isVisible = (path: string) =>
     !isPlumbing(path) && canSee(path, clearance.scope, state.rules, state.overrides, clearance.names);
-  const graphOff = process.env.WRITE_ENRICH_SUBREQUEST_BUDGET === "0";
+  // The gateway's own floor-and-clamp, so "0.5", " 0" and "-1" are off too.
+  const graphOff = writeEnrichBudgetFor(process.env) === 0;
   // Object.create keeps the store's methods (and forkLogicalView) by prototype.
   const view = graphOff ? Object.assign(Object.create(store), { writeEnrichBudget: 0 }) : store;
   return (await retrieveCandidates(view as unknown as Parameters<typeof retrieveCandidates>[0], {

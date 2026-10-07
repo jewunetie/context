@@ -75,7 +75,8 @@ a reviewer.
   targets or URLs, labelled possibly incomplete. The console's panel calls the same `retrieveCandidates`
   through Convex, which has its own switch (owner decision): the Convex
   environment variable of the same name, `WRITE_ENRICH_SUBREQUEST_BUDGET`,
-  set to "0" makes `related.ts` hand `retrieveCandidates` a store view with
+  read by the gateway's own rule (`writeEnrichBudgetFor`: floor, clamp, so
+  "0.5" and "-1" count as 0) as 0 makes `related.ts` hand `retrieveCandidates` a store view with
   `writeEnrichBudget` 0, so the panel behaves as the gateway does. The two
   variables are set separately; turning the graph off everywhere means
   setting both. The tests are
@@ -336,7 +337,12 @@ follow-up): `rewriteReferences` reads through collaboration only when the
 note already has a head, and otherwise rewrites the stored `.md` directly,
 since no head means no pending text. Before this, every move-time read
 created a head, so after one move every eligible note was a candidate. The
-cost is one head GET per note read. Tests: `moveIndexedReferrers.test.mjs`
+cost is one head GET per note read, plus one more after each direct
+rewrite. The direct rewrite is conditional on the etag read (a refusal, or
+no etag on a conditional store, fails the note), and a head that appeared
+before it landed, or a head that does not parse, also fails the note: a
+collaboration session started from the old text could re-put its revision
+over the .md, which no etag covers. Tests: `moveIndexedReferrers.test.mjs`
 "a move on a fresh workspace creates no collaboration heads" and "a later
 move still takes the index path and reads only the moved note and its
 referrers"; the pending-edit tests (R1, R1b) keep the collaboration path.

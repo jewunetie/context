@@ -51,6 +51,7 @@ const RECORDED_PATH_CAP = 200;
  * sweep to bounded waves, the same shape search uses for remote reads.
  */
 const REFERENCE_READ_CONCURRENCY = 8;
+const failedNote = Object.freeze({ notes: 0, links: 0, written: null, failed: true });
 
 export async function rewriteReferences(store, scope, rules, overrides, renames, { write = true } = {}) {
   if (renames.size === 0) return { notes: 0, links: 0, capped: false };
@@ -84,7 +85,7 @@ export async function rewriteReferences(store, scope, rules, overrides, renames,
       // No head means no pending collaboration text, so the stored .md is the
       // note: reading through collaboration would create a head for it and make
       // it an index candidate on every later move (owner decision, Phase 3).
-      const collaborationBase = (await collaborationHead(store, key))
+      const collaborationBase = (await collaborationHead(store, key, { strict: true }))
         ? await generatedCollaborationBase(store, key, storedText)
         : null;
       const text = collaborationBase?.text ?? storedText;
@@ -125,7 +126,17 @@ export async function rewriteReferences(store, scope, rules, overrides, renames,
           text: rewritten.text,
         });
       } else {
-        await store.put(key, rewritten.text);
+        // Conditional on the etag read: another writer's edit is never
+        // overwritten, and a refusal is a failed note. A conditional store
+        // that gave no etag cannot be written safely.
+        const etag = object.etag;
+        if (!etag && store.capabilities?.conditionalWrite) return failedNote;
+        const done = await store.put(key, rewritten.text, etag ? { onlyIf: { etagMatches: etag } } : undefined);
+        if (!done) return failedNote;
+        // A collaboration session that started from the old text can re-put
+        // its revision over this write (finalizePending), which no etag
+        // covers: a head that appeared meanwhile makes the note failed.
+        if (await collaborationHead(store, key, { strict: true })) return failedNote;
       }
       return { notes: 1, links: rewritten.changed, written: key, failed: false };
     } catch {
@@ -144,7 +155,7 @@ export async function rewriteReferences(store, scope, rules, overrides, renames,
         the target without being allowed to infer which private note could not
         be inspected.
       */
-      return { notes: 0, links: 0, written: null, failed: true };
+      return failedNote;
     }
   });
   const notes = results.reduce((sum, result) => sum + result.notes, 0);

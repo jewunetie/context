@@ -28,7 +28,8 @@
  * Run as a temporary local edit and reverted. Counts are failing tests here.
  *
  *   candidate filter admits every path (canSee dropped)   2 (clearance filter, invariance)
- *   Convex WRITE_ENRICH_SUBREQUEST_BUDGET ignored          1 (off switch)
+ *   Convex WRITE_ENRICH_SUBREQUEST_BUDGET ignored          5 (off switch, four spellings)
+ *   exact "0" match instead of writeEnrichBudgetFor        4 (four spellings)
  *
  * RED: 5 of 6 failed before the operation existed; the not-found test passed
  * then only because an unknown operation fails the same way for every path.
@@ -187,6 +188,18 @@ describe("the console's off switch", () => {
       const off = await related(store, owner);
       expect(JSON.stringify(off)).not.toContain("links_here");
       expect(JSON.stringify(off)).toContain("linked_from_here");
+      expect(off).toMatchObject({ kind: "related", possiblyIncomplete: true });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  test.each(["0.5", " 0", "0.0", "-1"])("WRITE_ENRICH_SUBREQUEST_BUDGET=%j is read as the gateway reads it: off", async (value) => {
+    const store = await world({ ...VISIBLE, ...HIDDEN }, { conditional: true, ready: true });
+    vi.stubEnv("WRITE_ENRICH_SUBREQUEST_BUDGET", value);
+    try {
+      const off = await related(store, owner);
+      expect(JSON.stringify(off)).not.toContain("links_here");
       expect(off).toMatchObject({ kind: "related", possiblyIncomplete: true });
     } finally {
       vi.unstubAllEnvs();

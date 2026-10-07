@@ -454,3 +454,49 @@ test("a later move still takes the index path and reads only the moved note and 
   assert.deepEqual(bodyReads(b), ["c/r4.md"]);
   assert.deepEqual(heads(b), []);
 });
+
+/** Review of 84597a3d: the direct .md rewrite is conditional and re-checks for a head. */
+const headKeyOf = async (path) => {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(path));
+  return `.context/collaboration/v1/heads/${[...new Uint8Array(digest)].map((x) => x.toString(16).padStart(2, "0")).join("")}.json`;
+};
+
+test("another writer's edit between the read and the put is not overwritten; the note is failed", async () => {
+  const b = await build(NOTES);
+  const { get, put } = b;
+  b.get = async (key) => {
+    const object = await get(key);
+    if (key === "r1.md") {
+      b.get = get;
+      await put("r1.md", "someone else's edit [t](./a/t.md)");
+    }
+    return object;
+  };
+  const r = await run(b, new Map([["a/t.md", "c/t2.md"]]));
+  assert.equal(b.objects.get("r1.md").body, "someone else's edit [t](./a/t.md)");
+  assert.equal(r.failed, 1);
+  assert.equal(r.capped, true);
+});
+
+test("a head created between the head check and the put leaves the note failed", async () => {
+  const b = await build(NOTES);
+  const { put } = b;
+  b.put = async (key, value, options) => {
+    if (key === "r1.md") {
+      b.put = put;
+      await readDocument(b, "r1.md");
+    }
+    return put(key, value, options);
+  };
+  const r = await run(b, new Map([["a/t.md", "c/t2.md"]]));
+  assert.ok(heads(b).includes(await headKeyOf("r1.md")), "fixture: a head now exists");
+  assert.equal(r.failed, 1);
+});
+
+test("a head that does not parse counts as failed, not as no head", async () => {
+  const b = await build(NOTES);
+  await b.put(await headKeyOf("r1.md"), "{not json");
+  const r = await run(b, new Map([["a/t.md", "c/t2.md"]]));
+  assert.equal(b.objects.get("r1.md").body, NOTES["r1.md"]);
+  assert.equal(r.failed, 1);
+});

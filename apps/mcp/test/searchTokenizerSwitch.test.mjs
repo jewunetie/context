@@ -22,6 +22,9 @@
  *   pieces routed for every CJK term, found or not (fix round 1)           1
  *   re-read shard collected in full, N and df counted twice (fix round 1)  1
  *   piece routing ignores the filters, reads every shard (fix round 1)     1
+ *   piece step floor restored on a budget cut, bound removed (fix 2)       1
+ *   piece step cut silently, bound removed (fix 2)                         1
+ *   piece step bound from the pieces' own claims (fix 2)                   1
  *   no per-note dedupe of chunk docs                                       6
  *   dedupe also applied to channel-day message docs                        1
  *   kept chunk does not carry the union of matched terms                   1
@@ -36,6 +39,11 @@
  * `path#c<n>` starts with a folder exactly when `path` does). The dedupe stays
  * after the filter because the ruling puts it there and the privacy test
  * below still pins the outcome.
+ *
+ * Not observable, by design: with the up-front bound in place, restoring
+ * `shardsUnread: true` on the piece step's budget cut fails nothing, because
+ * the bound guarantees the step never runs out (the check is kept only so the
+ * reserve is never spent).
  *
  * RED first: 9 of 12 failed (no words-only query mode, no fallback, chunk
  * docs not deduped or capped by note, `chunk` not stored); the 3 that passed
@@ -389,4 +397,42 @@ test("the fallback rung reads only the shards claiming every piece and counts no
   const df = (term) => collections.reduce((n, c) => n + (c.dfByTerm.get(term) || 0), 0);
   assert.equal(df("京市"), held.get("京市"));
   assert.ok(df("南京") <= held.get("南京"));
+});
+
+// Fix round 2: under a tight budget the piece step must not let private
+// vocabulary decide a team caller's answer, floor or banner.
+
+async function privacyPair(privateHoldsPieces) {
+  const pad = "filler words for size ".repeat(30);
+  const notes = { "notes/market.md": "在南京市场买菜" };
+  for (let i = 0; i < 40; i += 1) notes[`notes/w${i}.md`] = `南京的天气很好 ${i}\n\n${pad}`;
+  // Same paths and sizes either way; only whether they hold 南京 and 京市.
+  for (let i = 0; i < 40; i += 1) notes[`secret/s${i}.md`] = `${privateHoldsPieces ? "南京市场" : "别的东西"} ${i}\n\n${pad}`;
+  const bucket = bucketWith(notes, TOKENIZER_2);
+  await build(bucket, { shardByteCap: 30_000 });
+  return bucket;
+}
+
+test("a tight budget gives a team caller the same answer whether private docs hold the pieces", async () => {
+  const holding = await privacyPair(true);
+  const notHolding = await privacyPair(false);
+  const isVisible = (path) => !path.startsWith("secret/");
+  const ask = (bucket, total) =>
+    searchIndexedNotes(bucket, { isVisible, isIndexable: (k) => k.endsWith(".md"), query: "南京市", budget: createSearchBudget(total) });
+  // 19 and 21 leave the first read whole (the budget covers every occupied
+  // shard once) but cannot cover a second pass over all of them, so the piece
+  // step is the part a private claim could cut short: before the fix, 19 lost
+  // the hit and 21 raised the floor only where private docs held the pieces.
+  // 40 covers everything.
+  for (const total of [19, 21, 40]) {
+    const a = await ask(holding, total);
+    const b = await ask(notHolding, total);
+    assert.deepEqual(a.hits, b.hits, `hits at budget ${total}`);
+    assert.equal(a.matchCount, b.matchCount, `count at budget ${total}`);
+    assert.equal(a.matchCountIsFloor, b.matchCountIsFloor, `floor at budget ${total}`);
+    assert.equal(a.indexIncomplete, b.indexIncomplete, `banner at budget ${total}`);
+  }
+  const full = await ask(holding, 40);
+  assert.deepEqual(keys(full), ["notes/market.md"], "a budget that covers the step still finds the note");
+  assert.equal(full.matchCountIsFloor, false);
 });

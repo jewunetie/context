@@ -21,11 +21,14 @@ export function statsOfShard(shard) {
   // it cannot outlive the condition: a note re-indexed in full arrives with
   // no shed doc among its fresh ones and stops being counted here.
   const shed = new Set();
+  // Notes cut at a chunked format's cap: their last chunk carries `partial`.
+  const partial = new Set();
   for (const doc of shard.docs.values()) {
     for (const field of FIELD_ORDER) lenTotals[field] += doc.len[field];
     if (doc.shed) shed.add(doc.notePath ?? null);
+    if (doc.partial) partial.add(doc.notePath);
   }
-  return { docCount: shard.docs.size, lenTotals, shed: shed.size, shedPaths: [...shed].sort() };
+  return { docCount: shard.docs.size, lenTotals, shed: shed.size, shedPaths: [...shed].sort(), partialPaths: [...partial].sort() };
 }
 
 /**
@@ -72,6 +75,7 @@ export function sameStats(a, b) {
     // pushing an older one over the cap, say — and a compare that stopped at
     // the count would call that "unchanged" and leave `shedPaths` stale.
     sameShedPaths(a.shedPaths, b.shedPaths) &&
+    sameShedPaths(a.partialPaths, b.partialPaths) &&
     FIELD_ORDER.every((field) => a.lenTotals[field] === b.lenTotals[field])
   );
 }

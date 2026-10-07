@@ -84,6 +84,9 @@ export function serializeManifest(manifest) {
       // field ignores a key it does not validate, so it travels both ways with
       // no version bump, exactly as `shed` itself did.
       ...(entry.shedPaths && entry.shedPaths.length ? { shedPaths: [...entry.shedPaths] } : {}),
+      // Notes cut at a chunked format's cap (v3 only, CONTRACT-v3.md), sparse
+      // like `shedPaths`, so a v2 manifest's bytes are unchanged.
+      ...(entry.partialPaths && entry.partialPaths.length ? { partialPaths: [...entry.partialPaths] } : {}),
     })),
     filters: manifest.filters.map((filter) => (typeof filter === "string" ? filter : null)),
     freshness: {
@@ -279,9 +282,10 @@ function manifestFromParsed(parsed) {
     // before this existed", and present-but-malformed refuses the whole
     // manifest rather than being repaired path by path — a repaired list is a
     // guess about which entries were real.
-    if (entry.shedPaths !== undefined) {
-      if (!Array.isArray(entry.shedPaths)) return null;
-      if (!entry.shedPaths.every((path) => typeof path === "string")) return null;
+    for (const paths of [entry.shedPaths, entry.partialPaths]) {
+      if (paths === undefined) continue;
+      if (!Array.isArray(paths)) return null;
+      if (!paths.every((path) => typeof path === "string")) return null;
     }
     stats.push({
       docCount: entry.docCount,
@@ -293,6 +297,7 @@ function manifestFromParsed(parsed) {
       },
       shed: entry.shed === undefined ? 0 : Math.floor(entry.shed),
       shedPaths: entry.shedPaths === undefined ? [] : [...entry.shedPaths],
+      partialPaths: entry.partialPaths === undefined ? [] : [...entry.partialPaths],
     });
   }
 
@@ -428,6 +433,8 @@ export function serializeShard(shard) {
       // A chunked note's sub-document only (v3, CONTRACT-v3.md), so a v2
       // shard's bytes are unchanged.
       ...(Number.isInteger(doc.chunk) ? { chunk: doc.chunk } : {}),
+      // The last chunk of a note cut at the cap (v3 chunked only), when true.
+      ...(doc.partial === true ? { partial: true } : {}),
     },
   ]);
   const indexByPath = new Map(docs.map(([path], position) => [path, position]));
@@ -467,6 +474,7 @@ function readDocEntry(entry) {
   if (doc.anchor !== undefined && doc.anchor !== null && typeof doc.anchor !== "string") return null;
   if (doc.shed !== undefined && typeof doc.shed !== "boolean") return null;
   if (doc.chunk !== undefined && !(Number.isInteger(doc.chunk) && doc.chunk >= 0)) return null;
+  if (doc.partial !== undefined && doc.partial !== true) return null;
   const { ok: commsOk, comms } = readComms(doc.comms);
   if (!commsOk) return null;
   return {
@@ -491,6 +499,9 @@ function readDocEntry(entry) {
       // what makes a note re-indexed in full stop being counted.
       shed: doc.shed === true,
       ...(doc.chunk !== undefined ? { chunk: doc.chunk } : {}),
+      // Survives a reload like `shed`, or a reloaded shard's stats would lose
+      // `partialPaths` and differ from its manifest on every pass.
+      ...(doc.partial === true ? { partial: true } : {}),
     },
   };
 }

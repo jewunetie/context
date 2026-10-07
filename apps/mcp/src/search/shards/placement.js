@@ -182,19 +182,21 @@ export function growManifest(manifest, count) {
  * @param {Map<string, {version: string, uploaded: string|null, size: number|null}>} entries
  * @param {Map<string, number>} claimedShard
  * @param {number} volumeCap what one shard may be filled to
+ * @param {object} [format] the index format, so a chunked note's load is its
+ *   real volume (`indexVolumeOf`)
  * @returns {Map<string, number>} path → shard id, for unclaimed paths only
  */
-export function placeUnclaimed(manifest, entries, claimedShard, volumeCap) {
+export function placeUnclaimed(manifest, entries, claimedShard, volumeCap, format) {
   const load = manifest.stats.map(() => 0);
   for (const [path, id] of claimedShard) {
-    if (id < load.length) load[id] += indexVolumeOf(path, entries.get(path)?.size);
+    if (id < load.length) load[id] += indexVolumeOf(path, entries.get(path)?.size, format);
   }
 
   const bundled = [];
   const ordinary = [];
   for (const [path, listed] of entries) {
     if (claimedShard.has(path)) continue;
-    if (isBundledIndexPath(path)) bundled.push([path, indexVolumeOf(path, listed.size)]);
+    if (isBundledIndexPath(path)) bundled.push([path, indexVolumeOf(path, listed.size, format)]);
     else ordinary.push(path);
   }
   bundled.sort((a, b) => (b[1] - a[1]) || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
@@ -227,7 +229,7 @@ export function placeUnclaimed(manifest, entries, claimedShard, volumeCap) {
   // document indexed twice.
   for (const path of ordinary) {
     const id = shardOf(path, manifest.shardCount);
-    load[id] += indexVolumeOf(path, entries.get(path)?.size);
+    load[id] += indexVolumeOf(path, entries.get(path)?.size, format);
     placed.set(path, id);
   }
   return placed;

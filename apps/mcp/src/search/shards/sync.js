@@ -339,7 +339,7 @@ export async function syncPass(
   // is, and a channel-day note is worth its bytes, because its documents are
   // a set rather than one.
   let listedVolume = 0;
-  for (const [path, listed] of entries) listedVolume += indexVolumeOf(path, listed.size);
+  for (const [path, listed] of entries) listedVolume += indexVolumeOf(path, listed.size, writer.format);
   // Both derived from the one injected cap, so a test that shrinks the shard
   // shrinks the sizing with it and the two cannot be driven apart — the same
   // argument `shardByteCap` itself makes about read and write.
@@ -376,7 +376,7 @@ export async function syncPass(
   // again, one shard at a time, for a bundled note that fits in none of the
   // ones there are — so `shardCount` is read only after it has run.
   const countBeforePlacement = manifest.shardCount;
-  const placement = placeUnclaimed(manifest, entries, claimedShard, volumeCap);
+  const placement = placeUnclaimed(manifest, entries, claimedShard, volumeCap, writer.format);
   if (manifest.shardCount > countBeforePlacement) {
     manifestChanged = true;
     docmapChanged = true;
@@ -638,7 +638,7 @@ export async function syncPass(
             notePath: sub.notePath,
             anchor: sub.anchor,
             comms: sub.comms,
-            tokenizer: writer.tokenizer, chunk: sub.chunk,
+            tokenizer: writer.tokenizer, chunk: sub.chunk, partial: sub.partial,
           });
           // No `computeRanks`: the link graph is global and v2 never holds
           // every shard at once. Neutral for every doc, as CONTRACT.md pins.

@@ -26,9 +26,8 @@
  * Revisioning applies to v3 only (ruling OPEN-74); v2 keeps its fixed keys.
  */
 
-import { isChannelDayIndexPath, subDocumentsFor } from "../commsIndex.js";
-import { chunkNote } from "../chunk.js";
-import { formatsEqual, readFormat, usesV3 } from "../format.js";
+import { subDocumentsFor } from "../commsIndex.js";
+import { DEFAULT_FORMAT, formatsEqual, readFormat, usesV3 } from "../format.js";
 import { sha256Hex } from "../../ingestion/inbox.js";
 import { MANIFEST_KEY, DOCMAP_KEY, V3_MANIFEST_KEY, V3_DOCMAP_KEY } from "./constants.js";
 import { V3_LAYOUT } from "./io.js";
@@ -38,6 +37,7 @@ import { parseManifest, parseManifestV4, serializeManifest, serializeManifestV4 
 export const V2_WRITER = Object.freeze({
   v3: false,
   tokenizer: 1,
+  format: DEFAULT_FORMAT,
   manifestKey: MANIFEST_KEY,
   docmapKey: DOCMAP_KEY,
   parseManifest,
@@ -98,6 +98,7 @@ function v3Writer(format) {
   return {
     v3: true,
     tokenizer: format.tokenizer,
+    format,
     manifestKey: V3_MANIFEST_KEY,
     docmapKey: V3_DOCMAP_KEY,
     /** A v3 manifest built for another format is a rebuild: read as absent. */
@@ -114,16 +115,8 @@ function v3Writer(format) {
       manifest.shards = Array.from({ length: manifest.shardCount }, (_, id) => manifest.shards?.[id] ?? null);
       return serializeManifestV4(manifest);
     },
-    subDocuments(path, full) {
-      // Channel-day notes keep one document per message. An empty note (or an
-      // encrypted one, whose indexable text is empty) has no chunks and keeps
-      // its single whole-note document, so its version is still recorded.
-      if (!format.chunk || isChannelDayIndexPath(path)) return subDocumentsFor(path, full);
-      const { chunks } = chunkNote(path, full, format.chunk);
-      if (chunks.length === 0) return subDocumentsFor(path, full);
-      // lean: chunk title and anchor are Task 36 (OPEN-53).
-      return chunks.map((chunk) => ({ key: `${path}#c${chunk.index}`, notePath: path, anchor: null, content: chunk.text, comms: null, chunk: chunk.index }));
-    },
+    /** Chunk documents under a chunked format (`subDocumentsFor`, CONTRACT-v3.md). */
+    subDocuments: (path, full) => subDocumentsFor(path, full, format),
     /**
      * A new revision, and the manifest in memory names it only once it has
      * landed. Create-only where the store supports it, so an object some

@@ -126,8 +126,8 @@ The v3 pass runs against the v3 layout with these differences only:
   chunk with `notePath: path`; channel-day notes keep their message
   documents, and a note with no chunks (empty or encrypted) keeps its one
   whole-note document. Each chunk document carries `chunk` (its index),
-  written in the shard only when set, so v2 shard bytes are unchanged. Chunk
-  titles and anchors are Task 36.
+  written in the shard only when set, so v2 shard bytes are unchanged. See
+  "Chunked notes" below for the document shape.
 - **v1 cleanup** is the v2 writer's job only.
 - One log line per v3 pass, after the pass, `{"event":"search-index-format",
   workspace, namespace, tokenizer, chunk, built, pending, oversizedShards}`,
@@ -170,6 +170,44 @@ completes but coherence between concurrent passes is not claimed, as for v2.
   `matchCountIsFloor` still reads a full list as a floor. A query whose terms
   fall in two chunks of one note misses the coverage multiplier that a
   whole-note index would give it; Task 37 measures that.
+
+## Chunked notes (Task 36)
+
+`subDocumentsFor(path, full, format)` (`commsIndex.js`) is the one place a note
+becomes documents; the v2 writer passes the default format and the v3 writer
+its own.
+
+- **Document shape (ruling OPEN-53).** An ordinary note under a chunked format
+  is one document per `chunkNote(path, text, format.chunk)` chunk:
+  `{ key: "<path>#c<n>", notePath: path, anchor: null, chunk: n, content,
+  comms: null }`. `anchor` stays `null`, because `visible.js` sends any string
+  anchor to `messageSegmentFor` and would drop the hit; a chunk hit's snippet
+  is cut from the whole note. Channel-day notes keep their message documents
+  whatever the format, and a note with no chunks (empty, or encrypted, whose
+  indexable text is empty) keeps its one whole-note document. With
+  `chunk: null` every document is today's.
+- **Titles.** Chunk 0's content is its text. A later chunk's content is the
+  note's first heading, as one `# <title>` line, followed by the chunk text, so
+  `extractFields` titles every chunk as it titles the whole note (the heading
+  `extractFields` picks: after frontmatter, comments removed; a note with no
+  heading gets no line). Tags come from frontmatter, which only chunk 0 holds.
+  Title terms are therefore counted once per chunk; the note keeps its best
+  chunk, so this moves ranking only within one note's title class.
+- **The cap and `partial` (ruling OPEN-55).** Only the first `format.chunk.cap`
+  (64,000) characters of a note are chunked. The last chunk of a note cut there
+  carries `partial: true`, written in the shard only when true. `statsOfShard`
+  collects those notes into `partialPaths`, written in the manifest's `stats`
+  only when non-empty (a v2 manifest never has one), and `shedNotePathsOf`
+  returns shed and partial paths together. Callers see them only through the
+  existing visibility-filtered `reducedRecall`/`reducedRecallNotes` (and the
+  orientation shed signal), with the same "reduced recall" wording for both
+  causes. A note edited under the cap loses the flag on its next index.
+- **Volume and placement (ruling OPEN-60).** `indexVolumeOf(path, size,
+  format)` counts an ordinary note as `min(size, format.chunk ? format.chunk.cap
+  : NOTE_INDEX_CHAR_CAP)`, so `chooseShardCount` and the load `placeUnclaimed`
+  measures see a long note's real volume. Chunked ordinary notes keep hash
+  placement (`shardOf`); only bundled (channel-day) notes are placed by load. A
+  shard that still overflows sheds and reports it, never silently.
 
 ## Collecting revisions (Task 32, ruling OPEN-59; fix round 1)
 

@@ -25,6 +25,8 @@ export function emptyStats() {
     // See `statsOfShard`: the identities behind `shed`, so a caller can be told
     // WHICH of their own visible notes lost recall rather than only a count.
     shedPaths: [],
+    // Notes cut at a chunked format's cap (v3 only); see `statsOfShard`.
+    partialPaths: [],
   };
 }
 
@@ -75,8 +77,11 @@ export function indexIsBehind(freshness) {
 }
 
 /**
- * Every note path shedding has reduced to one document, across the whole
- * manifest — **raw and unfiltered, private notes included.**
+ * Every note path shedding has reduced to one document, and every note a
+ * chunked format cut at its cap (`partialPaths`, CONTRACT-v3.md), across the
+ * whole manifest — **raw and unfiltered, private notes included.** Both are
+ * reduced recall to a caller (ruling OPEN-55); a distinct label for the cap
+ * would be a wording change, not a format one.
  *
  * This is the durable half of `syncShardedIndex`'s own `shed: string[]`, which
  * only ever names notes shed *by the pass that just ran* — a shard nothing
@@ -99,6 +104,7 @@ export function shedNotePathsOf(manifest) {
   const paths = [];
   for (const entry of manifest?.stats ?? []) {
     for (const path of entry.shedPaths ?? []) paths.push(path);
+    for (const path of entry.partialPaths ?? []) paths.push(path);
   }
   return paths;
 }

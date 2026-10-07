@@ -71,7 +71,7 @@ type FileBrowserValueDeps =
     | "updateFormResponse"
     | "voteForm"
   >
-  & Pick<ListingsValues, "collapseAll" | "contextId" | "ensureListing" | "search" | "toggleFolder">
+  & Pick<ListingsValues, "collapseAll" | "contextId" | "ensureListing" | "relatedNotes" | "search" | "toggleFolder">
   & Pick<BesideNoteValues, "beside" | "closeBeside" | "deselect" | "openBeside" | "select">
   & Pick<LinkedTitleValues, "focusTitle" | "setTitleCaret" | "titleEdit" | "titleFocus">
   & Pick<SavingValues, "flushAutosave" | "save">
@@ -137,7 +137,7 @@ export function useFileBrowserValue(deps: FileBrowserValueDeps): FileBrowser {
     duplicate, editor, encryptedElsewhere, ensureListing, expanded, flushAutosave, keepMine,
     linkPaths, listings, loadImage, loading, mayShare, mirrorStatus, move, moveDestinations,
     moveMany, moveToContext, navigations, notice, unreadable, offline, onExternalWrite, onSaved, openBeside, openLinkPaths,
-    opening, paste, pending, readFormResponses, readRaw, rename, renamed, resetPrivacy, resolveWith,
+    opening, paste, pending, readFormResponses, readRaw, relatedNotes, rename, renamed, resetPrivacy, resolveWith,
     restoreMany, resumeContextMove, retractFormResponse, revokeShare, save, say, search, select,
     selectedPath, setClipboard, setCollaborationDraft, setCollaborationOwned,
     setCollaborationState, setDraft, focusTitle, setTitleCaret, titleEdit, titleFocus, setScope,
@@ -174,6 +174,7 @@ export function useFileBrowserValue(deps: FileBrowserValueDeps): FileBrowser {
       closeBeside,
       beside,
       search,
+      relatedNotes,
       editor,
       setDraft,
       setCollaborationOwned,
@@ -352,6 +353,7 @@ export function useFileBrowserValue(deps: FileBrowserValueDeps): FileBrowser {
       save,
       applyPluginNoteWrite,
       search,
+      relatedNotes,
       select,
       navigations,
       renamed,

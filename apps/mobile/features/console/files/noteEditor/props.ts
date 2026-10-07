@@ -148,6 +148,12 @@ export interface NoteEditorProps {
    * decides where it sits.
    */
   pathBar?: ReactNode;
+  /**
+   * The related-notes panel, at the foot of the document. Handed in for the
+   * reason `pathBar` is: on a phone it has to scroll with the note, not sit
+   * under the toolbar. `BrowseDocument` builds it.
+   */
+  related?: ReactNode;
   onChange: (text: string) => void;
   onSave: () => void;
   onDiscard: () => void;

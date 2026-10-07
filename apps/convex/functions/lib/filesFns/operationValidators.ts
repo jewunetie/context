@@ -59,6 +59,45 @@ import {
   searchResultsValidator,
 } from "./searchValidators";
 
+/**
+ * The answer to `related`. `evidence` is untrusted note text: render it as
+ * plain text. A seed the caller cannot see is the read's not-found, not this.
+ */
+export const relatedValidator = v.object({
+  kind: v.literal("related"),
+  relations: v.array(
+    v.object({
+      path: v.string(),
+      reasons: v.array(
+        v.union(
+          v.literal("links_here"),
+          v.literal("linked_from_here"),
+          v.literal("shares_target"),
+          v.literal("shares_url"),
+          v.literal("related_text"),
+          v.literal("nearby"),
+        ),
+      ),
+      evidence: v.optional(v.string()),
+    }),
+  ),
+  unresolved: v.array(
+    v.object({
+      target: v.string(),
+      start: v.number(),
+      end: v.number(),
+      state: v.union(
+        v.literal("missing"),
+        v.literal("ambiguous"),
+        v.literal("unsupported"),
+        v.literal("invalid"),
+        v.literal("unknown"),
+      ),
+    }),
+  ),
+  possiblyIncomplete: v.boolean(),
+});
+
 export const operationResultValidator = v.union(
   v.object({ kind: v.literal("websiteReleaseWritten"), pages: v.number() }),
   v.object({
@@ -110,6 +149,7 @@ export const operationResultValidator = v.union(
   vaultClearResultValidator,
   searchResultsValidator,
   notePathsValidator,
+  relatedValidator,
   forwardedValidator,
   indexMaintainedValidator,
   indexProjectedValidator,
@@ -196,6 +236,8 @@ export const operationValidator = v.union(
    * `docs/decisions/app-and-console.md`.
    */
   v.object({ kind: v.literal("notePaths") }),
+  /** Notes related to one note, at the caller's clearance. See `lib/fileOps/related.ts`. */
+  v.object({ kind: v.literal("related"), path: v.string() }),
   /**
    * Bring the search index a pass further. Scheduled, never called by a client
    * — there is no public action that reaches this variant.

@@ -261,6 +261,11 @@ those citations still resolve; look for them here rather than in `CLAUDE.md`.
 ## [Link graph](./link-graph.md)
 
 - The reference index is approved, and it is a derivative that is never the authority
+- Moves read referrers from the graph only where it can vouch for them (Task 14)
+- `related_notes` is a read-only convenience, and a strict caller learns at most a few workspace-level bits from it (Tasks 15 to 19)
+
+## [Link suggestions](./link-suggestions.md)
+
 - Link suggestions ride write_note's text, on one enrichment budget (Tasks 21 to 24)
 
 ## [Search and the derived index](./search.md)

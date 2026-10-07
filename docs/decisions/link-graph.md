@@ -3,7 +3,9 @@
 _See `docs/decisions/README.md` for the index. The design is
 `docs/design/link-graph/README.md` (owner decisions) and
 `docs/design/link-graph/PLAN.md`; the per-task rulings are in
-`docs/design/link-graph/TASKS.md`. The code is `apps/mcp/src/graph/`._
+`docs/design/link-graph/TASKS.md` (Phases 0 to 2) and
+`docs/design/link-graph/TASKS-PHASE-3-4.md` (Phases 3 and 4). The code is
+`apps/mcp/src/graph/`._
 
 ### The reference index is approved, and it is a derivative that is never the authority
 
@@ -139,12 +141,14 @@ a reviewer.
   posting entries: run first, it would hand search a remainder that varies
   with hidden data, and search would then vary in which hits it returns. Last,
   it can only lose its own families, all at once for a strict caller, so the
-  merged answer keeps the one bit above. Search's own read count also
+  graph part of the merged answer keeps the one bit above. Search's own read count also
   depends on hidden data once the index has more than one shard (the shard
   count follows the total note count, and routing reads filters built over
   private vocabulary), so a strict caller searches only when the budget left
   after the catalog covers every occupied shard, the hits and the expansion
   re-check's reserve, and otherwise gets no text hits at all (fix round 1).
+  A strict caller's answer at a given budget is therefore one of four: both
+  parts, graph withheld, text withheld, or both withheld.
   Explicit links rank ahead of
   text-only hits, the rest by reciprocal rank fusion (k = 60), `nearby` only
   breaks ties and is never a candidate of its own, and the result limit is
@@ -180,11 +184,16 @@ a reviewer.
   moves read_note answers through (fix round 3; a sentinel gate tried in
   round 2 could be removed by a racing refresh before a new move's marker
   landed). A finished move's marker delete is a logical-delete tombstone that
-  nothing removes, so related_notes and indexed moves pay one unbudgeted read
-  per historical move, like read_note; the answer does not change with move
-  history. The tests are `relatedNotesTool.test.mjs` "one active move plus
-  100 finished ones" and "a refresh racing a new move's first sentinel", and
-  `moveSentinel.test.mjs`.
+  nothing removes, so every call pays unbudgeted reads that grow with move
+  history: an indexed move one per historical move, and related_notes two
+  (one in the seed lookup, which resolves the path through read_note's move
+  overlay, and one in the retrieval). The answer does not change with move
+  history. The tests are `relatedNotesTool.test.mjs`, "one active move plus
+  100 finished ones: the answer at the default budget is the no-history
+  answer, the moving note withheld" and "a refresh racing a new move's first
+  sentinel never lets related_notes show the moving note", and
+  `moveSentinel.test.mjs`, "a refresh between a new move's first sentinel and
+  its marker does not hide the move".
 
 **What reversing it costs.** Phase 3 backlinks, related notes, and
 index-assisted move repair all read this index; they cannot be built on a
@@ -260,267 +269,181 @@ that ever changes (a queued hook, a retry loop), raise the margin or read the
 nodes. Test: `moveIndexedReferrers.test.mjs`, "a node still owing
 reverseRepair, edited inside the margin, is read like the scan would".
 
-### Link suggestions ride write_note's text, on one enrichment budget (Tasks 21 to 24)
+**What "covered" means (controller ruling OPEN-23, Task 13 and its fix
+round).** `graphHealth().complete` says a sweep wrapped; it says nothing about
+writes since (arch 11.1: the index is not a completeness oracle). So the
+sweep also records `sweepCensusAt`, and `graphHealth` reports it as
+`coveredThrough` only when `complete` is true. It is the listing time of the
+census the sweep *started* on (the search manifest's `freshness.listedAt`,
+stamped before the listing is taken), not the wall clock and not the wrapping
+pass's census: a note swept early and edited before the wrap is not
+revisited. It is `null` unless every pass of the sweep ran on a complete
+census with nothing pending in search (a note search could not fetch keeps
+its old version in the census, so the sweep would skip its edit), and a
+cursor time later than the wrapping census (skewed or hostile) is published as
+`null`. A move then reads, besides the posting referrers and the moved notes,
+every visible note listed at or after `coveredThrough` minus the margin
+(inclusive), or with no usable listing time.
 
-After a plain `write_note` commits, the sections it changed seed
-`suggestLinks`, and the block is appended to the write's existing text result
-(`apps/mcp/src/tools/notes/write.js`, `apps/mcp/src/graph/afterWrite.js`,
-`apps/mcp/src/graph/suggest.js`, `apps/mcp/src/graph/changes.js`). This is
-owner decision O3 as built. Everything below it is a controller ruling,
-reversible at review, unless it says otherwise.
+**When a move scans instead.** Every path below returns `null` from
+`indexedReferrerKeys`, and `rewriteReferences` reads every visible note as it
+did before Phase 3:
 
-**Only the plain `write_note` call gets suggestions (O3; controller ruling
-OPEN-37).** `toolWriteNote` is also called by comments, forms and `remember`,
-so the switch is opt-in: only the plain `write_note` branch of
-`apps/mcp/src/tools/dispatch.js` passes `linkSuggestions: true`, and every
-other caller is off without having to remember a flag. An opt-out would let a
-future caller return suggestions against O3. No argument turns them on or off.
+- the graph is not `complete` or has no `coveredThrough`, which includes every
+  best-effort store (PLAN decision P4: those always scan);
+- a renamed path is not a `.md` note (attachments have no `incoming/`
+  postings, OPEN-5);
+- a logical move job is active, or the job listing or a marker cannot be read
+  (OPEN-25, fail closed: postings are keyed by physical paths, the overlay
+  presents logical ones);
+- the store may copy server-side (`serverSideCopy: "same-store"`), because a
+  copy may keep the source's listing time and slip under the top-up; gateway
+  stores never declare it (the logical-delete wrapper forces false, and
+  Dropbox moves re-upload);
+- a posting chain is incomplete, including a chain that reached
+  `MAX_POSTING_PAGES` (a writer drops entries once a chain is full);
+- the collaboration heads cannot be listed within the budget, or the budget
+  runs out anywhere else, or any read throws.
 
-**What a write is diffed against, and what is skipped.** The pre-write body is
-the merged collaborative document before this write, else the stored body,
-else an empty create (OPEN-38); the committed text is the merged text when a
-merge happened. `detectChangedSections` diffs them line by line (Myers, capped
-at `MAX_EDIT_DISTANCE` 1,000 edits and `MAX_INPUT_CHARS` 256 Ki characters;
-past either cap it takes a limited pass over the new text) and returns at most
-two sections, most changed prose first. Frontmatter, code, and edits that only
-add, remove or retarget link syntax are not seeds, so a follow-up write that
-only adds the suggested links is `skipped` and cannot loop (AGENT-LINKS 13.7).
-An encrypted note or a drawing is `skipped` before any retrieval: its
-plaintext is never a query (OPEN-39).
+Every visible note with collaboration state is read too, as the scan reads it:
+its accepted text may never have reached the `.md`, and the postings describe
+stored bodies only. **Owner decision point (Task 14 re-review):** every
+collaborative read creates a head, so after one scanned move every eligible
+note in a collaborative workspace is a candidate and the index saves little
+there. Including every head is the cheapest complete rule; the lever is
+upstream (a move-time read of a note with no head need not create one).
 
-**The block.** `{ status, basedOnEtag, candidates: [{ path, section, signals,
-excerpt }] }`, rendered as plain lines: one guidance line with the AGENT-LINKS
-13.2 substance, then one line per candidate (OPEN-44). At most three
-candidates (`MAX_CANDIDATES`), deduplicated across sections; the source and
-every target the committed text already links to are excluded, and linked
-targets are dropped before the result limit so a heavily linked note still
-gets text matches. Signals are `links_here`, `shares_target`, `shares_url` and
-`text_match` (OPEN-42). The rendered block is at most 4 KiB of UTF-8
-(`SUGGESTION_BYTE_CAP`, guidance included): sections and excerpts are cut
-first, then the candidate whose line cannot fit is dropped. Every
-candidate-controlled string is note data and is escaped of quotes,
-backslashes, control and format characters and line separators, so it can
-neither end its quotation nor start a line. The statuses:
+**What reversing it costs.** Trusting `complete` alone, recording the wall
+clock, or recording the wrapping census lets a referrer edited after its sweep
+visit keep a broken link while the move reports the rewrite done, which is the
+arch 11.1 failure. Dropping any scan fallback does the same for the case it
+guards. Removing the index path entirely costs only speed: moves read every
+visible note again (at least 200 body reads instead of at most 5 in the
+200-note test).
 
-- `ready`: candidates, and every retrieval complete.
-- `partial`: candidates, but some retrieval was labelled possibly incomplete,
-  or the deadline or budget cut a later section.
-- `none`: no candidates, and at least one retrieval completed.
-- `skipped`: no candidates and no retrieval completed, or nothing to diff, an
-  encrypted note, a drawing, a spent pool or a passed deadline.
-- `unavailable`: an exception inside the suggestion step. Store and search
-  faults are not exceptions here (retrieval never throws), so they surface as
-  `partial` or `skipped`.
+**The tests that fail if it is reversed.** All under `apps/mcp/test/`:
 
-On a best-effort store graph health is always possibly incomplete, so answers
-there are only `partial` or `skipped`.
+- Coverage time: `graphCoverage.test.mjs`, "a wrapped sweep on a complete
+  census records the census listing time, not the wall clock", "a sweep
+  spanning passes records the listing time of the pass that started it", "a
+  wrap on a truncated census records nothing, and a sweep begun on one records
+  null", "a note search could not fetch (freshness.pending > 0) never lets
+  coveredThrough pass its edit", "an edit after the listing but before the
+  pass ends is not behind coveredThrough" and "a mid-sweep cursor time later
+  than the wrapping census is never published"; `graphManifest.test.mjs`,
+  "coveredThrough is null whenever complete is false".
+- Same result as the scan: `moveIndexedReferrers.test.mjs`, "single move:
+  same bodies, audit row and counts as the scan, with fewer body reads",
+  "batch move: same result as the scan", "folder move: same result as the
+  scan" and "200 notes, 3 referrers: the index reads fewer note bodies than
+  the scan".
+- Top-up: `moveIndexedReferrers.test.mjs`, "a note edited after the sweep and
+  never projected is rewritten via the top-up".
+- Scan fallbacks: `moveIndexedReferrers.test.mjs`, "a graph that is not ready
+  falls back to the scan and still rewrites everything", "a truncated posting
+  chain falls back to the scan", "a best-effort store always scans and reads
+  no node or posting", "a budget too small for the posting reads scans", "a
+  folder move that includes an attachment scans", "an active logical move job
+  scans", "a move-job listing that fails scans", "an unreadable move-job
+  marker counts as active and scans", "a budget that cannot list the
+  collaboration heads scans" and "a store that may copy server-side scans;
+  Dropbox never declares it"; `graphPostings.test.mjs`, "reader: a chain of
+  exactly MAX_POSTING_PAGES pages is not complete (a writer drops entries once
+  it is full)".
+- Collaborative referrers: the two cases in `moveIndexedReferrers.test.mjs`
+  that begin "a collaborative referrer whose accepted edit", one for an edit
+  before the sweep and one after.
+- Privacy: `moveIndexedReferrers.test.mjs`, "a team caller's move never reads
+  a hidden referrer the postings name, and counts match the scan".
 
-**The linking guidance travels with the tools, not only with candidates**
-(Task 24; controller ruling OPEN-45). The AGENT-LINKS 13.2 substance is in the
-connect-time instructions and in the `write_note` description, which every
-client delivers; `orient` does not carry it. Both say a write "may" end with
-suggestions, because `remember` and a budget of 8 or less return no block, and
-an ineligible edit returns `skipped`.
+### `related_notes` is a read-only convenience, and a strict caller learns at most a few workspace-level bits from it (Tasks 15 to 19)
 
-**No `structuredContent` (Task 23 fix round 1, reversing the OPEN-43
-recommendation).** The block is carried in the text block only, for every
-protocol revision. Some clients pass only `structuredContent` to the model
-when a result has one, which would hide the write's own lines (visibility,
-share, form and status) behind the suggestions, and the 2025-06-18 revision
-asks a tool that returns structured content to also return it serialized as
-text. **Reversible** once the target clients are confirmed to keep `content`
-beside `structuredContent`; the block's shape already exists.
+`related_notes` (`apps/mcp/src/tools/related.js`) and the console's "Linked
+and related notes" panel (`relatedNotes` action, `RelatedPanel.tsx`) answer
+one question about one note the caller can already read: which visible notes
+relate to it, and why. It is a convenience, not a new capability (arch 14):
 
-**The per-write budget model.** Suggestions and the write's graph update
-spend one enrichment pool, suggestions first and the graph update on what
-remains: `WRITE_ENRICH_SUBREQUEST_BUDGET` per write, or, through the route,
-one pool for the whole invocation, so a legacy JSON-RPC batch shares a single
-ceiling (the agent loop makes no writes; its writes are proposals). Every
-write keeps `GRAPH_FLOOR` (8, the Task 8 default) of the pool for its graph
-update until that update has run, and the MCP handler announces a batch's
-calls in advance, so each one's floor is held before it starts; suggestions
-take only what exceeds every held floor, with no other cap. Consequences:
+- **Read-only, and nothing else changes.** `readOnlyHint: true`, so read-only
+  sessions get it; it is in neither `PRIVATE_TIER_ONLY_TOOLS` nor
+  `EXISTENCE_MASKED_TOOLS`; `search` and `fetch` are untouched. Everything it
+  returns is reachable through `read_note`, `list_notes` and `search_notes`.
+- **A hidden note and a missing one answer the same.** The seed resolves
+  exactly as `read_note` resolves a path, move overlay and forwarding
+  included, and both refusals are `not found` at the same raw op count. The
+  exception is inherited from `read_note`, not closed here: a hidden move
+  destination costs one op more than an absent path. The console's operation
+  returns the `read` operation's not-found, byte for byte (and, like `read`,
+  is one op cheaper for a hidden path).
+- **No counts, no health, no unresolved links in the tool** (OPEN-35:
+  diagnostics live in the console, on the note a person can fix). The limit
+  defaults to 10 and is clamped to 1..25 (OPEN-34); it is applied after
+  authorization. Evidence is note text and is printed as a JSON string, with
+  U+2028, U+2029 and U+0085 escaped, so it cannot forge output lines.
+- **The panel never shows a confident empty list** while loading, offline, on
+  error, or when the answer is labelled possibly incomplete; the empty
+  sentence appears only for a complete, empty answer.
 
-- A configured budget at or under one floor (8, the default where the
-  variable is unset, as on a self-host) runs no suggestions and shows no
-  block: a configuration, not a result, and the write's text is unchanged.
-  `skipped` is kept for runtime causes. Budget 0 turns the graph off too, so
-  it remains the kill switch for all post-commit work. The hosted
-  `apps/mcp/wrangler.toml` sets 80 for production and staging.
-- A batch's later writes still project: earlier suggestions cannot take
-  their floors. A call that makes no write gives up its announced floor once
-  it has been handled (Task 23 batch count fix), so reads earlier in a batch
-  do not starve a later write's suggestions. **Ceiling:** calls not yet
-  handled still hold a floor whether or not they will write, so a mixed
-  batch holds back more than it needs until its reads have run; and a
-  sequence of writes that nobody announced in advance could still starve a
-  graph update, which reconciliation then repairs.
+**What a strict caller can still learn.** A strict caller is any scope but
+exactly `private` (a team caller, or the owner through a team-scoped
+session). These are the accepted residuals of controller rulings OPEN-27 and
+OPEN-33, each an owner decision point. None reveals a path, a count, content
+or a ranking of a hidden note; each says only that something somewhere is
+hidden, large, moving or recent.
 
-**The 250 ms deadline** (`SUGGEST_DEADLINE_MS`, AGENT-LINKS 13.5) starts before
-the diff, so it covers the structural analysis too. After it, no store op
-starts: the budget refuses every take, and a proxy over the store (forked
-logical-delete views included) answers `get`, `list` and `head` with null
-without reaching the store. A retrieval the deadline reached is dropped whole,
-because how far it got depends on timing and, for a strict caller, on hidden
-entries. Ops started before the deadline are awaited, so the step can end one
-read's latency past 250 ms. A `Promise.race` would return earlier but leave
-the read running on the invocation's subrequest counter. That overrun is
-accepted.
-
-**Who may be offered as a link target (controller ruling OPEN-40).** The
-source note's visibility *after* the write decides, since the write may just
-have changed it: a private source may be offered any candidate the caller can
-see; a team source only candidates every team reader can see; a group-scoped
-source only candidates a reader holding just that group can see; anything not
-provably as broad is withheld (AGENT-LINKS 13.7). The rule is applied inside
-retrieval's `canSeeKey`, so a withheld note never takes a ranked slot.
-**Owner decision open: share links.** A team note with an active unlisted
-share link still gets team candidates, whose paths an agent could then write
-into a link-readable page. Share state is not in the bucket: it is a
-control-plane call (`store.links.list()`), outside the store budget, answered
-only for the owner, listing folder links that cover whole subtrees, and absent
-on deployments without a control plane. Closing it needs the owner to decide
-whether to spend that call per write, what non-owners get, and whether folder
-links count. Until then it is a `lean:` comment at the audience rule in
-`afterWrite.js`.
-
-**What a strict caller can learn from the block.** A strict caller is any
-scope but exactly `private`. Suggestions use the same retrieval as
-`related_notes` (one call per changed section), so they carry the same
-accepted residuals (OPEN-27, OPEN-33), now per section. None reveals a path, a
-count, content or a ranking of a hidden note.
-
-- **Graph reasons and text hits, all or none, per section.** Each section's
-  retrieval can withhold its graph families, its text hits, or both, and the
-  block's status steps from `ready` to `partial` (or `none` to `skipped`) with
-  it. The second section's budget is what the first left, which can vary with
-  hidden posting pages, so the allowed outcomes are the per-section
-  combinations of those two bits. Tests: `graphSuggest.test.mjs`, "privacy
-  invariance: for a team caller hidden notes change the block only by the
-  documented withheld bits, single and multi-shard, budgets 0..80";
+- **Graph reasons all or none.** Whether every posting chain finished within
+  the budget depends on hidden entries, so a strict caller gets every graph
+  family or none, labelled. Tests: `graphNeighbors.test.mjs`, "one bit at
+  most: hidden notes that add a posting page in any family change nothing but
+  the withheld label, at every budget"; `graphRetrieve.test.mjs`, "privacy
+  invariance: hidden notes change nothing but the withheld graph bit, at
+  tight and generous budgets".
+- **Text hits all or none.** Search's cost depends on how many index shards
+  are occupied, which grows with hidden notes, so a strict caller gets text
+  hits only when the budget covers every occupied shard; a strict caller can
+  learn that the index is larger than the budget. Tests:
   `graphRetrieve.test.mjs`, "text hits are all or none for a strict caller;
   the owner keeps them on an index larger than the budget" and "multi-shard
   privacy invariance: hidden notes change only the withheld text bit and the
   withheld graph bit, budgets 0..80".
-- **A move is active somewhere.** Candidates under an active move's source or
-  destination are withheld and the answer is labelled, and unreadable move
-  state withholds every section. Move jobs are read once per suggestion call,
-  outside the budget but inside the deadline. Tests: `graphSuggest.test.mjs`,
-  "unreadable move state withholds every section's candidates, read once" and
-  "move jobs are read once per call, not once per section: 50 finished moves
-  cost two sections what they cost one"; `graphRetrieve.test.mjs`, "a note
-  under an active move's source or destination is withheld, and the answer is
-  labelled".
-- **Freshness**, as for `related_notes`: graph health and index freshness
-  are workspace-level, and a hidden note's edit can flip them.
+- **A move is active somewhere.** While any logical move is active, notes
+  under its source or destination are withheld and every answer is labelled
+  possibly incomplete, even when the move is between two private folders.
+  Tests: `graphRetrieve.test.mjs`, "a note under an active move's source or
+  destination is withheld, and the answer is labelled" and "an unreadable
+  move job withholds every candidate; a seed under a move gets nothing";
+  `relatedNotesTool.test.mjs`, "during a logical move of a team folder into a
+  private one, a team caller is never shown a note under it".
+- **Freshness.** The possibly-incomplete label also follows workspace graph
+  health and search-index freshness, which a hidden note's edit can flip.
+  This one is accepted, not withheld, so no test proves it constant; the
+  invariance tests hold health and freshness fixed, and these pin the label
+  itself: `graphRetrieve.test.mjs`, "a best-effort store always labels
+  possiblyIncomplete; a conditional, ready, converged one does not";
+  `relatedNotesTool.test.mjs`, "a best-effort store labels its answer
+  possibly incomplete".
 
-Time taken also varies with each of these.
+Time taken also varies with each of these, as it does for search.
 
-**Subrequests per write (DELIVERY 16.3).** Raw store ops for one two-section
-`write_note` update, through the worker test harness over a memory bucket with
-logical delete (41 notes, ready graph, converged index), deferred work
-included (Task 23 fix round 1):
+**What reversing it costs.** Listing partial graph families or partial text
+hits for a strict caller turns each bit into a count of hidden entries.
+Answering a hidden path differently from a missing one confirms that a
+private note exists. Dropping the move withholding shows a note mid-move into
+a private folder that `read_note` already refuses. Printing evidence raw lets
+a note's text pose as tool output. Removing the tool loses nothing a caller
+cannot rebuild from reads and searches, at many more calls.
 
-| Finished moves | Budget 0 | Budget 8 | Budget 80 |
-|---|---|---|---|
-| 0 | 44 | 49 (no block) | 84 (`ready`) |
-| 50 | 95 | 100 (no block) | 186 (`ready`) |
-
-Cloudflare's limits page (read 2026-10-07) gives 50 subrequests per invocation
-on Workers Free and 10,000 by default on Workers Paid, and counts R2 binding
-calls as subrequests; `apps/mcp/wrangler.toml` records that the hosted
-deployment is on Workers Paid.
-
-- **Free tier (50).** Suggestions do not run there at the default budget of 8,
-  and the write with its graph update is already at 49 with no move history.
-  An earlier S3 measurement put a plain write alone at 26 to 60 subrequests.
-  At the hosted budget of 80 a write is at 84, past 50. **Move history is the risk** (owner list, pre-existing): a
-  finished move's marker is a logical-delete tombstone nothing removes, and
-  the write already pays about one read per finished move (44 to 95 over 50
-  moves at budget 0), so on these figures a free-tier write passes 50 after
-  about six finished moves at budget 0 and two at the default 8, with or
-  without suggestions. It needs a physical
-  delete or tombstone cleanup for `.context/moves/`.
-- **Hosted (10,000).** 84 ops at budget 80, growing about 2 per finished move
-  (one for the write, one for suggestions; it was 3 before move jobs were read
-  once per call), so on a straight-line extrapolation from these two points a
-  write reaches 10,000 at about 4,900 finished moves.
-- **Not measured:** real R2 or S3, real subrequest counts in a deployed
-  Worker, and the hosted ceiling in a live run. These figures are store ops
-  in tests, which equal subrequests only if every op is one call.
-
-**What reversing it costs.** Opting out instead of in returns suggestions to
-`remember`, comments or forms, against O3. Dropping the audience rule offers a
-private note's path to a team note's writer. Taking suggestions before the
-graph floors starves later writes' graph updates in a batch. Letting ops start
-after the deadline lets a slow store hold the write's response. Rendering
-candidate text unescaped lets a note pose as tool output. Removing the feature
-entirely loses nothing a caller cannot rebuild with searches after a write.
-
-**The tests that fail if it is reversed.** All under `apps/mcp/test/`:
-
-- Which callers: `writeSuggestions.test.mjs`, "through dispatch: plain
-  write_note gets the block; comments and forms never do and never search";
-  `remember.test.mjs`, "remember never returns link suggestions or searches
-  for them, on either path, while write_note does".
-- The write is unaffected: `writeSuggestions.test.mjs`, "a plain write gets
-  the block appended; text, note, audit row and index are otherwise today's",
-  "kill switch: budget 0 is today's result exactly, with no graph or search
-  op", "a search store that throws: the write is today's and the block says
-  so without failing it" and "a throw inside the suggestion step itself is
-  unavailable, never a failed write".
-- Changed sections: `graphChanges.test.mjs`, "duplicate headings are told
-  apart by position", "an edit under a nested heading maps to that heading's
-  interval", "a pure link-wrap edit is skipped (AGENT-LINKS 13.3 step 6)",
-  "code is not a seed: fenced, inline, and headings inside fences", "an input
-  over the cap is a limited new pass within the cap" and "the edit-distance
-  cap: exact under it, a limited pass over it, fast either way";
-  `writeSuggestions.test.mjs`, "a link-only follow-up write is skipped, and
-  its graph facts still update", "a collaborative merged write diffs the
-  merged text: a link another edit added is not suggested again" and "an
-  encrypted note is skipped without any retrieval".
-- The block: `graphSuggest.test.mjs`, "a ready block: text matches by
-  section, with excerpt, signals and the etag; source and linked target
-  excluded", "a note with more outgoing links than the result limit still
-  gets its text match", "signals: graph reasons pass through, related_text is
-  text_match, nearby and linked_from_here never appear", "deduplicated across
-  sections, attributed to the first, at most three", "rendered block stays
-  within 4 KiB of UTF-8 with three long multibyte excerpts and headings;
-  untrusted text is escaped", "format characters (\p{Cf}) in untrusted text
-  are escaped", "none: a complete search that finds nothing worth returning"
-  and "a throwing search store does not throw and returns no candidates
-  (retrieveCandidates never throws)".
-- Guidance: `linkGuidance.test.mjs`, "initialize instructions carry the
-  linking guidance" and "the listed write_note description carries the
-  linking guidance".
-- Text only: `writeSuggestions.test.mjs`, "tools/call write_note: the block is
-  in the text for every revision, never structuredContent".
-- Budget: `writeSuggestions.test.mjs`, "a budget with nothing above the graph
-  floor (configuration) omits the block; the write is today's exactly",
-  "post-commit ops (suggestions plus graph) never exceed
-  WRITE_ENRICH_SUBREQUEST_BUDGET", "the shared pool keeps a graph floor for
-  every write of a batch still to project: six writes at 80 all project",
-  "suggestions get the pool minus every pending graph floor, with no fixed
-  cap", "one invocation's pool bounds every write in it together", "a legacy
-  JSON-RPC batch of six writes at budget 80: every note projects and every
-  write carries a block" and "a batch's reads stop reserving once handled:
-  nine read_note then one write_note at 80 still suggests";
-  `graphSuggest.test.mjs`, "budget.spent and the ops made never exceed the
-  budget, budgets 0..80".
-- Deadline: `graphSuggest.test.mjs`, "deadline: a clock that passes during
-  CPU work (no I/O in between) starts no further op", "deadline: a retrieval
-  the deadline reached is dropped whole, at every op it could pass after",
-  "deadline: no store op starts after the clock passes, at every op of a
-  crowded two-section write (snippet waves included)" and "deadline on a
-  logical-delete store (the gateway's): forked views are cut off too";
-  `writeSuggestions.test.mjs`, "deadline: once the injected clock passes it,
-  no further search op starts".
-- Audience: `graphSuggest.test.mjs`, "audience: a team source never gets a
-  private candidate, even for the owner; a private source does" and
-  "audience: a group source keeps team and same-group candidates, withholds
-  another group's and private ones"; `writeSuggestions.test.mjs`, "a team
-  note's write never suggests a private candidate; a private note's may" and
-  "the write's own visibility change decides the audience: team to private,
-  and private to team".
-- Strict-caller residuals: the tests named under "What a strict caller can
-  learn from the block" above.
+**The tests that fail if it is reversed.** Besides the residual tests above,
+`relatedNotesTool.test.mjs` (under `apps/mcp/test/`), "listed for a read-only
+session, read-only and with a closed schema", "a team caller gets the same
+answer for a hidden note and for a path that does not exist", "related_notes
+and read_note make the same raw ops for a hidden path as for an absent one",
+"a team caller's answer does not change with hidden notes that link to the
+seed", "evidence is rendered as quoted data", "no Unicode line terminator from
+evidence survives in the tool text" and "limit is clamped to 1..25";
+`graphRetrieve.test.mjs`, "limit applies after canSee: hidden strong matches
+do not reduce the visible count"; `apps/convex/__tests__/relatedNotes.test.ts`,
+"a note outside the caller's clearance is the read operation's not-found,
+byte for byte" and "a team answer does not vary with hidden notes";
+`apps/mobile/__tests__/relatedPanel.test.ts`, "loading never says there are no
+related notes", "the incomplete state shows its notice and no empty sentence"
+and "a failed call is unavailable, not empty, and can be retried".

@@ -11,6 +11,7 @@ import { listAllNoteKeys } from "../../notes/visibleKeys.js";
 import { indexedReferrerKeys } from "./indexedReferrers.js";
 import { mapInBatches } from "../../notes/storage.js";
 import { replaceText as replaceCollaborationText } from "@context/collaboration";
+import { collaborationHead } from "../../live/collaborationHttp.js";
 
 /**
  * Point every link at where its note went.
@@ -80,7 +81,12 @@ export async function rewriteReferences(store, scope, rules, overrides, renames,
       const object = await getWithLegacyFallback(store, key);
       if (!object) return { notes: 0, links: 0, written: null, failed: false };
       const storedText = await object.text();
-      const collaborationBase = await generatedCollaborationBase(store, key, storedText);
+      // No head means no pending collaboration text, so the stored .md is the
+      // note: reading through collaboration would create a head for it and make
+      // it an index candidate on every later move (owner decision, Phase 3).
+      const collaborationBase = (await collaborationHead(store, key))
+        ? await generatedCollaborationBase(store, key, storedText)
+        : null;
       const text = collaborationBase?.text ?? storedText;
       /*
         AN ENCRYPTED NOTE'S STORED BYTES ARE NEVER REWRITTEN.

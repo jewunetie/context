@@ -73,9 +73,14 @@ a reviewer.
   no graph: it returns text hits and the seed's own links
   (`linked_from_here`, which need no graph read), never backlinks or shared
   targets or URLs, labelled possibly incomplete. The console's panel calls the same `retrieveCandidates`
-  through Convex, whose environment has no such switch: it reads the
-  graph whatever the gateway's budget says, and only the docmap filter
-  above keeps its candidates to notes the index lists. The tests are
+  through Convex, which has its own switch (owner decision): the Convex
+  environment variable of the same name, `WRITE_ENRICH_SUBREQUEST_BUDGET`,
+  set to "0" makes `related.ts` hand `retrieveCandidates` a store view with
+  `writeEnrichBudget` 0, so the panel behaves as the gateway does. The two
+  variables are set separately; turning the graph off everywhere means
+  setting both. The tests are
+  `relatedNotes.test.ts` "WRITE_ENRICH_SUBREQUEST_BUDGET=0 skips the graph:
+  own links kept, links_here gone, labelled incomplete",
   `graphRetrieve.test.mjs` "the kill switch (writeEnrichBudget 0) skips the
   graph: no graph op, labelled possibly incomplete" and
   `relatedNotesTool.test.mjs` "with the kill switch on, a move makes no
@@ -325,11 +330,16 @@ did before Phase 3:
 
 Every visible note with collaboration state is read too, as the scan reads it:
 its accepted text may never have reached the `.md`, and the postings describe
-stored bodies only. **Owner decision point (Task 14 re-review):** every
-collaborative read creates a head, so after one scanned move every eligible
-note in a collaborative workspace is a candidate and the index saves little
-there. Including every head is the cheapest complete rule; the lever is
-upstream (a move-time read of a note with no head need not create one).
+stored bodies only. Including every head is the cheapest complete rule, and
+it stays cheap because a move creates no heads (owner decision, Phase 3
+follow-up): `rewriteReferences` reads through collaboration only when the
+note already has a head, and otherwise rewrites the stored `.md` directly,
+since no head means no pending text. Before this, every move-time read
+created a head, so after one move every eligible note was a candidate. The
+cost is one head GET per note read. Tests: `moveIndexedReferrers.test.mjs`
+"a move on a fresh workspace creates no collaboration heads" and "a later
+move still takes the index path and reads only the moved note and its
+referrers"; the pending-edit tests (R1, R1b) keep the collaboration path.
 
 **What reversing it costs.** Trusting `complete` alone, recording the wall
 clock, or recording the wrapping census lets a referrer edited after its sweep

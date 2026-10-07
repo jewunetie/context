@@ -28,12 +28,13 @@
  * Run as a temporary local edit and reverted. Counts are failing tests here.
  *
  *   candidate filter admits every path (canSee dropped)   2 (clearance filter, invariance)
+ *   Convex WRITE_ENRICH_SUBREQUEST_BUDGET ignored          1 (off switch)
  *
  * RED: 5 of 6 failed before the operation existed; the not-found test passed
  * then only because an unknown operation fails the same way for every path.
  */
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "../_generated/api";
 import { type Clearance, clearanceOf } from "../functions/lib/clearance";
 import { type FileStore, maintainSearchIndex } from "../functions/lib/fileOps";
@@ -171,6 +172,25 @@ describe("the related operation", () => {
     const swept = await world(VISIBLE, { conditional: true, ready: true });
     expect(await related(swept, team)).toMatchObject({ kind: "related", possiblyIncomplete: false });
     expect(await related(swept, owner)).toMatchObject({ kind: "related", possiblyIncomplete: false });
+  });
+});
+
+describe("the console's off switch", () => {
+  test("WRITE_ENRICH_SUBREQUEST_BUDGET=0 skips the graph: own links kept, links_here gone, labelled incomplete", async () => {
+    const store = await world({ ...VISIBLE, ...HIDDEN }, { conditional: true, ready: true });
+    const on = JSON.stringify(await related(store, owner));
+    // Not vacuous: with the graph on, a backlink reason and a complete answer.
+    expect(on).toContain("links_here");
+    expect(on).toContain('"possiblyIncomplete":false');
+    vi.stubEnv("WRITE_ENRICH_SUBREQUEST_BUDGET", "0");
+    try {
+      const off = await related(store, owner);
+      expect(JSON.stringify(off)).not.toContain("links_here");
+      expect(JSON.stringify(off)).toContain("linked_from_here");
+      expect(off).toMatchObject({ kind: "related", possiblyIncomplete: true });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 

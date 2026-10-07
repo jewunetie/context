@@ -31,6 +31,9 @@
  *   no server-side-copy check                                   1 (server-side copy)
  *   readPostings complete at exactly MAX_POSTING_PAGES          1 (graphPostings.test.mjs)
  *
+ * Phase 3 follow-up:
+ *   read through collaboration with no head check              2 (no heads, later move)
+ *
  * In graphCoverage.test.mjs, a cutover publishing no census time fails the
  * rebuild cutover test there (1).
  */
@@ -422,4 +425,32 @@ test("a store that may copy server-side scans; Dropbox never declares it", async
   // Dropbox moves upload (get then put), so copy_v2 timestamps never reach a listing.
   assert.equal(dropbox(() => null).capabilities.serverSideCopy, false);
   assert.ok(DropboxStore);
+});
+
+/** Collaboration heads in the bucket (owner decision: move-time reads create none). */
+const heads = (b) => [...b.objects.keys()].filter((k) => k.startsWith(".context/collaboration/v1/heads/"));
+
+test("a move on a fresh workspace creates no collaboration heads", async () => {
+  const b = await build(NOTES);
+  const r = await run(b, new Map([["a/t.md", "c/t2.md"]]));
+  assert.ok(r.links > 0, "the fixture rewrites something");
+  assert.deepEqual(heads(b), []);
+});
+
+test("a later move still takes the index path and reads only the moved note and its referrers", async () => {
+  const b = await build(NOTES);
+  await run(b, new Map([["a/t.md", "c/t2.md"]]));
+  // Sweep again after the first move so the top-up is empty.
+  const swept = LATER + 30 * MIN; // past the top-up margin
+  for (let i = 0; i < 10; i += 1) {
+    await reconcileGraph(b, big(), {
+      census: censusOf(b), censusComplete: true, censusListedAt: new Date(swept).toISOString(),
+      isIndexable: defaultIsIndexable, now: swept,
+    });
+    if ((await graphHealth(b, big())).complete) break;
+  }
+  b.at(swept + MIN);
+  await run(b, new Map([["b/r4.md", "c/r4.md"]]));
+  assert.deepEqual(bodyReads(b), ["c/r4.md"]);
+  assert.deepEqual(heads(b), []);
 });

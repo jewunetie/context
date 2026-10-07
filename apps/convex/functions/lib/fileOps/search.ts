@@ -41,7 +41,7 @@ type SearchStore = Parameters<typeof searchIndexedNotes>[0];
  * than tight because a Convex action has no subrequest ceiling and the cost of
  * being one op short is an answer that understates itself.
  */
-const CONSOLE_SEARCH_BUDGET = 300;
+export const CONSOLE_SEARCH_BUDGET = 300;
 
 /**
  * Store operations one background maintenance pass may spend.

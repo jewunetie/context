@@ -19,6 +19,7 @@ import { useQuery } from "convex/react";
 import { api } from "@context/convex/_generated/api";
 import type { Id } from "@context/convex/_generated/dataModel";
 import { isServerRefusal, toFileError } from "../browser";
+import { parseRelatedAnswer } from "../browser/relatedAnswer";
 import { onMirrorListed, requestMirrorRefresh } from "../../../offline/mirrorEvents";
 import type { MirroredTree } from "../../../offline/mirror";
 import type { FolderListing } from "../types";
@@ -28,7 +29,7 @@ import type { FileActionsValues } from "./useFileActions";
 import type { OfflineQueueValues } from "./useOfflineQueue";
 
 type ListingsDeps =
-  & Pick<FileActionsValues, "listFiles" | "notePathsAction" | "searchContext" | "workspaceId">
+  & Pick<FileActionsValues, "listFiles" | "notePathsAction" | "relatedNotesAction" | "searchContext" | "workspaceId">
   & Pick<
     BrowserStateValues,
     | "dispatch"
@@ -47,7 +48,7 @@ type ListingsDeps =
 
 export function useListings(deps: ListingsDeps) {
   const {
-    dispatch, listFiles, listedAtRef, listings, notePathsAction, offlineRef, openRun,
+    dispatch, listFiles, listedAtRef, listings, notePathsAction, offlineRef, openRun, relatedNotesAction,
     searchContext, setClipboard, setExpanded, setIndexedPaths, setListings, setLoading, setNotice,
     setOpening, setSelectedPath, workspaceId,
   } = deps;
@@ -500,8 +501,15 @@ export function useListings(deps: ListingsDeps) {
     [searchContext, workspaceId],
   );
 
+  /** One note's related notes, read like `search`: nothing changes, so not through `run`. */
+  const relatedNotes = useCallback(
+    async (path: string) =>
+      parseRelatedAnswer(await relatedNotesAction({ workspaceId: workspaceId as Id<"workspaces">, path })),
+    [relatedNotesAction, workspaceId],
+  );
+
   return {
-    refresh, reportRefreshFailure, ensureListing, contextId, toggleFolder, collapseAll, search,
+    refresh, reportRefreshFailure, ensureListing, contextId, toggleFolder, collapseAll, search, relatedNotes,
   };
 }
 

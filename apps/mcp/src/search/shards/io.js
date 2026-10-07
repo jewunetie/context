@@ -118,10 +118,11 @@ export async function loadIndexManifest(store, budget, reserve, byteCap = MANIFE
  * @param {import("../../store/index.js").ContextStore} store
  * @param {ReturnType<typeof createSearchBudget>} budget
  * @param {number} reserve store ops kept back for the caller's later work
+ * @param {object} [given] a manifest the caller already read, so it is not read twice
  * @returns {Promise<{ paths: string[], freshness: ReturnType<typeof emptyManifest>["freshness"] } | null>}
  */
-export async function loadDocmapPaths(store, budget, reserve) {
-  const manifest = await loadIndexManifest(store, budget, reserve);
+export async function loadDocmapPaths(store, budget, reserve, given) {
+  const manifest = given ?? (await loadIndexManifest(store, budget, reserve));
   if (manifest === null) return null;
   if (!budget.take(reserve)) return null;
   const stored = await store.get(manifest.layout.docmapKey);

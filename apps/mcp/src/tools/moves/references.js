@@ -8,6 +8,7 @@ import { indexByName, rewriteLinks } from "../../links.js";
 import { isEncryptedNote } from "../../encryption.js";
 import { LINK_SCAN_CAP } from "../../moves/objects.js";
 import { listAllNoteKeys } from "../../notes/visibleKeys.js";
+import { indexedReferrerKeys } from "./indexedReferrers.js";
 import { mapInBatches } from "../../notes/storage.js";
 import { replaceText as replaceCollaborationText } from "@context/collaboration";
 
@@ -53,11 +54,10 @@ const REFERENCE_READ_CONCURRENCY = 8;
 export async function rewriteReferences(store, scope, rules, overrides, renames, { write = true } = {}) {
   if (renames.size === 0) return { notes: 0, links: 0, capped: false };
 
-  let keys;
+  const canSeeKey = (key) => canSee(key, scope, rules, overrides);
+  let listing;
   try {
-    keys = (await listAllNoteKeys(store))
-      .map(({ key }) => key)
-      .filter((key) => canSee(key, scope, rules, overrides));
+    listing = (await listAllNoteKeys(store)).filter(({ key }) => canSeeKey(key));
   } catch {
     // `listAllKeys` throws rather than truncate. A walk that could not be
     // completed is reported as a rewrite that did not happen, never as one that
@@ -65,13 +65,16 @@ export async function rewriteReferences(store, scope, rules, overrides, renames,
     // this.
     return { notes: 0, links: 0, capped: true };
   }
+  const keys = listing.map(({ key }) => key);
   if (keys.length > LINK_SCAN_CAP) return { notes: 0, links: 0, capped: true };
 
   const wasAt = new Map();
   for (const [from, to] of renames) wasAt.set(to, from);
   const byName = indexByName(keys.map((key) => wasAt.get(key) ?? key));
 
-  const results = await mapInBatches(keys, REFERENCE_READ_CONCURRENCY, async (key) => {
+  // Only the bodies read narrow; `byName` stays over every visible key.
+  const reads = (await indexedReferrerKeys(store, { visibleListing: listing, renames, canSeeKey })) ?? keys;
+  const results = await mapInBatches(reads, REFERENCE_READ_CONCURRENCY, async (key) => {
     try {
       const fromPath = wasAt.get(key) ?? key;
       const object = await getWithLegacyFallback(store, key);

@@ -51,8 +51,9 @@ import {
 } from "../meetings/ingest.js";
 import { localIngestionStore } from "../ingestion/inbox.js";
 import { publishMeetingNote, resolveMeetingNotePath } from "../meetings/notes.js";
-import { searchBudgetFor } from "../search/budget.js";
+import { searchBudgetFor, writeEnrichBudgetFor } from "../search/budget.js";
 import { indexFormatFor } from "../search/format.js";
+import { createSearchBudget } from "../search/maintain.js";
 import { transcriptionForwarder } from "../ingestion/transcription.js";
 import { toolSuggestDestination } from "../routing/suggestDestination.js";
 import { PINNED_CONTEXT_NAME } from "../orient/globalNote.js";
@@ -257,6 +258,11 @@ export async function route(request, env, ctx) {
       // with the request, so a reused isolate carries nothing across tenants.
       store.searchSubrequestBudget = searchBudgetFor(env);
       store.searchIndexFormat = indexFormatFor(env); // the index format switch, CONTRACT-v3.md
+      store.writeEnrichBudget = writeEnrichBudgetFor(env);
+      // One ceiling on link suggestions for the whole invocation: a batch of
+      // writes shares it, not one budget per write. Graph updates keep their
+      // own per-write budget (tools/notes/write.js).
+      store.writeEnrichPool = createSearchBudget(store.writeEnrichBudget);
       attachGatewayJobQueue(store, session, controlPlane, env);
       attachLinkCalls(store, session, controlPlane, env);
       // The one way anything in this worker gets to keep working after the
@@ -468,6 +474,8 @@ export async function route(request, env, ctx) {
         const targetStore = await storeForSession(target, env, controlPlane);
         targetStore.searchSubrequestBudget = searchBudgetFor(env);
         targetStore.searchIndexFormat = indexFormatFor(env);
+        targetStore.writeEnrichBudget = writeEnrichBudgetFor(env);
+        targetStore.writeEnrichPool = store.writeEnrichPool;
         attachGatewayJobQueue(targetStore, target, controlPlane, env);
         attachLinkCalls(targetStore, target, controlPlane, env);
         targetStore.defer = store.defer;

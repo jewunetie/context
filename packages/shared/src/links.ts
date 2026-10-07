@@ -81,6 +81,8 @@ export type LinkResolution =
 export interface LinkCatalog {
   byName?: ReadonlyMap<string, string[]>;
   paths?: ReadonlySet<string>;
+  /** `paths` may lack a note (an index that is behind): outside it is unknown, not missing. */
+  partial?: boolean;
 }
 
 /** The three shapes a target can be written in. */
@@ -518,8 +520,9 @@ function decodeFor(link: Pick<LinkOccurrence, "kind">, file: string): string {
  * What an occurrence points at, as a verdict rather than a path-or-null.
  *
  * Without `catalog.paths` a computed path or an unmatched bare name is
- * `unknown`, not `missing`: absence of a list is not absence of a note. Never
- * throws on anything `extractReferences` produces.
+ * `unknown`, not `missing`: absence of a list is not absence of a note. With
+ * `catalog.partial` a path in the list still resolves and one outside it is
+ * `unknown`. Never throws on anything `extractReferences` produces.
  *
  * `catalog` must contain only targets the caller may see; built from anything
  * wider, `ambiguous`/`missing` versus `resolved` reveals notes the caller cannot
@@ -536,7 +539,7 @@ export function resolveReference(
   const { file } = splitAnchor(target);
   if (file === "" || file === "." || file === "..") return { state: "invalid" };
 
-  const absent = catalog.paths ? "missing" : "unknown";
+  const absent = catalog.paths && !catalog.partial ? "missing" : "unknown";
   const decoded = decodeFor(occurrence, file);
   if (styleOf(decoded) === "bare") {
     const candidates = catalog.byName?.get(decoded.replace(/\.md$/, ""));
@@ -547,7 +550,7 @@ export function resolveReference(
   const path = resolveLink(occurrence as Pick<Link, "kind" | "target">, fromPath, catalog.byName);
   if (path === null) return { state: "invalid" };
   if (!catalog.paths) return { state: "unknown" };
-  return catalog.paths.has(path) ? { state: "resolved", path } : { state: "missing" };
+  return catalog.paths.has(path) ? { state: "resolved", path } : { state: absent };
 }
 
 /* ---------------------------- re-expression ------------------------------ */

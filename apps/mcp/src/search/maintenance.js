@@ -21,6 +21,7 @@ import {
   D1_STANDALONE_FLOOR,
   DEFERRED_SYNC_FLOOR,
   FALLBACK_LIST_PAGE_CAP,
+  graphPassFloor,
   INDEX_RECONCILE_INTERVAL_MS,
   INTERACTIVE_PROJECT_NOTES,
 } from "./pacing.js";
@@ -28,6 +29,8 @@ import { INTERACTIVE_BACKFILL_OPS } from "./visible.js";
 import { listBoundedKeys, listImmediateLayout } from "../notes/storage.js";
 import { syncShardedIndex } from "./shards.js";
 import { GC_BUDGET_FLOOR, collectShardRevisions } from "./shards/gc.js";
+import { reconcileGraph } from "../graph/reconcile.js";
+import { graphView } from "../graph/mode.js";
 
 /**
  * The fallback scan's key listing.
@@ -219,9 +222,13 @@ async function maintainNow(store, budget, isIndexable, found, visibilityOf, opti
       ? Math.min(D1_PASS_RESERVE_CAP, Math.floor(budget.remaining / 4))
       : 0;
   let synced = null;
+  // Taken before the listing, so `freshness.listedAt` is never later than it:
+  // the graph records it as coverage (Task 13), and an edit landing during the
+  // pass must sort at or after it.
+  const startedAt = Date.now();
   try {
     if (syncingIndex) {
-      synced = await syncShardedIndex(store, { budget, isIndexable, reserve, ...options });
+      synced = await syncShardedIndex(store, { budget, isIndexable, reserve, now: startedAt, ...options });
     }
   } catch {
     // A storage failure after the answer is already out changes nothing about
@@ -240,12 +247,38 @@ async function maintainNow(store, budget, isIndexable, found, visibilityOf, opti
   } catch {
     // Unreferenced revisions only cost storage; the next pass tries again.
   }
-  if (!projecting) return;
-  try {
-    await projectAfterSync(store, budget, synced, visibilityOf, options);
-  } catch {
-    // Same rule, one layer down. `projectPass` already turns every provider
-    // failure into a reported code; this is the belt to that pair of braces.
+  if (projecting) {
+    try {
+      await projectAfterSync(store, budget, synced, visibilityOf, options);
+    } catch {
+      // Same rule, one layer down. `projectPass` already turns every provider
+      // failure into a reported code; this is the belt to that pair of braces.
+    }
+  }
+  // The link graph last, on what search and D1 left, over the census this
+  // sync just produced. A derivative: its failure changes nothing above. Not
+  // on the inline path (`backfillOps` set: no `waitUntil`, someone waiting).
+  // WRITE_ENRICH_SUBREQUEST_BUDGET=0 is the graph's kill switch: the write
+  // hook already spends nothing, and this skips reconciliation and GC too.
+  const inline = options.backfillOps !== undefined;
+  const graphOff = store.writeEnrichBudget === 0;
+  if (!inline && !graphOff && synced?.manifest && budget.remaining >= graphPassFloor(store)) {
+    try {
+      const freshness = synced.manifest.freshness;
+      // Its own logical view, billed to this budget alone (graphView).
+      await reconcileGraph(graphView(store, budget), budget, {
+        census: censusFromManifest(synced.manifest),
+        censusComplete: !synced.listingTruncated && Boolean(freshness?.listedAt) && !freshness?.truncated,
+        // Only a census with nothing pending names a time: a note search
+        // could not fetch keeps its old version there, so the sweep skips it.
+        censusListedAt: freshness?.pending === 0 ? freshness.listedAt : undefined,
+        removedHints: synced.removed || [],
+        isIndexable,
+        now: Date.now(),
+      });
+    } catch {
+      // Reconciliation repairs it on a later pass.
+    }
   }
 }
 

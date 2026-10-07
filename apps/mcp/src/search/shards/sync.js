@@ -172,7 +172,7 @@ export async function syncPass(
      * The clock the audit rotates on — a `Date`, a number of milliseconds, or
      * absent for the wall clock. Injectable for the same reason `searchIndex`'s
      * is: which shard a pass audits is otherwise a function of when the test
-     * ran. Nothing in production passes it.
+     * ran. `maintainNow` passes the time before its listing (graph coverage).
      */
     now,
     /**

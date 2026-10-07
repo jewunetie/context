@@ -111,7 +111,7 @@ import {
   notePathsValidator,
   searchResultsValidator,
 } from "./lib/filesFns/searchValidators";
-import { operationResultValidator, operationValidator } from "./lib/filesFns/operationValidators";
+import { operationResultValidator, operationValidator, relatedValidator } from "./lib/filesFns/operationValidators";
 import {
   type OperationResult,
 } from "./lib/filesFns/operationTypes";
@@ -190,6 +190,7 @@ import {
   searchContextHandler,
   searchContextsHandler,
 } from "./lib/filesFns/search";
+import { relatedNotesHandler } from "./lib/filesFns/related";
 import {
   runFileOperationHandler,
 } from "./lib/filesFns/fileOperationBarrier";
@@ -403,6 +404,13 @@ export const notePaths = action({
   args: { workspaceId: v.id("workspaces") },
   returns: notePathsValidator,
   handler: async (ctx, args): Promise<Extract<OperationResult, { kind: "notePaths" }>> => await notePathsHandler(ctx, args),
+});
+
+/** See `relatedNotesHandler` in `lib/filesFns/related.ts`. */
+export const relatedNotes = action({
+  args: { workspaceId: v.id("workspaces"), path: v.string() },
+  returns: relatedValidator,
+  handler: async (ctx, args): Promise<Extract<OperationResult, { kind: "related" }>> => await relatedNotesHandler(ctx, args),
 });
 
 /** See `searchContextsHandler` in `lib/filesFns/search.ts`. */

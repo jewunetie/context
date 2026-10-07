@@ -5,6 +5,7 @@
  */
 
 import { D1_PASS_NOTE_CAP } from "./d1/backfill.js";
+import { graphMode } from "../graph/mode.js";
 
 /**
  * Ops that must remain before the deferred pass is worth starting: the
@@ -43,6 +44,29 @@ export const D1_OPS_PER_NOTE = 6;
  * on each of them.
  */
 export const D1_PASS_RESERVE_CAP = 4 + D1_PASS_NOTE_CAP * D1_OPS_PER_NOTE;
+/**
+ * Ops that must remain after the sync and the D1 projection before the graph
+ * reconciliation pass starts (OPEN-21). Measured, not derived: the smallest
+ * budget at which a pass converges a one-link note is 10 on a conditional
+ * store and 11 on a best-effort one (manifest, cursor, wrap reserve, node and
+ * body reads, publish, one membership walk and write, the checkpoint op), so
+ * the floor is 11. Below it a pass spends ops and lands nothing. No reserve is
+ * taken before the sync: the graph gets only what search and D1 leave.
+ */
+export const GRAPH_PASS_FLOOR = 11;
+/**
+ * The same floor for a best-effort store behind the logical-delete wrapper
+ * (every gateway B2 or Wasabi store), where search maintenance charges the
+ * wrapper's read before each unconditional put to the pass: every graph put
+ * then costs two ops and the wrap reserve keeps two more (Phase 2 fix round
+ * 2). Measured the same way: a one-link note first converges at 15.
+ */
+export const GRAPH_PASS_FLOOR_LOGICAL_BEST_EFFORT = 15;
+/** The floor for this store. */
+export const graphPassFloor = (store) =>
+  graphMode(store) === "best-effort" && typeof store.setExtraOperationCharge === "function"
+    ? GRAPH_PASS_FLOOR_LOGICAL_BEST_EFFORT
+    : GRAPH_PASS_FLOOR;
 /**
  * Notes the projection may copy while somebody is waiting.
  *

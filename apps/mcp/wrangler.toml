@@ -82,6 +82,8 @@ APP_ORIGIN = "https://context.lc"
 # one invocation finishes, not how long the caller waits. The whole invocation,
 # deferred half included, still stays inside it.
 SEARCH_SUBREQUEST_BUDGET = "600"
+# Store ops one write may spend on link-graph work behind its response (default 8).
+WRITE_ENRICH_SUBREQUEST_BUDGET = "80"
 
 # The search index format switch (src/search/CONTRACT-v3.md, ruling OPEN-57).
 # Unset everywhere: search reads and writes today's index under
@@ -230,6 +232,8 @@ SEARCH_SUBREQUEST_BUDGET = "600"
 # segments Chinese before the switch is considered for production; v3 `built`
 # and `pending` are in the `search-index-format` log.
 SEARCH_TOKENIZER = "2"
+# Store ops one write may spend on link-graph work behind its response (default 8).
+WRITE_ENRICH_SUBREQUEST_BUDGET = "80"
 
 [[env.staging.durable_objects.bindings]]
 name = "PRESENCE_ROOM"

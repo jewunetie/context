@@ -157,6 +157,11 @@ async function createLogicalFolderMove(store, scope, source, destination, object
     })),
     error: null,
   };
+  // The sentinel goes first: readers that find none skip the markers
+  // (moves/jobs.js), so a marker must never exist without it. Written again
+  // after the marker, because a refresh that listed before the marker landed
+  // may have removed the first one.
+  await writeMoveSentinel(store);
   await store.put(moveJobKey(id), JSON.stringify(job, null, 2));
   await writeMoveSentinel(store);
   if (typeof store.enqueueGatewayJob === "function") {

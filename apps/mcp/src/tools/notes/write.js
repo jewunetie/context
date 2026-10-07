@@ -34,6 +34,10 @@ import { isPersonalCommunicationsPath, normalizePath } from "../../notes/paths.j
 import { parseFormBlocks } from "../../forms.js";
 import { pathUnderActiveMovedSource } from "../../moves/jobs.js";
 import { persistExactVisibility, UNWRITABLE_PATH_REFUSAL, writesOneRule } from "../../privacy/state.js";
+import { projectNoteAfterWriteDeferred, suggestAfterWrite } from "../../graph/afterWrite.js";
+import { renderLinkSuggestions } from "../../graph/suggest.js";
+import { createSearchBudget } from "../../search/maintain.js";
+import { WRITE_ENRICH_SUBREQUEST_BUDGET } from "../../search/budget.js";
 import { projectWrittenNoteAfterResponse } from "../../search/writeProjection.js";
 import { recordChange } from "../../activity/record.js";
 import { shareWrittenNote } from "../links.js";
@@ -287,9 +291,10 @@ export async function toolWriteNote(store, scope, rules, overrides, args, option
     );
   }
   let collaborationResult = null;
+  let base = null;
   if (collaborationEligibleExisting) {
     try {
-      const base = await readCollaborationDocument(store, path);
+      base = await readCollaborationDocument(store, path);
       // The opaque etag is the version the caller actually read. A retained
       // older version can be merged; deriving a fresh base here would silently
       // turn an agent's stale full-body replacement into an overwrite of an
@@ -448,7 +453,35 @@ export async function toolWriteNote(store, scope, rules, overrides, args, option
   const shareLines = await shareWrittenNote(store, path, args);
   // Said after the write, never instead of it: a status outside its folder's list is advice.
   const statusLine = isDrawingPath(path) ? null : await statusAdvice(store, scope, rules, overrides, path, body).catch(() => null);
+  // Post-commit enrichment, neither part able to fail or change the write
+  // (P5, AGENT-LINKS 13.6): link suggestions first, for the plain write_note
+  // call only (OPEN-37), then the link graph's derivative of the committed
+  // body. The graph update keeps its own budget per write, as before
+  // suggestions existed. Suggestions spend the invocation's pool where the
+  // route made one (a batch shares one ceiling), else a budget of their own,
+  // and run only where the deployment raised the budget above its default:
+  // at the default a pass could only ever be partial, so there is no block (a
+  // configuration, not a result). Budget 0 turns the graph off as well.
+  const enrich = store.writeEnrichBudget ?? WRITE_ENRICH_SUBREQUEST_BUDGET;
+  const suggestions =
+    options.linkSuggestions === true && enrich > WRITE_ENRICH_SUBREQUEST_BUDGET
+      ? await suggestAfterWrite(store, scope, rules, overrides, {
+          path,
+          etag: put.etag,
+          visibility: desiredVisibility,
+          // OPEN-38: the merged document before this write, else the stored
+          // body, else a create's nothing. OPEN-39: none for an encrypted note
+          // (its plaintext is never a query); none for a drawing's machine data.
+          before: isDrawingPath(path) || (storedBody !== null && isEncryptedNote(storedBody)) ? undefined : base ? base.text : storedBody ?? "",
+          committed: collaborationResult?.text ?? content,
+        }, store.writeEnrichPool ?? createSearchBudget(enrich), options.now)
+      : null;
+  // The link graph's derivative of the committed body; never fails the write.
+  await projectNoteAfterWriteDeferred(store, { path, body, version: put.etag, budget: createSearchBudget(enrich) });
   // Whether this created the note, for the live map's "pops in" (`live/activityHint.js`).
+  // The block rides in the text only, for every revision (fix round 1): a
+  // client that prefers structuredContent would otherwise show its model the
+  // block and drop the write's own lines.
   return withActivityHint(toolText(
     `written: ${path} (etag ${put.etag})\nvisibility: ${desiredVisibility}` +
       (publishedForLink
@@ -465,7 +498,8 @@ export async function toolWriteNote(store, scope, rules, overrides, args, option
         : "") +
       (formLines.length ? `\n${formLines.join("\n")}` : "") +
       (shareLines.length ? `\n${shareLines.join("\n")}` : "") +
-      (statusLine === null ? "" : `\n${statusLine}`)
+      (statusLine === null ? "" : `\n${statusLine}`) +
+      (suggestions ? `\n${renderLinkSuggestions(suggestions)}` : ""),
   ), { created: !existing });
 }
 

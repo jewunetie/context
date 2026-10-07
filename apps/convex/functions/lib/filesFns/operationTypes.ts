@@ -16,6 +16,7 @@ import type {
   SearchResults,
   SyncManifest,
 } from "../fileOps";
+import type { RelatedNotes } from "../fileOps/related";
 import type { FormAction, FormAnswer, FormResult, FormSeedResult } from "../formOps";
 import type { Id } from "../../../_generated/dataModel";
 import type { StorageLayoutState } from "../storageLayout";
@@ -72,6 +73,7 @@ export type FileOperation =
       refreshOnMiss?: boolean;
     }
   | { kind: "notePaths" }
+  | { kind: "related"; path: string }
   | { kind: "maintainIndex"; passes?: number }
   /**
    * Re-index the notes one file operation changed, without listing the bucket.
@@ -244,6 +246,7 @@ export type OperationResult =
       stylesCss: string | null;
     }
   | { kind: "notePaths"; paths: string[] | null }
+  | ({ kind: "related" } & RelatedNotes)
   | { kind: "forwarded"; paths: string[] }
   | {
       kind: "indexMaintained";

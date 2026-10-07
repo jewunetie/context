@@ -114,18 +114,24 @@ export function memoryBucket({
       if (expected && rejectAllIfMatch) return null;
       // Etags this bucket issues look like "m3"; anything else is malformed.
       if (expected && shapeOnlyIfMatch && !/^m\d+$/.test(expected)) return null;
+      // `absent: true` refuses an existing key; B2 and Wasabi ignore it too.
+      if (options?.onlyIf?.absent === true && !ignoreIfMatch && objects.has(key)) return null;
       // A backend that "supports" If-Match by ignoring it — B2 and Wasabi.
       if (expected && !ignoreIfMatch && !shapeOnlyIfMatch && objects.get(key)?.etag !== expected) {
         return null;
       }
-      // Create-only, refused over an existing key; B2 and Wasabi ignore it too.
-      if (options?.onlyIf?.absent && !ignoreIfMatch && objects.has(key)) return null;
       const body = typeof value === "string" ? value : new TextDecoder().decode(value);
       const etag = `m${++counter}`;
       objects.set(key, { body, etag });
       return { etag };
     },
-    async delete(key) {
+    // Honours `onlyIf.etagMatches` like the R2 and S3 adapters (null on a
+    // mismatch or a missing key), with the same backend flags as `put`.
+    async delete(key, options = {}) {
+      const expected = options?.onlyIf?.etagMatches;
+      if (expected && rejectAllIfMatch) return null;
+      if (expected && shapeOnlyIfMatch && !/^m\d+$/.test(expected)) return null;
+      if (expected && !ignoreIfMatch && !shapeOnlyIfMatch && objects.get(key)?.etag !== expected) return null;
       objects.delete(key);
     },
     async list({ prefix, delimiter } = {}) {
@@ -145,6 +151,26 @@ export function memoryBucket({
         else delimitedPrefixes.add(`${prefix || ""}${rest.slice(0, slash + 1)}`);
       }
       return { objects: listed, delimitedPrefixes: [...delimitedPrefixes], truncated: false };
+    },
+  };
+}
+
+/**
+ * A view of `bucket` whose `list` pages like R2 and S3: it honours `limit`
+ * (default 1000) and resumes after the last key of the previous page from an
+ * opaque `cursor`, so physical deletes between pages skip nothing. Carries
+ * `capabilities` over, so it can be wrapped (withLogicalDelete snapshots them).
+ */
+export function cursorPagedBucket(bucket) {
+  return {
+    ...bucket,
+    capabilities: bucket.capabilities,
+    async list({ prefix, cursor, limit = 1000 } = {}) {
+      const all = (await bucket.list({ prefix })).objects;
+      const rest = cursor ? all.filter((o) => o.key > cursor) : all;
+      const page = rest.slice(0, limit);
+      const truncated = rest.length > page.length;
+      return { objects: page, truncated, ...(truncated && { cursor: page[page.length - 1].key }) };
     },
   };
 }

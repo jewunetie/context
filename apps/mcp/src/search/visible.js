@@ -252,6 +252,8 @@ export function splitReducedRecallNotes(paths, limit = RENDERED_RECALL_NOTE_LIMI
  *   schedules — the two must agree about what a note is.
  * @param {string} options.query
  * @param {string} [options.prefix]
+ * @param {object} [options.manifest] the index manifest, when the caller has
+ *   already read it for this request (one read, not two)
  * @param {object} [options.budget] a `createSearchBudget` counter to share
  *   with the caller's other storage work; one is made if absent
  * @param {number} [options.limit]
@@ -331,7 +333,8 @@ export async function searchIndexedNotes(store, options) {
   // same miss. The listing was the point; the re-ask only earns its cost when
   // the listing found something.
   if (!pass.changed) return first;
-  const second = await answerFromIndex(store, { ...options, budget });
+  // A given manifest is the one the first answer read; the refresh changed it.
+  const second = await answerFromIndex(store, { ...options, manifest: undefined, budget });
   // Never the empty one over the one that has hits: a refresh that lost a race
   // with another writer must not turn an answer into a miss.
   return second.indexed && second.hits && second.hits.length > 0 ? second : first;
@@ -365,12 +368,8 @@ async function answerFromIndex(store, options) {
   // One op, and the only thing between a caller and an answer. `null` is every
   // way the manifest can fail to arrive; the surface decides what to say about
   // it, and both surfaces say something other than "no matches".
-  let manifest = null;
-  try {
-    manifest = await loadIndexManifest(store, budget, limit);
-  } catch {
-    manifest = null;
-  }
+  // A caller that already read the manifest passes it (`options.manifest`).
+  const manifest = options.manifest ?? (await loadIndexManifest(store, budget, limit).catch(() => null));
   const indexHasDocs = Boolean(manifest && manifest.stats.some((entry) => entry.docCount > 0));
   if (!indexHasDocs) return { indexed: false };
 

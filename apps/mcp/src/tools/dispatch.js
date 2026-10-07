@@ -14,6 +14,7 @@ import {
   toolVoteForm,
 } from "./forms/tools.js";
 import { toolCreateLink, toolListLinks, toolRevokeLink } from "./links.js";
+import { toolRelatedNotes } from "./related.js";
 import { toolReportProblem } from "./reportProblem.js";
 import { toolError } from "./results.js";
 import { toolExistenceMasked } from "./registry.js";
@@ -89,7 +90,9 @@ export async function callTool(name, args, store, scope) {
     case "write_note":
       if (args.site !== undefined) return toolSiteAction(store, args);
       if (args.comment !== undefined) return toolCommentNote(store, scope, rules, overrides, args);
-      return toolWriteNote(store, scope, rules, overrides, args);
+      // Only this branch asks for link suggestions (OPEN-37): every other
+      // caller of toolWriteNote (remember, comments, forms) is off by default.
+      return toolWriteNote(store, scope, rules, overrides, args, { linkSuggestions: true });
     case "remember":
       return toolRemember(store, scope, rules, overrides, args);
     case "set_visibility":
@@ -134,6 +137,8 @@ export async function callTool(name, args, store, scope) {
       return toolOpenAiFetch(store, scope, rules, overrides, args.id);
     case "search_notes":
       return toolSearchNotes(store, scope, rules, overrides, args.query, args.prefix);
+    case "related_notes":
+      return toolRelatedNotes(store, scope, rules, overrides, args);
     case "archive_note":
       return toolArchiveNote(store, scope, rules, overrides, args.path, args.expected_etag);
     case "move_note":

@@ -189,6 +189,39 @@ test("without a note, the fact becomes a new inbox note, never overwriting one",
   }
 });
 
+test("remember never returns link suggestions or searches for them, on either path, while write_note does", async () => {
+  // A converged index holding a note that matches the facts' words: link
+  // suggestions would read it for its excerpt, and nothing else a write or
+  // remember does reads a note it is not writing.
+  const OTHER = "2-areas/plans.md";
+  env.WRITE_ENRICH_SUBREQUEST_BUDGET = "80";
+  const handle = s3.handle;
+  const read = [];
+  s3.handle = (url, init) => {
+    if ((init?.method ?? "GET") === "GET" && decodeURIComponent(new URL(url).pathname) === `/remember-me/${OTHER}`) read.push(url);
+    return handle(url, init);
+  };
+  try {
+    await call(OWNER, "write_note", { path: OTHER, content: "# Plans\n\nPrefer concise replies in plain language.\n" });
+    for (let i = 0; i < 3; i += 1) await call(OWNER, "search_notes", { query: "concise plain language" });
+    read.length = 0;
+    const plain = await call(OWNER, "write_note", { path: "2-areas/style.md", content: "# Style\n\nConcise replies in plain language.\n" });
+    assert.match(plain.text, /\nLink suggestions \(\w+\): [^\n]*\n- 2-areas\/plans\.md /);
+    assert.ok(read.length > 0, "positive control: write_note's suggestions read the matching note");
+    read.length = 0;
+    // The update path (a named note) and the create path (the inbox).
+    for (const args of [{ fact: "Prefers concise replies in plain language.", kind: "stated", note: PREFS }, { fact: "Prefers concise replies in plain language.", kind: "stated" }]) {
+      const answer = await remember(args);
+      assert.equal(answer.isError, false, answer.text);
+      assert.doesNotMatch(answer.text, /Link suggestions/);
+    }
+    assert.deepEqual(read, []);
+  } finally {
+    s3.handle = handle;
+    delete env.WRITE_ENRICH_SUBREQUEST_BUDGET;
+  }
+});
+
 test("replaces matches a whole line, never a line that merely contains it", async () => {
   await call(OWNER, "write_note", {
     path: "2-areas/style.md",

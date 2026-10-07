@@ -29,6 +29,7 @@ export function noteFlow(view: NoteView) {
     onDiscard,
     button,
     onSave,
+    related,
   } = view;
   return (
   <>
@@ -246,6 +247,7 @@ export function noteFlow(view: NoteView) {
       </View>
     ) : null}
     </Reveal>
+    {related}
   </>
   );
 }

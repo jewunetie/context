@@ -51,6 +51,7 @@ import {
   writeImage,
 } from "../fileOps";
 import { ensureFolderVisibility } from "../fileOps/visibility";
+import { relatedNotes } from "../fileOps/related";
 import {
   type FormNotifyMaterial,
   ensureFormResponseFiles,
@@ -555,6 +556,8 @@ export async function executeOperation(
         const found = await notePathIndex(store, clearance);
         return { kind: "notePaths", paths: found?.paths ?? null };
       }
+      case "related":
+        return { kind: "related", ...(await relatedNotes(store, { path: operation.path, clearance })) };
       case "projectIndex": {
         // Scope-blind, exactly like `maintainIndex` below: the tier a note is
         // copied at comes from `privacy.md` per note, never from whoever

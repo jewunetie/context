@@ -130,6 +130,29 @@ a reviewer.
   budget", "result order does not depend on where hidden entries sat in the
   chain" and "an incomplete chain empties every graph family for a team
   caller and keeps partial lists for the owner".
+- **Related-note candidates merge one lexical query with that neighbourhood**
+  (`retrieve.js`, Task 16; controller rulings OPEN-29 to OPEN-31 and OPEN-33).
+  The query words come from the seed's own text only (title, headings, then
+  body words by frequency, link targets blanked); the parts run in a fixed
+  order on the one budget, the visible catalog first, then search, then the
+  graph. The graph goes last because its read count depends on hidden
+  posting entries: run first, it would hand search a remainder that varies
+  with hidden data, and search would then vary in which hits it returns. Last,
+  it can only lose its own families, all at once for a strict caller, so the
+  merged answer keeps the one bit above. Explicit links rank ahead of
+  text-only hits, the rest by reciprocal rank fusion (k = 60), `nearby` only
+  breaks ties and is never a candidate of its own, and the result limit is
+  applied after authorization. **Accepted residual** (OPEN-33): workspace
+  health (`graphHealth.possiblyIncomplete`) and search-index freshness are
+  workspace-level, so a hidden note's edit can flip `possiblyIncomplete`, and
+  an index that is behind withholds `catalog.paths`, so rooted and relative
+  links in the seed read as unknown rather than resolved. Neither reveals a
+  path, count, content or ranking of a hidden note; a team caller can infer
+  that something somewhere changed recently. The tests are
+  `graphRetrieve.test.mjs`, "privacy invariance: hidden notes change nothing
+  but the withheld graph bit, at tight and generous budgets" (health and
+  freshness held constant) and "limit applies after canSee: hidden strong
+  matches do not reduce the visible count".
 
 **What reversing it costs.** Phase 3 backlinks, related notes, and
 index-assisted move repair all read this index; they cannot be built on a

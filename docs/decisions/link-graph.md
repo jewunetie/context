@@ -107,6 +107,24 @@ a reviewer.
   active generation but never publishes it complete", and
   `graphGuards.test.mjs`, "graphHealth is unavailable (never complete) on a
   manifest labelled with any newer version".
+- **A note's neighbourhood is computed per caller** (`neighbors.js`, Task 15;
+  controller rulings OPEN-26 to OPEN-28 and OPEN-32). Outgoing links and
+  unresolved references come from the body in the request, resolved against
+  the caller's visible catalog; backlinks, shared targets and shared URLs come
+  from one pinned generation with `canSee` applied before anything is counted,
+  validated or scored, a hub's degree included. A bare-name backlink counts
+  only when the name is unique in the caller's catalog (architecture 7.4). An
+  encrypted seed gets backlinks only. **Residual, withheld rather than closed**
+  (architecture 12.4, OPEN-27; an owner decision point): posting pages mix
+  visible and hidden entries, so how many reads a chain costs, and whether it
+  finishes within the budget, depends on hidden data. For a caller other than
+  the owner a reason family any of whose chains did not finish is dropped
+  whole and the answer is labelled incomplete, so no partial list varies with
+  hidden data; what remains is one bit (the label, and the time taken). The
+  tests are `graphNeighbors.test.mjs`, "privacy invariance: hidden notes,
+  links and citations leave a team caller's answer unchanged" and "an
+  incomplete chain drops the whole family for a team caller and keeps it
+  partial for the owner".
 
 **What reversing it costs.** Phase 3 backlinks, related notes, and
 index-assisted move repair all read this index; they cannot be built on a

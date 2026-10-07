@@ -133,7 +133,8 @@ conversation.
   source materially explains a claim, link it where that relationship is stated.
   A write may end with link suggestions: optional leads, not verified
   relationships, so read enough of a candidate to confirm it and skip topic-only
-  matches. Either way, do not rewrite a note just to add links.
+  matches. On a suggested note you can edit, you may add a link back where the
+  relationship is real.
 - **\`save_context\` before you finish** — the decisions, the constraints, the
   preferences, anything they should never have to say twice. Ask what no agent
   should have to rediscover, and keep that. Their own end-of-session procedure

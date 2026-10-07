@@ -54,6 +54,12 @@
  *     the six-write pool test
  *   (sabotage counts in phase-4-final-fix-report.md)
  *
+ * Labels and hints (owner decision 2026-10-07; both new tests red first):
+ *   afterWrite lists share links for a teammate                             1 (teammate)
+ *   the listing not passed to suggestLinks                                  1 (owner write)
+ *   (no catch on the listing in afterWrite is not caught: suggestLinks
+ *   handles a rejected listing itself)
+ *
  * RED: 14 of 15 failed before the wiring (the op-bound test passed: the
  * graph hook was already bounded), and the remember check failed on its
  * positive control.
@@ -600,4 +606,51 @@ test("graph updates keep their own per-write budget: legacy batches at 8 (2, 3 w
     env.WRITE_ENRICH_SUBREQUEST_BUDGET = "80";
   }
   assert.deepEqual(missed, []);
+});
+
+// Owner decision (2026-10-07): one share-link listing per owner write, none for
+// a teammate; store ops unchanged by it.
+function withLinks(store, list) {
+  const calls = [];
+  Object.defineProperty(store, "links", { value: { list: () => (calls.push("list"), list()) }, enumerable: false });
+  return calls;
+}
+const LABEL_ARGS = { path: "notes/new.md", content: TWO };
+
+test("owner write: one link listing, labels for the note and an anyone-linked folder; store ops identical to no listing", async () => {
+  const plainStore = asStore(await bucketWith());
+  const plain = await write(plainStore, LABEL_ARGS);
+  const store = asStore(await bucketWith());
+  const calls = withLinks(store, async () => [{ entryPath: "notes", audience: "anyone" }]);
+  const result = await write(store, LABEL_ARGS);
+  assert.deepEqual(calls, ["list"]);
+  const text = result.content[0].text;
+  // A link opens only what the team can read, so the private note under the
+  // linked folder is not shared publicly; its team neighbour is.
+  assert.match(text, /^Link suggestions \(ready\): this note is private\. /m);
+  assert.match(text, /^- notes\/survey\.md \("Harbor"; text_match\) \[team, shared publicly; link to it from this note\]/m);
+  assert.deepEqual(store.log.map(audited), plainStore.log.map(audited));
+  assert.ok(!plain.content[0].text.includes("shared publicly"));
+  const teamStore = asStore(await bucketWith());
+  withLinks(teamStore, async () => [{ entryPath: "notes", audience: "anyone" }]);
+  const published = await write(teamStore, { ...LABEL_ARGS, visibility: "team", confirm_team_publish: true });
+  assert.match(published.content[0].text, /^Link suggestions \(ready\): this note is team, shared publicly\. /m);
+});
+
+test("a teammate's write makes no link listing and never says shared publicly; a failed listing labels nothing", async () => {
+  const store = asStore(await bucketWith());
+  const calls = withLinks(store, async () => [{ entryPath: "notes", audience: "anyone" }]);
+  const result = await write(store, LABEL_ARGS, { scope: "team" });
+  assert.equal(result.isError, undefined, result.content[0].text);
+  assert.deepEqual(calls, []);
+  assert.equal(blockOf(result).status, "ready");
+  assert.ok(!result.content[0].text.includes("shared publicly"), result.content[0].text);
+  assert.match(result.content[0].text, /\[team; link to it from this note, or back from it\]/);
+
+  const failing = asStore(await bucketWith());
+  const failed = withLinks(failing, async () => { throw new Error("control plane down"); });
+  const out = await write(failing, LABEL_ARGS);
+  assert.deepEqual(failed, ["list"]);
+  assert.equal(blockOf(out).status, "ready");
+  assert.ok(!out.content[0].text.includes("shared publicly"));
 });

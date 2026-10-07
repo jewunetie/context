@@ -30,6 +30,15 @@
  *   fit drops the last candidate                                            1 (fit)
  *   an emptied list kept "ready"                                            1 (fit)
  *   \p{Cf} not escaped                                                      1 (format characters)
+ *
+ * Labels and hints (owner decision 2026-10-07; each new test red first, 5
+ * failing before suggest.js changed):
+ *   back-link without the reversed audience                                 1 (back-link)
+ *   edit rule ignoring the writer's scope                                   1 (back-link)
+ *   share listing read for any scope                                        1 (shared publicly)
+ *   public label without the team-visibility check                          1 (shared publicly)
+ *   members links counted as public                                         1 (shared publicly)
+ *   fit keeping the note label on an emptied block                          1 (fit)
  */
 
 import assert from "node:assert/strict";
@@ -117,10 +126,11 @@ function suggest(store, options = {}) {
     deadline,
     now,
     etag = "v2",
+    publicLinks,
   } = options;
   const audience = Object.hasOwn(options, "audience") ? options.audience : AUDIENCE;
   const scope = Object.hasOwn(options, "scope") ? options.scope : canSeeKey === owner ? "private" : "team";
-  return suggestLinks(store, scope, { path, committed, etag, sections, audience, canSeeKey, isIndexable: indexable }, budget, {
+  return suggestLinks(store, scope, { path, committed, etag, sections, audience, canSeeKey, isIndexable: indexable, ...(publicLinks !== undefined && { publicLinks }) }, budget, {
     ...(deadline !== undefined && { deadline }),
     ...(now && { now }),
   });
@@ -157,12 +167,16 @@ test("a ready block: text matches by section, with excerpt, signals and the etag
     section: "Harbor",
     signals: ["text_match"],
     excerpt: "kestrel harbor survey results from the coast",
+    visibility: "team",
+    sharedPublicly: false,
+    linkBack: true,
   });
+  assert.deepEqual(block.note, { visibility: "team", sharedPublicly: false });
   assert.equal(byPath["far/away/fog.md"].section, "Lighthouse");
   assert.ok(!paths(block).includes("far/away/none.md"));
   const text = renderLinkSuggestions(block);
-  assert.match(text.split("\n")[0], /^Link suggestions \(ready\): /);
-  assert.ok(text.includes('- other/text.md ("Harbor"; text_match): "kestrel harbor survey results from the coast"'), text);
+  assert.match(text.split("\n")[0], /^Link suggestions \(ready\): this note is team\. /);
+  assert.ok(text.includes('- other/text.md ("Harbor"; text_match) [team; link to it from this note, or back from it]: "kestrel harbor survey results from the coast"'), text);
 });
 
 test("an already linked target that links back stays out, even when only the committed text can resolve the link", async () => {
@@ -572,4 +586,114 @@ test("unreadable move state withholds every section's candidates, read once", as
   assert.deepEqual(block.candidates, []);
   assert.notEqual(block.status, "ready");
   assert.deepEqual(c.moveOps, [".context/moves/"]);
+});
+
+// Owner decision (2026-10-07): visibility labels, "shared publicly" for the
+// owner only, forward and back-link hints.
+const GROUPED = {
+  "private/seed.md": "# Seed\n\n## Harbor\n\nkestrel harbor survey\n",
+  "grp/same.md": "kestrel harbor survey",
+  "other/text.md": "kestrel harbor survey",
+  "private/mine.md": "kestrel harbor survey",
+};
+const HARBOR = [section("Harbor", "## Harbor\n\nkestrel harbor survey\n")];
+const byPath = (b) => Object.fromEntries(b.candidates.map((c) => [c.path, c]));
+
+test("labels: the written note and every candidate carry their visibility (private, team, @group)", async () => {
+  const store = await world(GROUPED);
+  const block = await suggest(store, { path: "private/seed.md", committed: GROUPED["private/seed.md"], sections: HARBOR, canSeeKey: owner });
+  assert.deepEqual(block.note, { visibility: "private", sharedPublicly: false });
+  const got = byPath(block);
+  assert.deepEqual(Object.keys(got).sort(), ["grp/same.md", "other/text.md", "private/mine.md"]);
+  assert.equal(got["grp/same.md"].visibility, "@grp");
+  assert.equal(got["other/text.md"].visibility, "team");
+  assert.equal(got["private/mine.md"].visibility, "private");
+  const text = renderLinkSuggestions(block);
+  assert.match(text.split("\n")[0], /^Link suggestions \(ready\): this note is private\. /);
+  assert.ok(text.includes("- grp/same.md (\"Harbor\"; text_match) [@grp;"), text);
+  assert.ok(text.includes("- private/mine.md (\"Harbor\"; text_match) [private;"), text);
+});
+
+test("shared publicly: the owner's block labels a note or folder with an active anyone link; members links, failures and absence label nothing", async () => {
+  const store = await world(BASE);
+  const links = [
+    { entryPath: "other", audience: "anyone" },
+    { entryPath: SEED, audience: "anyone" },
+    { entryPath: "far/away/fog.md", audience: "members" },
+    { entryPath: "t/targ", audience: "anyone" }, // a prefix that is not a folder of anything here
+  ];
+  const run = (publicLinks, extra = {}) => suggest(store, { committed: BASE[SEED], sections: SECTIONS, canSeeKey: owner, publicLinks, ...extra });
+  const shared = await run(Promise.resolve(links));
+  assert.deepEqual(shared.note, { visibility: "team", sharedPublicly: true });
+  assert.equal(byPath(shared)["other/text.md"].sharedPublicly, true);
+  assert.equal(byPath(shared)["far/away/fog.md"].sharedPublicly, false);
+  // A link opens only what the team can read: a private note under an anyone-linked folder is not shared.
+  const privStore = await world(GROUPED);
+  const priv = await suggest(privStore, { path: "private/seed.md", committed: GROUPED["private/seed.md"], sections: HARBOR, canSeeKey: owner, publicLinks: [{ entryPath: "private", audience: "anyone" }, { entryPath: "grp", audience: "anyone" }] });
+  assert.deepEqual(priv.note, { visibility: "private", sharedPublicly: false });
+  assert.equal(byPath(priv)["private/mine.md"].sharedPublicly, false);
+  assert.equal(byPath(priv)["grp/same.md"].sharedPublicly, false);
+  const text = renderLinkSuggestions(shared);
+  assert.match(text.split("\n")[0], /this note is team, shared publicly\. /);
+  assert.ok(text.includes("- other/text.md (\"Harbor\"; text_match) [team, shared publicly;"), text);
+  assert.ok(text.includes("- far/away/fog.md (\"Lighthouse\"; text_match) [team;"), text);
+  // Never guess: a failed, refused (null), malformed or absent listing labels nothing.
+  const plain = await run(undefined);
+  for (const failed of [() => Promise.reject(new Error("control plane down")), () => Promise.resolve(null), () => Promise.resolve({}), () => null]) {
+    assert.deepEqual(await run(failed()), plain);
+  }
+  assert.ok(!renderLinkSuggestions(plain).includes("shared publicly"));
+  // A teammate's block never says it, whatever the listing holds.
+  const teammate = await run(Promise.resolve(links), { canSeeKey: team, scope: "team" });
+  assert.equal(teammate.status, "ready");
+  assert.ok(!JSON.stringify(teammate).includes('"sharedPublicly":true'), JSON.stringify(teammate));
+  assert.ok(!renderLinkSuggestions(teammate).includes("shared publicly"));
+});
+
+test("back-link hint: only on candidates the writer may edit and whose readers can all read the written note", async () => {
+  const notes = { ...GROUPED, "notes/seed.md": "# Seed\n\n## Harbor\n\nkestrel harbor survey\n" };
+  const store = await world(notes);
+  // A team writer on a team note: team candidates are editable.
+  const teamWriter = await suggest(store, { path: "notes/seed.md", committed: notes["notes/seed.md"], sections: HARBOR });
+  assert.equal(byPath(teamWriter)["other/text.md"].linkBack, true);
+  // The owner on a private note: a team or group candidate's readers cannot
+  // read it, so a link back would show them its path; the private one may.
+  const ownStore = await world(GROUPED);
+  const own = byPath(await suggest(ownStore, { path: "private/seed.md", committed: notes["private/seed.md"], sections: HARBOR, canSeeKey: owner }));
+  assert.equal(own["other/text.md"].linkBack, false);
+  assert.equal(own["grp/same.md"].linkBack, false);
+  assert.equal(own["private/mine.md"].linkBack, true);
+  // A team writer cannot edit a group note it can see (write_note refuses it).
+  const groupSeed = { ...notes, "grp/seed.md": "# Seed\n\n## Harbor\n\nkestrel harbor survey\n" };
+  const gstore = await world(groupSeed);
+  const member = byPath(
+    await suggest(gstore, { path: "grp/seed.md", committed: groupSeed["grp/seed.md"], sections: HARBOR, canSeeKey: (k) => canSee(k, "team", RULES, OVERRIDES, new Set(["@grp"])) }),
+  );
+  assert.equal(member["grp/same.md"].linkBack, false);
+  assert.equal(member["other/text.md"].linkBack, false, "team readers of other/text.md cannot read a group note");
+  const text = renderLinkSuggestions(await suggest(ownStore, { path: "private/seed.md", committed: notes["private/seed.md"], sections: HARBOR, canSeeKey: owner }));
+  assert.ok(text.includes("- private/mine.md (\"Harbor\"; text_match) [private; link to it from this note, or back from it]"), text);
+  assert.ok(text.includes("- other/text.md (\"Harbor\"; text_match) [team; link to it from this note]"), text);
+});
+
+test("4 KiB cap holds with the longest group name (longer than \"team, shared publicly\") and both hints on three candidates", async () => {
+  const g = `@${"g".repeat(65)}`;
+  const rules = [...RULES, { prefix: "wide", vis: g }];
+  const long = "港湾調査".repeat(60);
+  const notes = { "wide/seed.md": "x", "wide/a.md": `kestrel ${long}`, "wide/b.md": `kestrel ${long}`, "wide/c.md": `kestrel ${long}` };
+  const store = await world(notes);
+  const heading = `Kestrel ${"見出し".repeat(300)}`;
+  const text = `## ${heading}\n\nkestrel\n`;
+  const block = await suggestLinks(
+    store,
+    "private",
+    { path: "wide/seed.md", committed: text, etag: "v2", sections: [section(heading, text)], audience: { rules, overrides: OVERRIDES }, canSeeKey: owner, isIndexable: indexable, publicLinks: [{ entryPath: "wide", audience: "anyone" }] },
+    big(),
+    {},
+  );
+  assert.equal(block.candidates.length, 3, JSON.stringify(block).slice(0, 300));
+  assert.ok(block.candidates.every((c) => c.visibility === g && c.linkBack));
+  const rendered = renderLinkSuggestions(block);
+  assert.ok(bytes(rendered) <= SUGGESTION_BYTE_CAP, `${bytes(rendered)} bytes`);
+  assert.equal(rendered.split("\n").length, 4);
 });

@@ -69,11 +69,12 @@ export function writerFor(store) {
 
 /**
  * The operator log line for one v3 pass: the resolved format and where the v3
- * build stands (`built`, `pending`, `oversizedShards`). Counts and identifiers
- * only, never a path or a term. Callers never see these (`visible.js`), and the
+ * build stands (`built`, `pending`, `truncated`, `oversizedShards`). `pending`
+ * is null where the pass did not list. Counts and identifiers only, never a
+ * path or a term. Callers never see these (`visible.js`), and the
  * `search` log's `index.pending` describes the served v2 manifest, not v3.
  */
-export function logV3Pass(store, { built, pending, oversizedShards }) {
+export function logV3Pass(store, { built, pending, truncated, oversizedShards }) {
   try {
     const format = readFormat(store?.searchIndexFormat);
     console.log(
@@ -84,7 +85,8 @@ export function logV3Pass(store, { built, pending, oversizedShards }) {
         tokenizer: format.tokenizer,
         chunk: format.chunk?.target ?? null,
         built: Boolean(built),
-        pending: Number.isFinite(pending) ? pending : 0,
+        pending: Number.isFinite(pending) ? pending : null,
+        truncated: Boolean(truncated),
         oversizedShards: Number.isFinite(oversizedShards) ? oversizedShards : 0,
       })
     );

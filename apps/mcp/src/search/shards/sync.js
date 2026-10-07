@@ -203,14 +203,13 @@ export async function syncPass(
      * the version of every note in it, which only a listing has.
      */
     only = null,
+    listing = null, // a listing this pass's caller already paid for (`syncDual.js`); returned as `listing`
   } = {},
   writer = V2_WRITER // which namespace this pass writes; chosen by `syncShardedIndex` (`syncDual.js`)
 ) {
   const targeted = only instanceof Map;
   const shardCap = Number.isFinite(requestedShardCap) ? requestedShardCap : SHARD_PARSE_BYTE_CAP;
-  const manifestCap = Number.isFinite(requestedManifestCap)
-    ? requestedManifestCap
-    : MANIFEST_PARSE_BYTE_CAP;
+  const manifestCap = Number.isFinite(requestedManifestCap) ? requestedManifestCap : MANIFEST_PARSE_BYTE_CAP;
   const ops = typeof budget === "object" && budget ? budget : createSearchBudget(budget);
   const shards = new Map();
 
@@ -235,8 +234,7 @@ export async function syncPass(
   // catches it and falls back to the bounded scan, exactly as it does for v1.
   const storedManifest = await store.get(writer.manifestKey);
   const manifestExisted = Boolean(storedManifest);
-  const manifestEtag =
-    typeof storedManifest?.etag === "string" && storedManifest.etag ? storedManifest.etag : null;
+  const manifestEtag = typeof storedManifest?.etag === "string" && storedManifest.etag ? storedManifest.etag : null;
   let manifest = null;
   if (storedManifest) {
     const bytes = await storedManifest.arrayBuffer();
@@ -320,9 +318,10 @@ export async function syncPass(
   // that count is a floor and the shard count is therefore low — the honest
   // failure, since the alternative is refusing to index the largest workspaces at
   // all, and re-sharding is deleting the manifest.
-  const { entries, regionComplete, truncated } = targeted
+  const listed = targeted
     ? writtenEntries(only, isIndexable, manifest)
-    : await listNoteObjects(store, ops, callerReserve, isIndexable);
+    : listing || (await listNoteObjects(store, ops, callerReserve, isIndexable));
+  const { entries, regionComplete, truncated } = listed;
 
   let manifestChanged = false;
   // Tracked apart from `manifestChanged` because the two objects change for
@@ -852,6 +851,7 @@ export async function syncPass(
     shed: [...shedPaths],
     oversizedShards,
     spent: ops.spent,
+    listing: listed, // what it diffed against: a listing, or a write's own entries; absent if it returned early
   };
 }
 

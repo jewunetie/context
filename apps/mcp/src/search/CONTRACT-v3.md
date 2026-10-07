@@ -92,7 +92,15 @@ digest computed from the pre-Task-31 code.
 for this format not yet built, every pass, the write path's targeted one
 included, first runs the v2 pass exactly as with the switch off and then gives
 the v3 build whatever budget is left (an interactive backfill allowance is
-shared, v2 first). The pass reports `pending`, `listingTruncated` and
+shared, v2 first). The v3 build diffs against the listing the v2 pass took
+rather than listing again. v2 always goes first, so the served index never
+loses progress to the build beyond the one v3 manifest read; the cost lands
+on v3 (owner ruling, Task 31: no alternating turn). v3 needs 2 to 6 ops more
+per pass than v2 to be built (measured on an R2-like bucket: v2 floor 10 and
+v3 floor 14 to 15 with one folder, 23 and 28 with 14 folders, 29 and 34 with
+20). Below its floor v3 waits: at DEFERRED_SYNC_FLOOR (14) with 1000 notes in
+one folder, v2 settles in about 200 passes and v3 is not built in 3000; it
+builds once a pass with more budget runs. The pass reports `pending`, `listingTruncated` and
 `manifestOverflow` over both, so a caller keeps scheduling passes until v3 is
 built too. Once that manifest is built, readers serve v3 and only v3 is
 maintained; deciding this costs one read of the v3 manifest per pass. A v3
@@ -130,10 +138,12 @@ The v3 pass runs against the v3 layout with these differences only:
   "Chunked notes" below for the document shape.
 - **v1 cleanup** is the v2 writer's job only.
 - One log line per v3 pass, after the pass, `{"event":"search-index-format",
-  workspace, namespace, tokenizer, chunk, built, pending, oversizedShards}`,
-  counts only, with no path or term. It is the only place v3 `built` and
-  `pending` are visible; the `search` log's `index.pending` is the served v2
-  manifest's.
+  workspace, namespace, tokenizer, chunk, built, pending, truncated,
+  oversizedShards}`, counts only, with no path or term. A pass that did not
+  list (refused at the reserve, targeted with no v3 manifest, or a listing cut
+  short before it found a note) logs `pending: null` and `truncated: true`.
+  It is the only place v3 `built` and `pending` are visible; the `search`
+  log's `index.pending` is the served v2 manifest's.
 
 Revisioning applies to v3 only (ruling OPEN-74): the v2 writer keeps fixed-key
 unconditional shard writes in Phase 5. Letting the served v2 index fall behind

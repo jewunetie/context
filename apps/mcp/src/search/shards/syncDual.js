@@ -33,7 +33,7 @@ export async function syncShardedIndex(store, options = {}) {
   const shared = { ...options, budget: ops };
   if (await v3IsServed(store, ops, options.reserve ?? 0, v3)) {
     const served = await syncPass(store, shared, v3);
-    logV3Pass(store, { built: true, pending: served.pending, oversizedShards: served.oversizedShards });
+    logPass(store, served, true);
     return served;
   }
 
@@ -44,14 +44,13 @@ export async function syncShardedIndex(store, options = {}) {
   const backfillOps = Number.isFinite(options.backfillOps)
     ? Math.max(0, options.backfillOps - (ops.spent - before))
     : options.backfillOps;
-  const building = await syncPass(store, { ...shared, backfillOps }, v3);
+  // The v3 pass diffs against the listing the v2 pass just took. Listing again
+  // re-paid the walk out of the leftover, and at low budgets that left v3 no op
+  // for a single note fetch, so it was never served (the Task 31 stall).
+  const building = await syncPass(store, { ...shared, backfillOps, listing: served.listing }, v3);
   // `built` only once the manifest saying so was written; the pass sets the flag
   // on the in-memory manifest before it knows the write won.
-  logV3Pass(store, {
-    built: building.manifest?.built === true && building.committed,
-    pending: building.pending,
-    oversizedShards: building.oversizedShards,
-  });
+  logPass(store, building, building.manifest?.built === true && building.committed);
   return {
     ...served,
     pending: served.pending + building.pending,
@@ -60,6 +59,23 @@ export async function syncShardedIndex(store, options = {}) {
     committed: served.committed || building.committed,
     spent: ops.spent,
   };
+}
+
+/**
+ * The v3 log line for one pass. A pass that did not list (refused at the
+ * reserve, a targeted pass with no v3 manifest, or a listing cut short before
+ * it found a single note) knows nothing about pending, and `pending: 0` would
+ * read as done.
+ */
+function logPass(store, pass, built) {
+  const listing = pass.listing;
+  const listed = Boolean(listing) && !(listing.truncated && listing.entries.size === 0);
+  logV3Pass(store, {
+    built,
+    pending: listed ? pass.pending : null,
+    truncated: listed ? pass.listingTruncated : true,
+    oversizedShards: pass.oversizedShards,
+  });
 }
 
 /** Whether readers serve v3 for this format now: its manifest parses and is built. */

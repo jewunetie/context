@@ -175,6 +175,34 @@ export function cursorPagedBucket(bucket) {
   };
 }
 
+/**
+ * `memoryBucket` with an R2-like listing: each object's own etag, and an
+ * upload time fixed when it was put. `memoryBucket` itself lists no etag and
+ * stamps `uploaded` at list time, so every note looks changed on every pass;
+ * a liveness test needs a bucket that can converge. `memoryBucket` stays as it
+ * is, as the only coverage of the no-etag `uploaded:size` version.
+ */
+export function r2LikeBucket(options) {
+  const bucket = memoryBucket(options);
+  const uploadedAt = new Map();
+  const { put, list } = bucket;
+  bucket.put = async (key, value, putOptions) => {
+    const result = await put(key, value, putOptions);
+    if (result) uploadedAt.set(key, new Date());
+    return result;
+  };
+  bucket.list = async (listOptions) => {
+    const page = await list(listOptions);
+    page.objects = page.objects.map((object) => ({
+      ...object,
+      etag: bucket.objects.get(object.key).etag,
+      uploaded: uploadedAt.get(object.key),
+    }));
+    return page;
+  };
+  return bucket;
+}
+
 /** Dropbox response/store fixtures shared by the Dropbox and folders sections. */
 export function dbxJson(body, status = 200, headers = {}) {
   return new Response(JSON.stringify(body), {

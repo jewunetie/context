@@ -13,8 +13,11 @@
  * owner (`private`) gets partial graph families; everyone else is strict
  * (docs/decisions/link-graph.md, OPEN-27 and OPEN-33).
  *
- * This store has no `forkLogicalView`, so `graphView` hands the graph the
- * store itself, billed through the same budget.
+ * In production the store is `storeForBinding`'s
+ * `withNoteCap(withLogicalDelete(...))`, and `withNoteCap` copies
+ * `forkLogicalView`, so `graphView` forks a private view whose logical-delete
+ * reads are billed to this call's budget. Keep that fork. Only the vitest
+ * fixture store lacks it, and there `graphView` falls back to the store itself.
  */
 
 import { canSee, isPlumbing } from "../privacy";

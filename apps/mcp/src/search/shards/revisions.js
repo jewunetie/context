@@ -111,8 +111,8 @@ function v3Writer(format) {
       if (!format.chunk || isChannelDayIndexPath(path)) return subDocumentsFor(path, full);
       const { chunks } = chunkNote(path, full, format.chunk);
       if (chunks.length === 0) return subDocumentsFor(path, full);
-      // lean: chunk title, anchor and per-note dedupe are Tasks 33 and 36 (OPEN-53, OPEN-61).
-      return chunks.map((chunk) => ({ key: `${path}#c${chunk.index}`, notePath: path, anchor: null, content: chunk.text, comms: null }));
+      // lean: chunk title and anchor are Task 36 (OPEN-53).
+      return chunks.map((chunk) => ({ key: `${path}#c${chunk.index}`, notePath: path, anchor: null, content: chunk.text, comms: null, chunk: chunk.index }));
     },
     /**
      * A new revision, and the manifest in memory names it only once it has

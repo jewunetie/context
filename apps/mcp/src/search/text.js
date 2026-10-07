@@ -41,6 +41,17 @@ export function termsOf(text, tokenizer = DEFAULT_TOKENIZER) {
   throw new RangeError(`unknown tokenizer version ${tokenizer}`);
 }
 
+/**
+ * The terms a query is parsed into, for a tokenizer version: `termsOf`, except
+ * that tokenizer 2 emits segmenter words only, never the CJK two-character
+ * pieces the index side adds for recall (ruling OPEN-48). A query word the
+ * index never stored reaches those pieces through the scorer's CJK fallback
+ * (`shardQuery.js`), required together, instead of as loose terms.
+ */
+export function queryTermsOf(text, tokenizer = DEFAULT_TOKENIZER) {
+  return tokenizer === 2 ? tokenizeV2(text, { pieces: false }) : termsOf(text, tokenizer);
+}
+
 export { porter2 };
 
 // Han, Hiragana, Katakana, plus the prolonged sound mark (U+30FC, script
@@ -109,9 +120,10 @@ function termsOfPiece(piece) {
  * when it is absent); identifier split on the original case; each piece
  * lowercased, Latin accents folded, length >= 2, Porter2 for Latin-script
  * pieces and other scripts unstemmed; every CJK run also yields overlapping
- * two-character pieces. Terms come back in document order with repeats.
+ * two-character pieces (unless `pieces: false`, the query side). Terms come
+ * back in document order with repeats.
  */
-export function tokenizeV2(text) {
+export function tokenizeV2(text, { pieces = true } = {}) {
   if (typeof text !== "string" || !text) return [];
   const normal = text.normalize("NFKC").replace(/\u2019/g, "'");
   const { instance } = wordSegmenter();
@@ -125,16 +137,32 @@ export function tokenizeV2(text) {
     if (whole && whole.length >= 2) located.push([at, whole]);
     for (const part of parts) for (const term of termsOfPiece(part)) located.push([at, term]);
   }
-  for (const run of normal.matchAll(CJK_RUN)) {
+  if (pieces) for (const [at, piece] of locatedPieces(normal)) located.push([at, piece]);
+  // Stable sort: a word's own terms stay ahead of a piece starting with it.
+  return located.sort((a, b) => a[0] - b[0]).map(([, term]) => term);
+}
+
+/** `[offset, piece]` for every overlapping two-character piece of every CJK run. */
+function locatedPieces(text) {
+  const out = [];
+  for (const run of text.matchAll(CJK_RUN)) {
     const chars = [...run[0]];
     let at = run.index;
     for (let i = 0; i + 1 < chars.length; i++) {
-      located.push([at, chars[i] + chars[i + 1]]);
+      out.push([at, chars[i] + chars[i + 1]]);
       at += chars[i].length;
     }
   }
-  // Stable sort: a word's own terms stay ahead of a piece starting with it.
-  return located.sort((a, b) => a[0] - b[0]).map(([, term]) => term);
+  return out;
+}
+
+/**
+ * The distinct CJK two-character pieces of one query term, in order: what the
+ * tokenizer 2 index stored for that text besides its words. Empty for a term
+ * with no CJK run.
+ */
+export function cjkPieces(term) {
+  return typeof term === "string" ? [...new Set(locatedPieces(term).map(([, piece]) => piece))] : [];
 }
 
 /**

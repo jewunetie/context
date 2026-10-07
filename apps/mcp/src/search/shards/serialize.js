@@ -425,6 +425,9 @@ export function serializeShard(shard) {
       // `"shed":false` on every entry of every shard would be a standing cost
       // in the customer's bucket for a fact that is almost never true.
       ...(doc.shed ? { shed: true } : {}),
+      // A chunked note's sub-document only (v3, CONTRACT-v3.md), so a v2
+      // shard's bytes are unchanged.
+      ...(Number.isInteger(doc.chunk) ? { chunk: doc.chunk } : {}),
     },
   ]);
   const indexByPath = new Map(docs.map(([path], position) => [path, position]));
@@ -463,6 +466,7 @@ function readDocEntry(entry) {
   if (doc.notePath !== undefined && typeof doc.notePath !== "string") return null;
   if (doc.anchor !== undefined && doc.anchor !== null && typeof doc.anchor !== "string") return null;
   if (doc.shed !== undefined && typeof doc.shed !== "boolean") return null;
+  if (doc.chunk !== undefined && !(Number.isInteger(doc.chunk) && doc.chunk >= 0)) return null;
   const { ok: commsOk, comms } = readComms(doc.comms);
   if (!commsOk) return null;
   return {
@@ -486,6 +490,7 @@ function readDocEntry(entry) {
       // notes it holds only part of. A fresh `addDoc` never sets it, which is
       // what makes a note re-indexed in full stop being counted.
       shed: doc.shed === true,
+      ...(doc.chunk !== undefined ? { chunk: doc.chunk } : {}),
     },
   };
 }

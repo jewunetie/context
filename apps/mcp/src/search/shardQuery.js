@@ -69,7 +69,7 @@ import {
   RECENCY_MAX_BONUS,
   parseQuery,
 } from "./query.js";
-import { trigrams } from "./text.js";
+import { cjkPieces, trigrams } from "./text.js";
 
 const EMPTY_LEN = { title: 0, headings: 0, tags: 0, body: 0 };
 
@@ -189,6 +189,9 @@ export function collectShardCandidates(shardIndex, queryTerms, isVisible) {
       notePath: typeof doc?.notePath === "string" ? doc.notePath : path,
       anchor: typeof doc?.anchor === "string" ? doc.anchor : null,
       comms: doc?.comms ?? null,
+      // The chunk index of a chunked note's sub-document, else null: what
+      // `rankedVisibleTo` dedupes on (ruling OPEN-61).
+      chunk: Number.isInteger(doc?.chunk) ? doc.chunk : null,
     });
   }
 
@@ -457,9 +460,30 @@ export function scoreCollected(perShardCollections, query, { now, tokenizer } = 
     return true;
   }
 
+  /**
+   * The CJK fallback (ruling OPEN-48), tokenizer 2 only: a term the index never
+   * stored as a word is scored as its two-character pieces, on the docs that
+   * hold every piece, each piece at its own df, all credited to `queryTerm` so
+   * coverage still counts it once. The pieces' postings were gathered because
+   * the collectors were handed `gatherTermsFor`'s list. False when any piece is
+   * absent or no doc holds them all, so expansion runs as before.
+   */
+  function scorePieces(queryTerm) {
+    const pieces = cjkPieces(queryTerm);
+    if (tokenizer !== 2 || pieces.length === 0) return false;
+    const merged = pieces.map((piece) => ({ piece, ...mergeDirectTerm(collections, piece) }));
+    const together = [...merged[0].postings.keys()].filter((path) => merged.every((m) => m.postings.has(path)));
+    if (together.length === 0) return false;
+    for (const { piece, df, postings } of merged) {
+      scoreTerm(queryTerm, piece, df, new Map(together.map((path) => [path, postings.get(path)])), 1);
+    }
+    return true;
+  }
+
   for (const queryTerm of queryTerms) {
     const direct = mergeDirectTerm(collections, queryTerm);
     if (scoreTerm(queryTerm, queryTerm, direct.df, direct.postings, 1)) continue; // global df > 0: direct hit
+    if (scorePieces(queryTerm)) continue;
 
     // Global df === 0 below. Prefix first (min 3 chars, ≤10 vocab
     // expansions), trigram fuzzy only when prefix finds nothing — the same
@@ -528,9 +552,29 @@ export function scoreCollected(perShardCollections, query, { now, tokenizer } = 
       notePath: docMeta?.notePath ?? path,
       anchor: docMeta?.anchor ?? null,
       comms: docMeta?.comms ?? null,
+      chunk: docMeta?.chunk ?? null,
     });
   }
 
   results.sort((a, b) => b.score - a.score || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-  return results.slice(0, MAX_RESULTS);
+  return firstNotes(results, MAX_RESULTS);
+}
+
+/**
+ * The leading entries of a sorted list that name at most `max` notes, a
+ * chunk counting as its note: `slice(0, max)` when no entry carries `chunk`.
+ * The cap is on notes because `rankedVisibleTo` folds chunks into their note,
+ * and a cap on chunk docs would leave fewer than `max` notes while
+ * `matchCountIsFloor` (`visible.js`) reads a short list as complete.
+ */
+function firstNotes(sorted, max) {
+  const notes = new Set();
+  const out = [];
+  for (const entry of sorted) {
+    const note = entry.chunk === null ? entry.path : entry.notePath;
+    if (!notes.has(note) && notes.size === max) continue;
+    notes.add(note);
+    out.push(entry);
+  }
+  return out;
 }

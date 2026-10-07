@@ -260,10 +260,12 @@ function tallyField(tokens, fieldIndex, into) {
  * @param {{etag: string, uploaded: string|null, content: string,
  *   notePath?: string, anchor?: string|null,
  *   comms?: {channel: string|null, date: string|null, threadId: string|null,
- *     participants: string[]}|null, tokenizer?: 1 | 2}} note `tokenizer` is the
- *   index format's (`format.js`), today's 1 when absent.
+ *     participants: string[]}|null, tokenizer?: 1 | 2, chunk?: number|null}} note
+ *   `tokenizer` is the index format's (`format.js`), today's 1 when absent.
+ *   `chunk` is the chunk index of a chunked note's sub-document, stored on the
+ *   doc entry only when given (per-note dedupe, `rankedVisibleTo`).
  */
-export function addDoc(index, path, { etag, uploaded, content, notePath = path, anchor = null, comms = null, tokenizer = 1 }) {
+export function addDoc(index, path, { etag, uploaded, content, notePath = path, anchor = null, comms = null, tokenizer = 1, chunk = null }) {
   if (index.docs.has(path)) removeDoc(index, path);
 
   // The real note's own path/basename decide the filename-fallback title and
@@ -305,6 +307,7 @@ export function addDoc(index, path, { etag, uploaded, content, notePath = path, 
     notePath,
     anchor,
     comms,
+    ...(Number.isInteger(chunk) ? { chunk } : {}),
   });
 }
 

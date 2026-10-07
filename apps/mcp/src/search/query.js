@@ -19,7 +19,7 @@
  * plain objects.
  */
 
-import { termsOf, trigrams } from "./text.js";
+import { cjkPieces, queryTermsOf, trigrams } from "./text.js";
 
 // -- pinned scoring constants (CONTRACT.md § Scoring) -----------------------
 //
@@ -69,7 +69,7 @@ function dedupe(list) {
 
 /**
  * Split a raw query into required phrases and loose terms, both already
- * stemmed via `termsOf` so callers never re-tokenize.
+ * stemmed via `queryTermsOf` so callers never re-tokenize.
  *
  * `"quoted spans"` become phrases — each phrase is the stemmed term list for
  * the text between one pair of quotes, in order, required-together at query
@@ -94,7 +94,7 @@ export function parseQuery(query, tokenizer = 1) {
   while ((m = quoted.exec(query))) {
     rest += `${query.slice(last, m.index)} `;
     last = quoted.lastIndex;
-    const phraseTerms = termsOf(m[1], tokenizer);
+    const phraseTerms = queryTermsOf(m[1], tokenizer);
     if (phraseTerms.length > 0) phrases.push(phraseTerms);
   }
   rest += query.slice(last);
@@ -109,7 +109,22 @@ export function parseQuery(query, tokenizer = 1) {
     }
   }
 
-  return { phrases: dedupedPhrases, terms: dedupe(termsOf(rest, tokenizer)) };
+  return { phrases: dedupedPhrases, terms: dedupe(queryTermsOf(rest, tokenizer)) };
+}
+
+/**
+ * Every term the shard walk must gather for a parsed query: its loose and
+ * phrase terms, plus, for tokenizer 2, the CJK pieces of each term, so the
+ * scorer's CJK fallback (`scoreCollected`) has their df and postings. Routing
+ * and collection use this list; scoring parses the query itself and credits a
+ * piece only through that fallback.
+ *
+ * @param {{ phrases: string[][], terms: string[] }} parsed
+ * @param {1 | 2} [tokenizer]
+ */
+export function gatherTermsFor({ phrases, terms }, tokenizer = 1) {
+  const queryTerms = dedupe([...terms, ...phrases.flat()]);
+  return tokenizer === 2 ? dedupe([...queryTerms, ...queryTerms.flatMap(cjkPieces)]) : queryTerms;
 }
 
 /**
@@ -324,9 +339,39 @@ export function visibleIndex(index, isVisible) {
  * @param {string} [prefix]
  */
 export function rankedVisibleTo(ranked, isVisible, prefix) {
-  return ranked.filter(
+  const visible = ranked.filter(
     (entry) => isVisible(entry.notePath ?? entry.path) && (!prefix || entry.path.startsWith(prefix))
   );
+  return bestChunkPerNote(visible);
+}
+
+/**
+ * One result per chunked note (ruling OPEN-61, README 12.5: counts are notes).
+ * Among entries carrying `chunk`, the first per `notePath` is kept, which is
+ * its best-scoring chunk because `ranked` is score-descending, and it carries
+ * the union of `matchedTerms` over that note's chunks so the snippet can quote
+ * any matching line. Entries without `chunk` (whole notes, channel-day
+ * messages) pass through untouched, so an unchunked list is returned as is.
+ * Applied after the visibility filter, on lists that filter produced.
+ */
+function bestChunkPerNote(entries) {
+  const kept = new Map();
+  const out = [];
+  for (const entry of entries) {
+    if (typeof entry.chunk !== "number") {
+      out.push(entry);
+      continue;
+    }
+    const best = kept.get(entry.notePath);
+    if (best) {
+      best.matchedTerms = [...new Set([...best.matchedTerms, ...entry.matchedTerms])].sort();
+      continue;
+    }
+    const copy = { ...entry, matchedTerms: [...entry.matchedTerms] };
+    kept.set(entry.notePath, copy);
+    out.push(copy);
+  }
+  return out;
 }
 
 /** Sum of each field's token count over every doc, guarded against n = 0. */

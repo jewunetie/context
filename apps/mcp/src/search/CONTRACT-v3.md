@@ -124,8 +124,9 @@ The v3 pass runs against the v3 layout with these differences only:
   `chunkNote(path, text, format.chunk)` returns, one document `path#c<n>` per
   chunk with `notePath: path`; channel-day notes keep their message
   documents, and a note with no chunks (empty or encrypted) keeps its one
-  whole-note document. Chunk titles, anchors and per-note dedupe are Tasks 33
-  and 36.
+  whole-note document. Each chunk document carries `chunk` (its index),
+  written in the shard only when set, so v2 shard bytes are unchanged. Chunk
+  titles and anchors are Task 36.
 - **v1 cleanup** is the v2 writer's job only.
 - One log line per pass, `{"event":"search-index-format", workspace,
   namespace, tokenizer, chunk}`, with no path or term.
@@ -136,3 +137,27 @@ while v3 builds is forbidden (see "The served index never freezes" above): a
 note written while the switch is on must be findable whichever layout is
 served. On a store that ignores preconditions (B2, Wasabi) the v3 pass
 completes but coherence between concurrent passes is not claimed, as for v2.
+
+## Queries and chunked results (Task 33)
+
+- **Words only on the query side.** `parseQuery(query, 2)` uses
+  `queryTermsOf`: tokenizer 2 without the CJK two-character pieces the index
+  side adds (ruling OPEN-48). Every query term is a term the indexer stores
+  for the same text. Snippet lines are still cut with `termsOf`, the index
+  side, because a matched term can be a piece.
+- **CJK fallback, tokenizer 2 only.** A query term containing a CJK run whose
+  visible df is 0 is scored as its distinct two-character pieces
+  (`cjkPieces`), on the docs that hold every piece, each piece at its own df,
+  credited to the original term (so coverage counts it once). This runs
+  before prefix and trigram expansion, which still run when any piece is
+  absent or no doc holds them all. The shard walk gathers the pieces
+  (`gatherTermsFor`), so routing and collection see them.
+- **One result per note (ruling OPEN-61, README 12.5).** Each chunk is scored
+  as a document. `rankedVisibleTo`, after the visibility filter, keeps the
+  best-scoring entry per `notePath` among entries carrying `chunk`, with the
+  union of `matchedTerms` over that note's chunks; channel-day message
+  documents stay one result each. The result key is the note path. The
+  scorer's 50-result cap counts notes, not chunk documents, so
+  `matchCountIsFloor` still reads a full list as a floor. A query whose terms
+  fall in two chunks of one note misses the coverage multiplier that a
+  whole-note index would give it; Task 37 measures that.

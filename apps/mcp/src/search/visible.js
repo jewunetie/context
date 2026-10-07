@@ -51,7 +51,7 @@ import { isEncryptedNote } from "../encryption.js";
 import { messageSegmentFor } from "./commsIndex.js";
 import { readTermFilter, termFilterMayHold } from "./filter.js";
 import { createSearchBudget, inWaves } from "./maintain.js";
-import { MAX_RESULTS, parseQuery, rankedVisibleTo } from "./query.js";
+import { MAX_RESULTS, gatherTermsFor, parseQuery, rankedVisibleTo } from "./query.js";
 import { collectShardCandidates, scoreCollected } from "./shardQuery.js";
 import {
   SHARD_READ_CONCURRENCY,
@@ -383,8 +383,8 @@ async function answerFromIndex(store, options) {
 
   // Parsed once, with the served index's own tokenizer, and asked of every
   // shard, so no two shards can be asked a different question.
-  const { phrases, terms } = parseQuery(query, manifest.format?.tokenizer);
-  const queryTerms = [...new Set([...terms, ...phrases.flat()])];
+  // With tokenizer 2 the list also holds CJK pieces, for the scorer's fallback.
+  const queryTerms = gatherTermsFor(parseQuery(query, manifest.format?.tokenizer), manifest.format?.tokenizer);
   const collections = [];
   // A shard this answer could not look inside. Not the same as one the routing
   // filter ruled out: that shard cannot hold a query term at all, while this is

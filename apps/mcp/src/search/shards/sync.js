@@ -638,7 +638,7 @@ export async function syncPass(
             notePath: sub.notePath,
             anchor: sub.anchor,
             comms: sub.comms,
-            tokenizer: writer.tokenizer,
+            tokenizer: writer.tokenizer, chunk: sub.chunk,
           });
           // No `computeRanks`: the link graph is global and v2 never holds
           // every shard at once. Neutral for every doc, as CONTRACT.md pins.

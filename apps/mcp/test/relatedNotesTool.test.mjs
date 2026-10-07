@@ -19,6 +19,10 @@
  *   U+2028, U+2029, U+0085 left raw after JSON.stringify   1 (no Unicode line terminator)
  *   refusing before the metadata probe when canSee fails   1 (same raw ops, held-by-name pair)
  *
+ * Fix round 2 (moveSentinel.test.mjs has the rest):
+ *   markers read without the sentinel gate                  1 (100 finished moves)
+ *   move_folder writing its marker before the sentinel      1 (sentinel before its job marker)
+ *
  * RED: every test failed on "unknown tool: related_notes" before the tool existed.
  */
 
@@ -31,7 +35,9 @@ import { graphManifestKey } from "../src/graph/keys.js";
 import { projectNote } from "../src/graph/project.js";
 import { createSearchBudget } from "../src/search/maintain.js";
 import { syncShardedIndex } from "../src/search/shards.js";
-import { moveJobKey, writeMoveSentinel } from "../src/moves/jobs.js";
+import { moveJobKey, refreshMoveSentinel, writeMoveSentinel } from "../src/moves/jobs.js";
+import { MOVE_SENTINEL_KEY } from "../src/moves/limits.js";
+import { withLogicalDelete } from "../src/store/logicalDelete.js";
 import { recordForwarding } from "../src/forwarding.js";
 import { CONTROL_PLANE_ORIGIN, GATEWAY_SECRET, createControlPlaneStub } from "./controlPlaneStub.mjs";
 import { memoryBucket } from "./store/fixtures.mjs";
@@ -287,6 +293,65 @@ test("related_notes and read_note make the same raw ops for a hidden path as for
         assert.ok(runs[0].ops.length > 0);
       }
     }
+  } finally {
+    env.REL_BUCKET = plain;
+  }
+});
+
+// Fix round 2: a finished move's marker delete is a logical-delete tombstone
+// that nothing removes, so reading every marker on every call grew with move
+// history until answers were empty. The sentinel gates the read.
+test("100 finished moves cost the job check one op, and the answer is unchanged at the default budget", async () => {
+  const plain = env.REL_BUCKET;
+  const budget = env.SEARCH_SUBREQUEST_BUDGET;
+  try {
+    const raw = await world(BASE);
+    raw.capabilities = { conditionalWrite: true, conditionalCreate: true, conditionalDelete: true };
+    env.SEARCH_SUBREQUEST_BUDGET = "40";
+    env.REL_BUCKET = raw;
+    const reference = await related(TEAM, { path: SEED });
+    // As move_folder and materialize_move do it, through the wrapper.
+    const wrapped = withLogicalDelete(raw);
+    for (let i = 0; i < 100; i += 1) {
+      const id = `job-${String(i).padStart(13, "0")}`;
+      await writeMoveSentinel(wrapped);
+      await wrapped.put(moveJobKey(id), JSON.stringify({ version: 1, id, source: "1-projects/x", destination: "1-projects/y", objects: [], status: "complete" }));
+      await wrapped.delete(moveJobKey(id));
+      await refreshMoveSentinel(wrapped);
+    }
+    assert.ok([...raw.objects.keys()].filter((k) => k.startsWith(".context/moves/job-")).length >= 100, "tombstones remain");
+    const moveOps = async (tool) => {
+      const rec = recording(raw);
+      env.REL_BUCKET = rec;
+      const result = (await rpc(TEAM, "tools/call", { name: tool, arguments: { path: SEED } })).result;
+      return { text: result.content[0].text, ops: rec.log.filter((op) => op.includes(".context/moves/")) };
+    };
+    const after = await moveOps("related_notes");
+    assert.equal(after.text, reference.text);
+    // The seed lookup is read_note's and reads the markers itself, unbudgeted
+    // (pre-existing, owner list); the retrieval's own job check is one get.
+    const lookup = (await moveOps("read_note")).ops;
+    assert.deepEqual(after.ops, [...lookup, `get:${MOVE_SENTINEL_KEY}`]);
+  } finally {
+    env.REL_BUCKET = plain;
+    env.SEARCH_SUBREQUEST_BUDGET = budget;
+  }
+});
+
+test("a logical folder move writes the sentinel before its job marker", async () => {
+  const plain = env.REL_BUCKET;
+  try {
+    const raw = memoryBucket();
+    await raw.put("privacy.md", MANIFEST);
+    for (let i = 0; i < 501; i += 1) await raw.put(`1-projects/big/n${i}.md`, `note ${i}`);
+    const rec = recording(raw);
+    env.REL_BUCKET = rec;
+    const moved = (await rpc(OWNER, "tools/call", { name: "move_folder", arguments: { source: "1-projects/big", destination: "1-projects/moved" } })).result;
+    assert.notEqual(moved?.isError, true, moved?.content?.[0]?.text);
+    const puts = rec.log.filter((op) => op.startsWith("put:.context/moves/"));
+    const marker = puts.findIndex((op) => op.endsWith(".json"));
+    assert.ok(marker > 0, puts.join("\n"));
+    assert.ok(puts.slice(0, marker).includes(`put:${MOVE_SENTINEL_KEY}`), puts.join("\n"));
   } finally {
     env.REL_BUCKET = plain;
   }

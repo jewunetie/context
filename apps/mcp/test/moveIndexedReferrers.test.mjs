@@ -46,7 +46,7 @@ import { readPostings } from "../src/graph/postings.js";
 import { graphManifestKey, nameHash, nodeKey, pathHash, postingPageKey } from "../src/graph/keys.js";
 import { createSearchBudget, defaultIsIndexable } from "../src/search/maintain.js";
 import { PrivacyOverrides } from "../src/privacy/engine.js";
-import { moveJobKey } from "../src/moves/jobs.js";
+import { moveJobKey, writeMoveSentinel } from "../src/moves/jobs.js";
 import { MOVE_JOB_VERSION } from "../src/moves/limits.js";
 import { DropboxStore } from "../src/store/dropbox.js";
 import { readDocument, replaceText } from "@context/collaboration";
@@ -279,6 +279,8 @@ test("a folder move that includes an attachment scans", async () => {
 test("an active logical move job scans", async () => {
   const b = await build(NOTES);
   const id = "job-0000000000001";
+  // A move writes the sentinel with its marker (tools/moves/folder.js).
+  await writeMoveSentinel(b);
   await b.put(moveJobKey(id), JSON.stringify({
     version: MOVE_JOB_VERSION, id, source: "x", destination: "y", objects: [], status: "logical_active",
   }));
@@ -387,6 +389,7 @@ test("a budget that cannot list the collaboration heads scans", async () => {
 
 test("a move-job listing that fails scans", async () => {
   const b = await build(NOTES);
+  await writeMoveSentinel(b);
   const { list } = b;
   b.list = async (options) => {
     if (options?.prefix?.startsWith(".context/moves/")) throw new Error("listing down");
@@ -398,11 +401,13 @@ test("a move-job listing that fails scans", async () => {
 
 test("an unreadable move-job marker counts as active and scans", async () => {
   const b = await build(NOTES);
+  await writeMoveSentinel(b);
   await b.put(moveJobKey("job-0000000000002"), "{not json");
   await run(b, new Map([["a/t.md", "c/t2.md"]]));
   assert.ok(bodyReads(b).includes("u005.md"));
   // A finished job of this version is not active: the index path runs.
   const c = await build(NOTES);
+  await writeMoveSentinel(c);
   const id = "job-0000000000003";
   await c.put(moveJobKey(id), JSON.stringify({ version: MOVE_JOB_VERSION, id, source: "x", destination: "y", objects: [], status: "complete" }));
   await run(c, new Map([["a/t.md", "c/t2.md"]]));

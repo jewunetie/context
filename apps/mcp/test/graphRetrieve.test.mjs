@@ -49,7 +49,7 @@ import { createSearchBudget } from "../src/search/maintain.js";
 import { indexIsBehind, loadIndexManifest, MANIFEST_KEY, syncShardedIndex } from "../src/search/shards.js";
 import { extractReferences, indexByName, resolveReference } from "../src/links.js";
 import { memoryBucket } from "./store/fixtures.mjs";
-import { moveJobKey } from "../src/moves/jobs.js";
+import { moveJobKey, writeMoveSentinel } from "../src/moves/jobs.js";
 
 const gen = "1";
 const now = 1_700_000_000_000;
@@ -366,7 +366,7 @@ test("text hits are all or none for a strict caller; the owner keeps them on an 
   const store = await world(notes, { conditional: true, ready: true });
   const occupied = (await loadIndexManifest(store, big(), 0)).stats.filter((e) => e.docCount > 0).length;
   assert.ok(occupied > 1);
-  // One move-job listing (no markers), two catalog reads, then one short of
+  // One move sentinel read (absent), two catalog reads, then one short of
   // every shard, 11 hits and the re-check's reserve.
   const B = 1 + 2 + occupied + 11;
   const strict = await ask(store, notes, { budget: createSearchBudget(B) });
@@ -439,6 +439,7 @@ test("a note under an active move's source or destination is withheld, and the a
   const before = await ask(store, notes);
   assert.ok(paths(before).includes("notes/mv/a.md"), "non-vacuous: visible without a move");
   assert.equal(before.possiblyIncomplete, false);
+  await writeMoveSentinel(store);
   await store.put(moveJobKey("job-0000000000001"), job("job-0000000000001", "notes/mv", "private/mv"));
   const during = await ask(store, notes);
   assert.ok(!paths(during).includes("notes/mv/a.md"), JSON.stringify(during));
@@ -455,6 +456,7 @@ test("an unreadable move job withholds every candidate; a seed under a move gets
     "notes/alpha.md": "# Alpha kestrel\n",
   };
   const store = await world(notes, { conditional: true, ready: true });
+  await writeMoveSentinel(store);
   await store.put(moveJobKey("job-0000000000002"), "{ half a marker");
   assert.deepEqual(await ask(store, notes), { relations: [], unresolved: [], possiblyIncomplete: true });
   await store.put(moveJobKey("job-0000000000002"), job("job-0000000000002", "notes", "private/notes"));

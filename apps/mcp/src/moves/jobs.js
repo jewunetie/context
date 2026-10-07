@@ -84,10 +84,23 @@ export async function loadMoveJobs(store) {
 
 /**
  * Active move jobs, or null when any marker cannot be read as an inactive one
- * or the listing fails (OPEN-25: fail closed). With `budget`, every op is
- * charged to it and running out is null too.
+ * or the listing fails (OPEN-25: fail closed). The sentinel gates the read: a
+ * finished move's marker delete is a logical-delete tombstone that is never
+ * removed, so reading every marker would grow with move history. Absent
+ * sentinel is no active job in one op; present or unreadable reads the
+ * markers. With `budget`, every op is charged to it and running out is null.
  */
 export async function activeMoveJobsOrNull(store, budget = null) {
+  const reader = budget ? budgetedStore(store, budget, 0) : store;
+  try {
+    if ((await reader.get(MOVE_SENTINEL_KEY)) === null) return [];
+  } catch {
+    // Unreadable: the markers decide.
+  }
+  return readMoveJobsOrNull(store, budget);
+}
+
+async function readMoveJobsOrNull(store, budget = null) {
   const reader = budget ? budgetedStore(store, budget, 0) : store;
   const jobs = [];
   try {
@@ -122,14 +135,34 @@ export async function writeMoveSentinel(store) {
   );
 }
 
+/**
+ * Keep the sentinel only while a move may be active. It is removed only when
+ * the markers read as none (never when they cannot be read), and, where the
+ * store has conditional delete, only if it is still the sentinel read before
+ * the markers were listed, so a move that starts meanwhile keeps its own.
+ * Without conditional delete that race can remove a new move's sentinel
+ * (docs/decisions/link-graph.md); move_folder writes it again after its marker.
+ */
 export async function refreshMoveSentinel(store) {
-  const jobs = await loadMoveJobs(store);
+  let sentinel;
+  try {
+    sentinel = await store.get(MOVE_SENTINEL_KEY);
+  } catch {
+    sentinel = undefined;
+  }
+  const jobs = await readMoveJobsOrNull(store);
+  if (jobs === null) return [];
   if (jobs.length) {
     await writeMoveSentinel(store);
-  } else {
-    await deleteWithLegacyFallback(store, MOVE_SENTINEL_KEY).catch(() => {});
-    clearLogicalMovesMaybeActive(store);
+    return jobs;
   }
+  if (sentinel === undefined) return jobs;
+  if (sentinel) {
+    const options = store.capabilities?.conditionalDelete === true && sentinel.etag ? { onlyIf: { etagMatches: sentinel.etag } } : undefined;
+    const deleted = await deleteWithLegacyFallback(store, MOVE_SENTINEL_KEY, options).catch(() => null);
+    if (deleted === null) return jobs;
+  }
+  clearLogicalMovesMaybeActive(store);
   return jobs;
 }
 

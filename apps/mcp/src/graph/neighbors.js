@@ -45,9 +45,11 @@ const baseName = (path) => path.slice(path.lastIndexOf("/") + 1).replace(/\.md$/
  * converged). `scope` is the caller's scope; anything but exactly "private"
  * gets the OPEN-27 rule: when any chain did not finish, every graph map is
  * empty. A seed the caller cannot see gets the empty answer with no store op.
- * An encrypted body yields incoming only (OPEN-32, arch 7.6).
+ * An encrypted body yields incoming only (OPEN-32, arch 7.6). `bodyOnly`
+ * returns the body's own outgoing links and unresolved references and reads
+ * nothing.
  */
-export async function graphNeighbors(store, budget, { path, body, catalog, canSeeKey, scope, limits }) {
+export async function graphNeighbors(store, budget, { path, body, catalog, canSeeKey, scope, limits, bodyOnly = false }) {
   // A throwing canSeeKey counts as not visible (the never-throws contract).
   if (!(await Promise.resolve().then(() => canSeeKey(path)).catch(() => false))) {
     return { incoming: new Map(), outgoing: new Map(), sharedTargets: new Map(), sharedUrls: new Map(), unresolved: [], complete: false, health: unavailableHealth(store) };
@@ -76,6 +78,9 @@ export async function graphNeighbors(store, budget, { path, body, catalog, canSe
       }
     }
   }
+  // The seed's own links need no graph read: with the graph off (the kill
+  // switch), they are all that is returned, with no store op.
+  if (bodyOnly) return { incoming: new Map(), outgoing, sharedTargets: new Map(), sharedUrls: new Map(), unresolved, complete: false, health: unavailableHealth(store) };
   const view = graphView(store, budget);
   let health;
   try {

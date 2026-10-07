@@ -437,7 +437,9 @@ test("with the kill switch on, a move makes no graph op and related_notes serves
     assert.ok(on.answer.text.includes("links_here"), on.answer.text);
     const off = await graphOps("0");
     assert.deepEqual([off.moveOps, off.relatedOps], [0, 0]);
-    assert.ok(!/links_here|linked_from_here|shares_/.test(off.answer.text), off.answer.text);
+    // Graph-derived reasons go; the seed's own links need no graph read and stay.
+    assert.ok(!/links_here|shares_/.test(off.answer.text.replaceAll("linked_from_here", "")), off.answer.text);
+    assert.ok(off.answer.text.split("\n").some((l) => l.startsWith("1-projects/sub/alpha.md (linked_from_here")), off.answer.text);
     assert.ok(off.answer.text.includes("related_text"), off.answer.text);
     assert.equal(off.answer.text.split("\n").at(-1), "may be incomplete");
   } finally {

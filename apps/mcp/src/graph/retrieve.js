@@ -160,6 +160,10 @@ export async function retrieveCandidates(store, { seed, intent, canSeeKey, isInd
   if (docmap) {
     for (const p of docmap.paths) if (await see(p)) shown.add(p);
   } else incomplete = true;
+  // Behind (or during a move) a link's target may be absent from the list,
+  // and a listed note may be gone, so the answer is labelled whether or not a
+  // text query runs (an encrypted seed asks none).
+  if (docmap && (indexIsBehind(docmap.freshness) || moving.length > 0)) incomplete = true;
   const catalog = docmap
     ? // During a move, a note under it is withheld from `shown`, so a link to it is unknown, not missing.
       { byName: indexByName([...shown]), paths: shown, partial: indexIsBehind(docmap.freshness) || moving.length > 0 }
@@ -189,15 +193,12 @@ export async function retrieveCandidates(store, { seed, intent, canSeeKey, isInd
   }
 
   let graph = { incoming: new Map(), outgoing: new Map(), sharedTargets: new Map(), sharedUrls: new Map(), unresolved: [] };
-  if (graphOff) {
+  try {
+    // Under the kill switch only the seed's own links, which need no graph read.
+    graph = await graphNeighbors(store, budget, { path: seed.path, body: seed.body ?? "", catalog, canSeeKey: see, scope, limits, bodyOnly: graphOff });
+    if (!graph.complete || graph.health.possiblyIncomplete) incomplete = true;
+  } catch {
     incomplete = true;
-  } else {
-    try {
-      graph = await graphNeighbors(store, budget, { path: seed.path, body: seed.body ?? "", catalog, canSeeKey: see, scope, limits });
-      if (!graph.complete || graph.health.possiblyIncomplete) incomplete = true;
-    } catch {
-      incomplete = true;
-    }
   }
 
   // Every candidate is checked again before it is ranked (each part already

@@ -16,12 +16,20 @@
  *   reflow hunks not dropped                            1 (whitespace)
  *   code not masked                                     2 (new, code)
  *   frontmatter lines given comparison keys             1 (frontmatter)
+ *   closing-hash regex /[ \t]+#+[ \t]*$/ restored        1 (heading of spaces, 193 s)
+ *   closing hashes stripped without a space before      1 (heading of spaces)
+ *   links.js definitions checked with skip.some         1 (definitions, 5.2 s)
+ *   edit-distance cap removed                           1 (edit-distance cap, 8.5 s)
+ *   edit-distance cap set to 100                        1 (edit-distance cap)
+ *   old 1M-cell window bound restored                   1 (edits far apart)
+ *   definition span is the target only                  1 (reference definition)
+ *   undefined committed not defaulted                   1 (undefined inputs)
  */
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { MAX_INPUT_CHARS, detectChangedSections } from "../src/graph/changes.js";
+import { MAX_EDIT_DISTANCE, MAX_INPUT_CHARS, detectChangedSections } from "../src/graph/changes.js";
 
 function detect(before, committed, options) {
   const result = detectChangedSections(before, committed, options);
@@ -329,23 +337,85 @@ test("an input over the cap is a limited new pass within the cap", () => {
   assert.equal(cut.sections[0].text, "## A\n\nx😀");
 });
 
-test("a diff window over the table bound is a limited new pass", () => {
-  // Edits on the first and last lines leave every line in the window: 1,200
-  // by 1,200 lines is over the bound; 900 by 900 is diffed exactly.
-  const lines = (count) => Array.from({ length: count }, (_, i) => `line ${i}`).join("\n");
-  const wide = `## A\n\n${lines(1_200)}\n`;
-  const wideEdit = wide.replace("line 0\n", "line zero\n").replace("line 1199\n", "line last\n");
-  assert.ok(wide.length < MAX_INPUT_CHARS);
-  const over = detect(wide, wideEdit);
-  assert.equal(over.status, "new");
-  assert.deepEqual(over.sections.map((s) => s.heading), ["A"]);
+test("edits far apart in a long note are diffed, not a limited pass", () => {
+  // The review's case: a 1,100-line note edited near the top and the bottom.
+  const lines = Array.from({ length: 1_100 }, (_, i) => `Sentence number ${i} about a topic.`);
+  const note = ["## Intro", "", "Intro words.", "", "## Body", "", ...lines.slice(0, 1_090), "", "## End", "", ...lines.slice(1_090)].join("\n") + "\n";
+  const edited = note
+    .replace("Sentence number 2 about", "Sentence number 2 not about")
+    .replace("Sentence number 1095 about", "Sentence number 1095 never about");
+  const result = detect(note, edited);
+  assert.equal(result.status, "changed");
+  assert.deepEqual(result.sections.map((s) => s.heading).sort(), ["Body", "End"]);
 
-  const narrow = `## A\n\n${lines(900)}\n\n## B\n\nbeta\n`;
-  const started = Date.now();
-  const exact = detect(narrow, narrow.replace("line 0\n", "line zero\n").replace("beta", "beta two"));
-  assert.equal(exact.status, "changed");
-  assert.deepEqual(exact.sections.map((s) => s.heading), ["A", "B"]);
-  assert.ok(Date.now() - started < 2_000);
+  const wide = `## A\n\n${Array.from({ length: 1_200 }, (_, i) => `line ${i}`).join("\n")}\n\n## B\n\nbeta\n`;
+  const both = detect(wide, wide.replace("line 0\n", "line zero\n").replace("beta", "beta two"));
+  assert.equal(both.status, "changed");
+  assert.deepEqual(both.sections.map((s) => s.heading), ["A", "B"]);
+});
+
+test("the edit-distance cap: exact under it, a limited pass over it, fast either way", () => {
+  // Every line differs, so the edit distance is the sum of both line counts.
+  const distinct = (tag, count) => `## A\n\n${Array.from({ length: count }, (_, i) => `${tag} ${i}`).join("\n")}\n`;
+  const half = MAX_EDIT_DISTANCE / 2;
+  let started = performance.now();
+  const under = detect(distinct("old", half - 1), distinct("new", half - 1));
+  const underMs = performance.now() - started;
+  assert.equal(under.status, "changed");
+  assert.deepEqual(under.sections.map((s) => s.heading), ["A"]);
+  assert.ok(underMs < 250, `under the cap took ${underMs} ms`);
+
+  started = performance.now();
+  const over = detect(distinct("old", 20_000), distinct("new", 20_000));
+  const overMs = performance.now() - started;
+  assert.equal(over.status, "new");
+  assert.ok(overMs < 250, `over the cap took ${overMs} ms`);
+
+  // Long repeated snakes: alternating equal lines shifted by one.
+  const alt = (shift) => Array.from({ length: 1_000 }, (_, i) => `${"p".repeat(240)}c${(i + shift) % 2}`).join("\n");
+  started = performance.now();
+  detect(`z\n${alt(0)}\nz`, `y\n${alt(1)}\ny`);
+  const altMs = performance.now() - started;
+  assert.ok(altMs < 250, `alternating lines took ${altMs} ms`);
+});
+
+test("a heading of spaces is linear, and closing hashes follow CommonMark", () => {
+  const spaces = `# a${" ".repeat(250_000)}b\n`;
+  assert.ok(spaces.length < MAX_INPUT_CHARS);
+  const started = performance.now();
+  detect("x", spaces);
+  detect(null, spaces);
+  const elapsed = performance.now() - started;
+  assert.ok(elapsed < 250, `took ${elapsed} ms`);
+
+  const title = (line) => detect(null, `${line}\nbody\n`).sections[0].heading;
+  assert.equal(title("## Plan ##"), "Plan");
+  assert.equal(title("## Plan#"), "Plan#");
+  assert.equal(title("# #"), "");
+  assert.equal(title("## a # #  "), "a #");
+  assert.equal(title("##\tPlan\t#\t"), "Plan");
+});
+
+test("many reference definitions beside many code spans stay fast", () => {
+  const fill = (unit, n) => unit.repeat(Math.floor(n / unit.length));
+  const body = `${fill("`x` ", MAX_INPUT_CHARS / 2 - 10)}\n\n${fill("[a]: u\n", MAX_INPUT_CHARS / 2)}`;
+  const started = performance.now();
+  detect(body.slice(0, -1), body);
+  const elapsed = performance.now() - started;
+  assert.ok(elapsed < 250, `took ${elapsed} ms`);
+});
+
+test("adding only a reference definition is skipped", () => {
+  const base = "## A\n\nRead the visibility rule today.\n";
+  assert.deepEqual(detect(base, `${base}\n[vis]: policies/visibility.md\n`), { sections: [], status: "skipped" });
+  assert.deepEqual(detect(base, `${base}\n  [vis]: <policies/v.md> "Visibility policy"\n`), { sections: [], status: "skipped" });
+});
+
+test("undefined inputs are treated as missing, never thrown on", () => {
+  assert.deepEqual(detect(undefined, "## A\n\nalpha\n"), detect(null, "## A\n\nalpha\n"));
+  assert.deepEqual(detectChangedSections("## A\n\nalpha\n", undefined), { sections: [], status: "skipped" });
+  assert.deepEqual(detectChangedSections("## A\n\nalpha\n", null), { sections: [], status: "skipped" });
+  assert.deepEqual(detectChangedSections(undefined, undefined), { sections: [], status: "skipped" });
 });
 
 test("a note of tiny sections at the cap stays linear", () => {

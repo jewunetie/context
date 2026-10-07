@@ -8,21 +8,24 @@
 //      code (`codeRanges`) blanked, link markup reduced to its visible text
 //      (`extractReferences` spans), emphasis markers and whitespace dropped;
 //   2. a line diff over the non-empty keys (common prefix and suffix trimmed,
-//      then an LCS table bounded by MAX_DIFF_CELLS);
+//      then Myers' diff bounded by MAX_EDIT_DISTANCE);
 //   3. hunks whose old and new keys join to the same words are reflows and
 //      dropped; the rest are charged to the innermost heading interval of the
 //      committed text, a pure deletion to the section where it happened;
 //   4. at most `maxSections`, most changed prose first, ties in document order.
 //
 // A create (`before === ""`), an unknown old body (`null`), an input over
-// `maxInputChars` or a diff window over MAX_DIFF_CELLS is the limited pass of
+// `maxInputChars` or an edit distance over MAX_EDIT_DISTANCE is the limited pass of
 // 13.4: status `new`, the first sections with prose of their own, in document
 // order, taken from at most the first `maxInputChars` characters.
 import { codeRanges, extractReferences } from "../links.js";
 
 export const MAX_INPUT_CHARS = 256 * 1024;
-// lean: LCS table cells (Uint16, 2 MB); past it the pass is `new`, upgrade to Myers if edits spread wide are common.
-const MAX_DIFF_CELLS = 1_000_000;
+// Inserted plus deleted comparison lines the Myers diff may find. A write
+// changing more than this is a rewrite, seeded like a new note. It bounds the
+// cost: at most (D + 1)^2 trace entries (4 MB of Int32 at 1,000) and
+// O((N + M) * D) line comparisons.
+export const MAX_EDIT_DISTANCE = 1000;
 
 const ATX = /^ {0,3}(#{1,6})(?=[ \t]|\r?$)/;
 const SETEXT = /^ {0,3}(=+|-+)[ \t]*\r?$/;
@@ -30,6 +33,8 @@ const NOT_PARAGRAPH = /^ {0,3}(?:[-*+](?:[ \t]|\r?$)|>|\||\d{1,9}[.)](?:[ \t]|\r
 const PROSE = /[\p{L}\p{N}]/u;
 
 export function detectChangedSections(before, committed, { maxSections = 2, maxInputChars = MAX_INPUT_CHARS } = {}) {
+  before ??= null;
+  committed ??= "";
   const limited = committed.length > maxInputChars || (before?.length ?? 0) > maxInputChars;
   if (limited || before === null || before === "") {
     const doc = analyze(committed.slice(0, cutAt(committed, maxInputChars)), false);
@@ -115,7 +120,7 @@ function analyze(text, reduceLinks) {
   for (let i = front; i < raw.length; i += 1) {
     const atx = ATX.exec(shown[i]);
     if (atx) {
-      const title = raw[i].replace(/\r$/, "").replace(/^ {0,3}#{1,6}/, "").replace(/[ \t]+#+[ \t]*$/, "").trim();
+      const title = stripClosingHashes(raw[i].replace(/\r$/, "").replace(/^ {0,3}#{1,6}/, ""));
       headings.push({ line: i, depth: atx[1].length, heading: title });
       headingLine[i] = true;
       continue;
@@ -154,6 +159,20 @@ function analyze(text, reduceLinks) {
   return { keys, sections, lineSection, headingLine };
 }
 
+/**
+ * An ATX heading's text without its closing sequence: trailing `#`s count only
+ * when preceded by a space, a tab or nothing (CommonMark). A walk, not a
+ * regex: `/[ \t]+#+[ \t]*$/` backtracks quadratically on a run of spaces.
+ */
+function stripClosingHashes(title) {
+  let end = title.length;
+  while (end > 0 && (title[end - 1] === " " || title[end - 1] === "\t")) end -= 1;
+  let hashes = end;
+  while (hashes > 0 && title[hashes - 1] === "#") hashes -= 1;
+  if (hashes < end && (hashes === 0 || title[hashes - 1] === " " || title[hashes - 1] === "\t")) end = hashes;
+  return title.slice(0, end).trim();
+}
+
 /** The number of leading lines that are YAML frontmatter (0 when there is none). */
 function frontmatterLines(lines) {
   if (lines.length === 0 || lines[0].replace(/\r$/, "") !== "---") return 0;
@@ -178,8 +197,8 @@ function maskCode(text) {
 
 /**
  * `masked` with each link reduced to the words a reader sees: a wikilink to its
- * alias or target, an inline link to its label, an embed and a definition's
- * target to nothing. Newlines inside a link are kept so lines stay aligned.
+ * alias or target, an inline link to its label, an embed and a whole
+ * definition line (`[id]: target "title"`) to nothing. Newlines inside a link are kept so lines stay aligned.
  */
 function reduceLinkMarkup(text, masked) {
   let out = "";
@@ -197,7 +216,11 @@ function reduceLinkMarkup(text, masked) {
 const INLINE_TAIL = />?\s*(?:"[^"\n]*"|'[^'\n]*')?\)/y;
 
 function linkSpan(text, masked, ref) {
-  if (ref.kind === "definition") return { from: ref.start, to: ref.end, visible: "" };
+  if (ref.kind === "definition") {
+    const from = text.indexOf("[", text.lastIndexOf("\n", ref.start - 1) + 1);
+    const lineEnd = text.indexOf("\n", ref.end);
+    return { from, to: lineEnd === -1 ? text.length : lineEnd, visible: "" };
+  }
   if (ref.kind === "wiki") {
     const close = text.indexOf("]]", ref.end);
     if (close === -1) return null;
@@ -226,8 +249,9 @@ function normalize(line) {
 
 /**
  * Hunks turning `a` into `b`: `del` indices into `a`, `ins` indices into `b`,
- * `at` the index in `b` where the hunk sits. `null` when the window left after
- * trimming the common prefix and suffix is over MAX_DIFF_CELLS.
+ * `at` the index in `b` where the hunk sits. Common prefix and suffix trimmed,
+ * then Myers' diff on the rest; `null` when the edit distance is over
+ * MAX_EDIT_DISTANCE.
  */
 function diff(a, b) {
   let lo = 0;
@@ -238,44 +262,88 @@ function diff(a, b) {
     endA -= 1;
     endB -= 1;
   }
-  const n = endA - lo;
-  const m = endB - lo;
-  if (n * m > MAX_DIFF_CELLS) return null;
-
-  // Suffix LCS lengths of the window; min(n, m) <= 1000 so Uint16 holds them.
-  const width = m + 1;
-  const table = new Uint16Array((n + 1) * width);
-  for (let i = n - 1; i >= 0; i -= 1) {
-    for (let j = m - 1; j >= 0; j -= 1) {
-      table[i * width + j] =
-        a[lo + i] === b[lo + j]
-          ? table[(i + 1) * width + j + 1] + 1
-          : Math.max(table[(i + 1) * width + j], table[i * width + j + 1]);
-    }
-  }
+  const ops = myers(a.slice(lo, endA), b.slice(lo, endB));
+  if (ops === null) return null;
 
   const hunks = [];
   let hunk = null;
-  let i = 0;
-  let j = 0;
-  while (i < n || j < m) {
-    if (i < n && j < m && a[lo + i] === b[lo + j]) {
+  let i = lo;
+  let j = lo;
+  for (const op of ops) {
+    if (op === EQUAL) {
       hunk = null;
       i += 1;
       j += 1;
       continue;
     }
     if (hunk === null) {
-      hunk = { del: [], ins: [], at: lo + j };
+      hunk = { del: [], ins: [], at: j };
       hunks.push(hunk);
     }
-    if (j >= m || (i < n && table[(i + 1) * width + j] >= table[i * width + j + 1])) {
-      hunk.del.push(lo + i);
-      i += 1;
-    } else {
-      hunk.ins.push(lo + j);
-      j += 1;
-    }
+    if (op === DELETE) hunk.del.push(i++);
+    else hunk.ins.push(j++);
   }
   return hunks;
+}
+
+const EQUAL = 0;
+const DELETE = 1;
+const INSERT = 2;
+
+/**
+ * The edit script from `a` to `b` in order (Myers 1986: greedy forward pass,
+ * backtracked through a copy of each step's diagonals), or `null` past
+ * MAX_EDIT_DISTANCE.
+ */
+function myers(a, b) {
+  const n = a.length;
+  const m = b.length;
+  const cap = Math.min(n + m, MAX_EDIT_DISTANCE);
+  const offset = cap + 1;
+  const v = new Int32Array(2 * cap + 3); // furthest x on diagonal k = x - y, at v[offset + k]
+  const trace = [];
+  for (let d = 0; d <= cap; d += 1) {
+    for (let k = -d; k <= d; k += 2) {
+      let x = k === -d || (k !== d && v[offset + k - 1] < v[offset + k + 1]) ? v[offset + k + 1] : v[offset + k - 1] + 1;
+      let y = x - k;
+      while (x < n && y < m && a[x] === b[y]) {
+        x += 1;
+        y += 1;
+      }
+      v[offset + k] = x;
+      if (x >= n && y >= m) {
+        trace.push(v.slice(offset - d, offset + d + 1));
+        return backtrack(trace, n, m);
+      }
+    }
+    trace.push(v.slice(offset - d, offset + d + 1));
+  }
+  return null;
+}
+
+function backtrack(trace, n, m) {
+  const ops = [];
+  let x = n;
+  let y = m;
+  for (let d = trace.length - 1; d > 0; d -= 1) {
+    const step = trace[d - 1]; // diagonal k of step d - 1 is at step[k + d - 1]
+    const k = x - y;
+    const down = k === -d || (k !== d && step[k - 1 + d - 1] < step[k + 1 + d - 1]);
+    const previousK = down ? k + 1 : k - 1;
+    const previousX = step[previousK + d - 1];
+    const snakeStart = down ? previousX : previousX + 1;
+    while (x > snakeStart) {
+      ops.push(EQUAL);
+      x -= 1;
+      y -= 1;
+    }
+    ops.push(down ? INSERT : DELETE);
+    x = previousX;
+    y = previousX - previousK;
+  }
+  while (x > 0) {
+    ops.push(EQUAL);
+    x -= 1;
+  }
+  return ops.reverse();
 }

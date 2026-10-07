@@ -330,6 +330,19 @@ describe("the related panel: which answer, when", () => {
     panel.unmount();
   });
 
+  test("a note not saved yet draws nothing, and the first save shows the panel at once", async () => {
+    const ask = jest.fn<Related>(async () => ANSWER);
+    const panel = mountPanel(ask, { editor: { path: NOTE, etag: null, encrypted: false } });
+    await settle();
+    expect(panel.find("related-panel")).toBeNull();
+    expect(ask).not.toHaveBeenCalled();
+    panel.render(ask, { editor: { path: NOTE, etag: "e1", encrypted: false } });
+    await settle();
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(panel.text()).toContain("plan-b");
+    panel.unmount();
+  });
+
   test("a cold open of a locked note asks zero times", async () => {
     const ask = jest.fn<Related>(async () => ANSWER);
     const panel = mountPanel(ask, { editor: { path: null, etag: null, encrypted: false } });

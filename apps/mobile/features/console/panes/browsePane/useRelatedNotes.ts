@@ -7,7 +7,8 @@ import type { RelatedAnswer } from "../../files/browser/relatedAnswer";
  * What the related-notes panel can say about one note, and nothing it cannot.
  *
  * `hidden`: this browser has no `relatedNotes` (the demo console, a visitor),
- * or the note is a drawing or locked or encrypted, which are not asked about.
+ * or the note is a drawing, locked or encrypted, or not saved yet (no etag),
+ * which are not asked about.
  * `offline`: nothing is asked. No local graph is computed (arch 15.2 makes it
  * optional), so the panel says it needs a connection rather than guessing.
  * `loading` and `unavailable` are never an empty list (arch 14).
@@ -33,7 +34,8 @@ export function useRelatedNotes(
   path: string,
 ): { state: RelatedState; retry: () => void } {
   const open = files.editor.path === path;
-  const skipped = isDrawingPath(path) || (open && files.editor.encrypted);
+  // A note with no version yet has never been saved: nothing to relate, and no "Finding…" line forever.
+  const skipped = isDrawingPath(path) || (open && (files.editor.encrypted || files.editor.etag === null));
   const ask = skipped ? undefined : files.relatedNotes;
   const offline = files.sync?.reachability === "offline";
   /*

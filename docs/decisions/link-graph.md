@@ -165,6 +165,15 @@ a reviewer.
   bit and the withheld graph bit, budgets 0..80", "a hidden edit that leaves
   the index behind does not drop the seed's rooted links" and "limit applies
   after canSee: hidden strong matches do not reduce the visible count".
+  Move jobs are read first, fail closed (Task 17 fix round 1): candidates are
+  physical paths and read_note answers through the move overlay, so every
+  candidate under an active job's source or destination is withheld and the
+  answer is labelled possibly incomplete; unreadable job state, or a budget
+  too small to read it, gives the empty answer. Whether a move is active, and
+  how many job markers there are to read, is one more workspace-level bit.
+  The tests are "a note under an active move's source or destination is
+  withheld, and the answer is labelled" and "an unreadable move job withholds
+  every candidate; a seed under a move gets nothing".
 
 **What reversing it costs.** Phase 3 backlinks, related notes, and
 index-assisted move repair all read this index; they cannot be built on a

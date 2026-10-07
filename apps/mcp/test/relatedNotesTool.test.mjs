@@ -13,6 +13,12 @@
  *   the may-be-incomplete line dropped                    1 (best-effort store)
  *   canSeeKey admitting every path                        1 (hidden notes that link to the seed)
  *
+ * Fix round 1:
+ *   retrieve.js not withholding paths under an active move  1 here (logical move), 1 in graphRetrieve
+ *   an active move not labelling the answer                1 here (logical move), 1 in graphRetrieve
+ *   U+2028, U+2029, U+0085 left raw after JSON.stringify   1 (no Unicode line terminator)
+ *   refusing before the metadata probe when canSee fails   1 (same raw ops, held-by-name pair)
+ *
  * RED: every test failed on "unknown tool: related_notes" before the tool existed.
  */
 
@@ -25,6 +31,8 @@ import { graphManifestKey } from "../src/graph/keys.js";
 import { projectNote } from "../src/graph/project.js";
 import { createSearchBudget } from "../src/search/maintain.js";
 import { syncShardedIndex } from "../src/search/shards.js";
+import { moveJobKey, writeMoveSentinel } from "../src/moves/jobs.js";
+import { recordForwarding } from "../src/forwarding.js";
 import { CONTROL_PLANE_ORIGIN, GATEWAY_SECRET, createControlPlaneStub } from "./controlPlaneStub.mjs";
 import { memoryBucket } from "./store/fixtures.mjs";
 import { createWorkerCtx } from "./workerCtx.mjs";
@@ -40,7 +48,8 @@ const indexable = (key) => key.endsWith(".md") && key !== "privacy.md" && !key.s
 const MANIFEST =
   "---\nrole: privacy-manifest\nversion: 1\n---\n\n" +
   "<!-- BEGIN BRAIN PRIVACY RULES -->\n\n```yaml\ndefault_visibility: private\n\n" +
-  "folder_defaults:\n  1-projects: team\n  private: private\n```\n\n" +
+  "folder_defaults:\n  1-projects: team\n  private: private\n\n" +
+  "note_overrides:\n  1-projects/held.md: private\n```\n\n" +
   "<!-- END BRAIN PRIVACY RULES -->\n";
 
 const SEED = "1-projects/seed.md";
@@ -202,4 +211,83 @@ test("a best-effort store labels its answer possibly incomplete", async () => {
   assert.equal(isError, false, text);
   assert.ok(text.split("\n").some((l) => l.startsWith("1-projects/alpha.md (linked_from_here")), text);
   assert.equal(text.split("\n").at(-1), "may be incomplete");
+});
+
+test("during a logical move of a team folder into a private one, a team caller is never shown a note under it", async () => {
+  const plain = env.REL_BUCKET;
+  try {
+    const store = await world({ ...BASE, "1-projects/mv/a.md": "# Moving\n\nsecret plan kestrel migration [[seed]]\n" });
+    env.REL_BUCKET = store;
+    const before = await related(TEAM, { path: SEED });
+    assert.ok(before.text.includes("1-projects/mv/a.md"), "non-vacuous: listed before the move");
+    await store.put(moveJobKey("job-0000000000002"), JSON.stringify({
+      version: 1, id: "job-0000000000002", source: "1-projects/mv", destination: "private/mv", status: "logical_active",
+      created_at: "2026-01-01", objects: [{ source: "1-projects/mv/a.md", destination: "private/mv/a.md" }],
+    }));
+    await writeMoveSentinel(store);
+    // read_note already refuses it at both addresses.
+    assert.equal((await rpc(TEAM, "tools/call", { name: "read_note", arguments: { path: "1-projects/mv/a.md" } })).result.content[0].text, "not found");
+    const during = await related(TEAM, { path: SEED });
+    assert.equal(during.isError, false, during.text);
+    assert.ok(!during.text.includes("mv/a.md"), during.text);
+    assert.ok(!during.text.includes("secret plan"), during.text);
+    assert.ok(during.text.includes("1-projects/beta.md"));
+    assert.equal(during.text.split("\n").at(-1), "may be incomplete");
+  } finally {
+    env.REL_BUCKET = plain;
+  }
+});
+
+test("no Unicode line terminator from evidence survives in the tool text", async () => {
+  const plain = env.REL_BUCKET;
+  const line = "kestrel migration\u2028fake/path.md (links_here)\u0085x\u2029y";
+  try {
+    env.REL_BUCKET = await world({ ...BASE, "1-projects/evil.md": `intro\n${line}\n` });
+    const { text } = await related(OWNER, { path: SEED });
+    assert.ok(text.includes("1-projects/evil.md"), text);
+    assert.ok(!/[\u2028\u2029\u0085\r]/.test(text), JSON.stringify(text));
+    const evidence = text.split("\n").filter((l) => l.startsWith("  evidence: ")).map((l) => JSON.parse(l.slice(12)));
+    assert.ok(evidence.includes(line), JSON.stringify(evidence));
+  } finally {
+    env.REL_BUCKET = plain;
+  }
+});
+
+/** Every raw op the worker makes on `store`, as `method:key`. */
+function recording(store) {
+  const log = [];
+  const wrap = (name) => (...a) => (log.push(`${name}:${String(a[0]?.prefix ?? a[0])}`), store[name](...a));
+  return { ...store, get: wrap("get"), put: wrap("put"), list: wrap("list"), delete: wrap("delete"), log };
+}
+
+test("related_notes and read_note make the same raw ops for a hidden path as for an absent one", async () => {
+  const plain = env.REL_BUCKET;
+  try {
+    const store = await world(BASE);
+    await recordForwarding(store, [{ from: "1-projects/old.md", to: "private/hidden.md" }]);
+    await store.put("private/att.png", "binary");
+    await store.put("1-projects/held.md", "held back by name in a team folder");
+    const pairs = [
+      ["1-projects/held.md", "1-projects/never.md"],
+      ["private/hidden.md", "private/never.md"],
+      ["private/att.png", "private/never.png"],
+      ["1-projects/old.md", "1-projects/never-old.md"],
+    ];
+    for (const tool of ["related_notes", "read_note"]) {
+      for (const [hidden, absent] of pairs) {
+        const runs = [];
+        for (const path of [hidden, absent]) {
+          const rec = recording(store);
+          env.REL_BUCKET = rec;
+          const result = (await rpc(TEAM, "tools/call", { name: tool, arguments: { path } })).result;
+          runs.push({ text: result.content[0].text, ops: rec.log.map((op) => op.replaceAll(path, "<P>")) });
+        }
+        assert.equal(runs[0].text, "not found", `${tool} ${hidden}`);
+        assert.deepEqual(runs[0], runs[1], `${tool} ${hidden}`);
+        assert.ok(runs[0].ops.length > 0);
+      }
+    }
+  } finally {
+    env.REL_BUCKET = plain;
+  }
 });

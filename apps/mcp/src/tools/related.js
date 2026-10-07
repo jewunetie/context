@@ -69,8 +69,13 @@ export async function toolRelatedNotes(store, scope, rules, overrides, args) {
   const lines = [];
   for (const { path: related, reasons, evidence } of relations) {
     lines.push(`${related} (${reasons.join(", ")})`);
-    // Note text, untrusted: one JSON string literal, never markup or instructions.
-    if (evidence !== undefined) lines.push(`  evidence: ${JSON.stringify(evidence)}`);
+    // Note text, untrusted: one JSON string literal, never markup or
+    // instructions. JSON leaves U+2028, U+2029 and U+0085 raw, and a client
+    // may break lines on them, so they are escaped too.
+    if (evidence !== undefined) {
+      const quoted = JSON.stringify(evidence).replace(/[\u2028\u2029\u0085]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+      lines.push(`  evidence: ${quoted}`);
+    }
   }
   if (!lines.length) lines.push("(no related notes found)");
   if (possiblyIncomplete) lines.push("may be incomplete");

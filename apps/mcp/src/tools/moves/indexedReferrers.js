@@ -24,10 +24,7 @@ import { graphView } from "../../graph/mode.js";
 import { readPostings } from "../../graph/postings.js";
 import { baseName } from "../../graph/facts.js";
 import { nameHash, pathHash } from "../../graph/keys.js";
-import { moveJobActive } from "../../moves/jobs.js";
-import { MOVE_JOB_PREFIX, MOVE_JOB_VERSION } from "../../moves/limits.js";
-import { listAllKeys } from "../../notes/storage.js";
-import { getWithLegacyFallback } from "../../storageLayout.js";
+import { activeMoveJobsOrNull } from "../../moves/jobs.js";
 import { supported as collaborationSupported } from "@context/collaboration";
 import { createSearchBudget } from "../../search/maintain.js";
 import { SEARCH_SUBREQUEST_BUDGET } from "../../search/visible.js";
@@ -39,23 +36,6 @@ export const TOP_UP_MARGIN_MS = 10 * 60 * 1000;
 // head is `<sha256(path)>.json`, the same hash as the graph's `pathHash`.
 const COLLABORATION_HEADS = ".context/collaboration/v1/heads/";
 const HEAD_FILE = /^([0-9a-f]{64})\.json$/;
-
-/** Any job marker that is active, or that cannot be read as an inactive one (OPEN-25). Throws on a listing failure. */
-async function moveJobMayBeActive(store) {
-  for (const { key } of await listAllKeys(store, MOVE_JOB_PREFIX)) {
-    if (!key.endsWith(".json")) continue;
-    const object = await getWithLegacyFallback(store, key);
-    if (!object) continue;
-    let job;
-    try {
-      job = JSON.parse(await object.text());
-    } catch {
-      return true;
-    }
-    if (job?.version !== MOVE_JOB_VERSION || moveJobActive(job)) return true;
-  }
-  return false;
-}
 
 /**
  * Hashes of every path with collaboration state, one budgeted op per listing
@@ -101,7 +81,7 @@ export async function indexedReferrerKeys(store, { visibleListing, renames, canS
     const health = await graphHealth(view, budget);
     if (!health.complete || !health.coveredThrough) return null;
     // Postings are keyed by physical paths; a logical move presents others (OPEN-25).
-    if (await moveJobMayBeActive(store)) return null;
+    if ((await activeMoveJobsOrNull(store))?.length !== 0) return null;
 
     const candidates = new Set(renames.values());
     for (const from of renames.keys()) {

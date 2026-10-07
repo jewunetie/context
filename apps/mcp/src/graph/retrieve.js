@@ -6,7 +6,8 @@
 //
 // Privacy. Every part runs over what `canSeeKey` admits before anything is
 // ranked or cut (arch 12.2 step 6). The parts run in a fixed order on the one
-// budget: the catalog (the index manifest and docmap, two reads), then search,
+// budget: the move jobs (one listing plus one read per marker), the catalog
+// (the index manifest and docmap, two reads), then search,
 // then the graph. The graph's read count depends on hidden posting entries
 // (OPEN-27), so it goes last, where it can only lose its own families, all at
 // once for a strict caller. Search's own read count also depends on hidden
@@ -22,6 +23,7 @@ import { extractFields } from "../search/indexer.js";
 import { indexIsBehind, loadDocmapPaths, loadIndexManifest } from "../search/shards.js";
 import { tokenize, stem } from "../search/text.js";
 import { searchIndexedNotes } from "../search/visible.js";
+import { activeMoveJobsOrNull, noteUnderPrefix } from "../moves/jobs.js";
 import { graphNeighbors } from "./neighbors.js";
 
 // Given the manifest, a search reads each occupied shard at most once and
@@ -103,8 +105,15 @@ const byScoreThenPath = (map) => [...map].sort(([a, x], [b, y]) => y - x || (a <
  * A seed the caller cannot see gets the empty answer with no store op.
  */
 export async function retrieveCandidates(store, { seed, intent, canSeeKey, isIndexable, budget, limits, scope }) {
+  // Paths under an active logical move's source or destination (fix round 1).
+  // Candidates are physical paths, and read_note answers for these through the
+  // move overlay, so one moved into a private folder could be shown here at
+  // its old address. They are withheld for every caller.
+  let moving = [];
+  const underMove = (key) => moving.some((job) => noteUnderPrefix(key, job.source) || noteUnderPrefix(key, job.destination));
   // Awaited; a throw or a rejection counts as not visible.
   const see = async (key) => {
+    if (underMove(key)) return false;
     try {
       return (await canSeeKey(key)) === true;
     } catch {
@@ -116,6 +125,16 @@ export async function retrieveCandidates(store, { seed, intent, canSeeKey, isInd
   const limit = Number.isInteger(limits?.results) && limits.results > 0 ? limits.results : RESULT_LIMIT;
   const strict = scope !== "private";
   let incomplete = false;
+
+  // Move jobs first, fail closed: unreadable job state (or a budget too small
+  // to read it) withholds every candidate, and an active job labels the answer.
+  const jobs = await activeMoveJobsOrNull(store, budget);
+  if (jobs === null) return nothing;
+  if (jobs.length) {
+    moving = jobs;
+    incomplete = true;
+    if (underMove(seed.path)) return nothing;
+  }
 
   // Catalog: the visible paths of the index's docmap, from the one manifest
   // read this call makes. Behind, the list may lack a note, so a path outside

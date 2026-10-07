@@ -31,6 +31,11 @@
  *   catalog.partial ignored by resolveReference                             2 (hidden edit behind, resolveReference)
  *   canSeeKey not awaited                                                   1 (async canSeeKey)
  *   manifest not handed to search                                           1 (one manifest read)
+ *
+ * Task 17 fix round 1 (each new test red first against dbb13820):
+ *   candidates under an active move not withheld                            1 (active move)
+ *   active move not labelling possiblyIncomplete                            1 (active move)
+ *   unreadable job state treated as no jobs (fail open)                     1 (unreadable move job)
  */
 
 import assert from "node:assert/strict";
@@ -44,6 +49,7 @@ import { createSearchBudget } from "../src/search/maintain.js";
 import { indexIsBehind, loadIndexManifest, MANIFEST_KEY, syncShardedIndex } from "../src/search/shards.js";
 import { extractReferences, indexByName, resolveReference } from "../src/links.js";
 import { memoryBucket } from "./store/fixtures.mjs";
+import { moveJobKey } from "../src/moves/jobs.js";
 
 const gen = "1";
 const now = 1_700_000_000_000;
@@ -360,8 +366,9 @@ test("text hits are all or none for a strict caller; the owner keeps them on an 
   const store = await world(notes, { conditional: true, ready: true });
   const occupied = (await loadIndexManifest(store, big(), 0)).stats.filter((e) => e.docCount > 0).length;
   assert.ok(occupied > 1);
-  // Two catalog reads, then one short of every shard, 11 hits and the re-check's reserve.
-  const B = 2 + occupied + 11;
+  // One move-job listing (no markers), two catalog reads, then one short of
+  // every shard, 11 hits and the re-check's reserve.
+  const B = 1 + 2 + occupied + 11;
   const strict = await ask(store, notes, { budget: createSearchBudget(B) });
   assert.ok(!strict.relations.some((r) => r.reasons.includes("related_text")), JSON.stringify(strict));
   assert.equal(strict.possiblyIncomplete, true);
@@ -412,4 +419,44 @@ test("one call reads the search index manifest once", async () => {
   const r = await ask(counting, MULTI);
   assert.ok(r.relations.some((x) => x.reasons.includes("related_text")));
   assert.equal(reads, 1);
+});
+
+// Fix round 1 (Task 17 review): candidates resolve on physical paths, so a
+// note under an active logical move would be shown at its source while
+// read_note refuses it (moved into a private folder). Every candidate under an
+// active job's source or destination is withheld, and the answer is labelled.
+const job = (id, source, destination, status = "logical_active") =>
+  JSON.stringify({ version: 1, id, source, destination, status, created_at: "2026-01-01", objects: [{ source: `${source}/a.md`, destination: `${destination}/a.md` }] });
+
+test("a note under an active move's source or destination is withheld, and the answer is labelled", async () => {
+  const notes = {
+    [SEED]: "# Kestrel migration\n\nThe kestrel migration plan, see [[alpha]].\n",
+    "notes/alpha.md": "# Alpha\n",
+    "notes/mv/a.md": "kestrel migration secret [[seed]]\n",
+    "notes/other.md": "kestrel migration too [[seed]]\n",
+  };
+  const store = await world(notes, { conditional: true, ready: true });
+  const before = await ask(store, notes);
+  assert.ok(paths(before).includes("notes/mv/a.md"), "non-vacuous: visible without a move");
+  assert.equal(before.possiblyIncomplete, false);
+  await store.put(moveJobKey("job-0000000000001"), job("job-0000000000001", "notes/mv", "private/mv"));
+  const during = await ask(store, notes);
+  assert.ok(!paths(during).includes("notes/mv/a.md"), JSON.stringify(during));
+  assert.ok(paths(during).includes("notes/other.md"));
+  assert.equal(during.possiblyIncomplete, true);
+  // A finished job withholds nothing.
+  await store.put(moveJobKey("job-0000000000001"), job("job-0000000000001", "notes/mv", "private/mv", "complete"));
+  assert.deepEqual(await ask(store, notes), before);
+});
+
+test("an unreadable move job withholds every candidate; a seed under a move gets nothing", async () => {
+  const notes = {
+    [SEED]: "# Kestrel migration\n\nSee [[alpha]].\n",
+    "notes/alpha.md": "# Alpha kestrel\n",
+  };
+  const store = await world(notes, { conditional: true, ready: true });
+  await store.put(moveJobKey("job-0000000000002"), "{ half a marker");
+  assert.deepEqual(await ask(store, notes), { relations: [], unresolved: [], possiblyIncomplete: true });
+  await store.put(moveJobKey("job-0000000000002"), job("job-0000000000002", "notes", "private/notes"));
+  assert.deepEqual(await ask(store, notes), { relations: [], unresolved: [], possiblyIncomplete: true });
 });

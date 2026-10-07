@@ -82,6 +82,29 @@ export async function loadMoveJobs(store) {
   return jobs.sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));
 }
 
+/**
+ * Active move jobs, or null when any marker cannot be read as an inactive one
+ * or the listing fails (OPEN-25: fail closed). With `budget`, every op is
+ * charged to it and running out is null too.
+ */
+export async function activeMoveJobsOrNull(store, budget = null) {
+  const reader = budget ? budgetedStore(store, budget, 0) : store;
+  const jobs = [];
+  try {
+    for (const { key } of await listAllKeys(reader, MOVE_JOB_PREFIX)) {
+      if (!key.endsWith(".json")) continue;
+      const object = await (budget ? reader.get(key) : getWithLegacyFallback(store, key));
+      if (!object) continue;
+      const job = JSON.parse(await object.text());
+      if (job?.version !== MOVE_JOB_VERSION) return null;
+      if (moveJobActive(job)) jobs.push(job);
+    }
+  } catch {
+    return null;
+  }
+  return jobs;
+}
+
 async function moveSentinelActive(store, budget = null) {
   try {
     const reader = budget ? budgetedStore(store, budget, 0) : store;

@@ -90,7 +90,9 @@ export async function callTool(name, args, store, scope) {
     case "write_note":
       if (args.site !== undefined) return toolSiteAction(store, args);
       if (args.comment !== undefined) return toolCommentNote(store, scope, rules, overrides, args);
-      return toolWriteNote(store, scope, rules, overrides, args);
+      // Only this branch asks for link suggestions (OPEN-37): every other
+      // caller of toolWriteNote (remember, comments, forms) is off by default.
+      return toolWriteNote(store, scope, rules, overrides, args, { linkSuggestions: true });
     case "remember":
       return toolRemember(store, scope, rules, overrides, args);
     case "set_visibility":

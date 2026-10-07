@@ -52,6 +52,7 @@ import {
 import { localIngestionStore } from "../ingestion/inbox.js";
 import { publishMeetingNote, resolveMeetingNotePath } from "../meetings/notes.js";
 import { searchBudgetFor, writeEnrichBudgetFor } from "../search/budget.js";
+import { createSearchBudget } from "../search/maintain.js";
 import { transcriptionForwarder } from "../ingestion/transcription.js";
 import { toolSuggestDestination } from "../routing/suggestDestination.js";
 import { PINNED_CONTEXT_NAME } from "../orient/globalNote.js";
@@ -256,6 +257,9 @@ export async function route(request, env, ctx) {
       // with the request, so a reused isolate carries nothing across tenants.
       store.searchSubrequestBudget = searchBudgetFor(env);
       store.writeEnrichBudget = writeEnrichBudgetFor(env);
+      // One post-commit enrichment ceiling for the whole invocation: a batch
+      // or an agent loop of writes shares it, not one budget per write.
+      store.writeEnrichPool = createSearchBudget(store.writeEnrichBudget);
       attachGatewayJobQueue(store, session, controlPlane, env);
       attachLinkCalls(store, session, controlPlane, env);
       // The one way anything in this worker gets to keep working after the
@@ -467,6 +471,8 @@ export async function route(request, env, ctx) {
         const targetStore = await storeForSession(target, env, controlPlane);
         targetStore.searchSubrequestBudget = searchBudgetFor(env);
         targetStore.writeEnrichBudget = writeEnrichBudgetFor(env);
+        targetStore.writeEnrichPool = store.writeEnrichPool;
+        targetStore.protocolVersion = store.protocolVersion;
         attachGatewayJobQueue(targetStore, target, controlPlane, env);
         attachLinkCalls(targetStore, target, controlPlane, env);
         targetStore.defer = store.defer;

@@ -34,7 +34,8 @@ import { isPersonalCommunicationsPath, normalizePath } from "../../notes/paths.j
 import { parseFormBlocks } from "../../forms.js";
 import { pathUnderActiveMovedSource } from "../../moves/jobs.js";
 import { persistExactVisibility, UNWRITABLE_PATH_REFUSAL, writesOneRule } from "../../privacy/state.js";
-import { projectNoteAfterWriteDeferred } from "../../graph/afterWrite.js";
+import { projectNoteAfterWriteDeferred, suggestAfterWrite } from "../../graph/afterWrite.js";
+import { renderLinkSuggestions } from "../../graph/suggest.js";
 import { createSearchBudget } from "../../search/maintain.js";
 import { WRITE_ENRICH_SUBREQUEST_BUDGET } from "../../search/budget.js";
 import { projectWrittenNoteAfterResponse } from "../../search/writeProjection.js";
@@ -290,9 +291,10 @@ export async function toolWriteNote(store, scope, rules, overrides, args, option
     );
   }
   let collaborationResult = null;
+  let base = null;
   if (collaborationEligibleExisting) {
     try {
-      const base = await readCollaborationDocument(store, path);
+      base = await readCollaborationDocument(store, path);
       // The opaque etag is the version the caller actually read. A retained
       // older version can be merged; deriving a fresh base here would silently
       // turn an agent's stale full-body replacement into an overwrite of an
@@ -421,13 +423,6 @@ export async function toolWriteNote(store, scope, rules, overrides, args, option
     version: put.etag,
     visibility: desiredVisibility,
   });
-  // The link graph's derivative of the committed body; never fails the write.
-  await projectNoteAfterWriteDeferred(store, {
-    path,
-    body,
-    version: put.etag,
-    budget: createSearchBudget(store.writeEnrichBudget ?? WRITE_ENRICH_SUBREQUEST_BUDGET),
-  });
   // And anybody who has this note open right now, so an agent's write appears
   // in their editor as it lands rather than as a conflict later.
   if (collaborationResult) {
@@ -458,8 +453,30 @@ export async function toolWriteNote(store, scope, rules, overrides, args, option
   const shareLines = await shareWrittenNote(store, path, args);
   // Said after the write, never instead of it: a status outside its folder's list is advice.
   const statusLine = isDrawingPath(path) ? null : await statusAdvice(store, scope, rules, overrides, path, body).catch(() => null);
+  // Post-commit enrichment on one budget, neither part able to fail or change
+  // the write (P5, AGENT-LINKS 13.6): link suggestions first, for the plain
+  // write_note call only (OPEN-37), then the link graph's derivative of the
+  // committed body on what remains. The budget is the invocation's pool where
+  // the route made one, so a batch of writes shares one ceiling. Budget 0
+  // turns both off, block included.
+  const enrich = store.writeEnrichBudget ?? WRITE_ENRICH_SUBREQUEST_BUDGET;
+  const budget = store.writeEnrichPool ?? createSearchBudget(enrich);
+  const suggestions =
+    options.linkSuggestions === true && enrich > 0
+      ? await suggestAfterWrite(store, scope, rules, overrides, {
+          path,
+          etag: put.etag,
+          visibility: desiredVisibility,
+          // OPEN-38: the merged document before this write, else the stored
+          // body, else a create's nothing. OPEN-39: none for an encrypted note
+          // (its plaintext is never a query); none for a drawing's machine data.
+          before: isDrawingPath(path) || (storedBody !== null && isEncryptedNote(storedBody)) ? undefined : base ? base.text : storedBody ?? "",
+          committed: collaborationResult?.text ?? content,
+        }, budget, options.now)
+      : null;
+  await projectNoteAfterWriteDeferred(store, { path, body, version: put.etag, budget });
   // Whether this created the note, for the live map's "pops in" (`live/activityHint.js`).
-  return withActivityHint(toolText(
+  const result = toolText(
     `written: ${path} (etag ${put.etag})\nvisibility: ${desiredVisibility}` +
       (publishedForLink
         ? " (published to this workspace so the link can open it; the answers note keeps its own visibility)"
@@ -475,8 +492,14 @@ export async function toolWriteNote(store, scope, rules, overrides, args, option
         : "") +
       (formLines.length ? `\n${formLines.join("\n")}` : "") +
       (shareLines.length ? `\n${shareLines.join("\n")}` : "") +
-      (statusLine === null ? "" : `\n${statusLine}`)
-  ), { created: !existing });
+      (statusLine === null ? "" : `\n${statusLine}`) +
+      (suggestions ? `\n${renderLinkSuggestions(suggestions)}` : ""),
+  );
+  // OPEN-43: the same block as data for revisions that define structuredContent.
+  if (suggestions && store.protocolVersion >= "2025-06-18") {
+    result.structuredContent = { saved: { path, etag: put.etag }, linkSuggestions: suggestions };
+  }
+  return withActivityHint(result, { created: !existing });
 }
 
 async function prepareAttachedImages(path, content, images, storedBody) {

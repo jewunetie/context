@@ -261,6 +261,7 @@ those citations still resolve; look for them here rather than in `CLAUDE.md`.
 ## [Link graph](./link-graph.md)
 
 - The reference index is approved, and it is a derivative that is never the authority
+- Link suggestions ride write_note's text, on one enrichment budget (Tasks 21 to 24)
 
 ## [Search and the derived index](./search.md)
 

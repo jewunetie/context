@@ -260,58 +260,267 @@ that ever changes (a queued hook, a retry loop), raise the margin or read the
 nodes. Test: `moveIndexedReferrers.test.mjs`, "a node still owing
 reverseRepair, edited inside the margin, is read like the scan would".
 
-### Link suggestions ride write_note's text, on one enrichment budget (Task 23)
+### Link suggestions ride write_note's text, on one enrichment budget (Tasks 21 to 24)
 
-After a plain `write_note` commits (never `remember`, comments or forms:
-dispatch alone passes `linkSuggestions`, OPEN-37), the changed sections seed
-`suggestLinks` and the block is appended to the existing text result
-(`apps/mcp/src/tools/notes/write.js`, `apps/mcp/src/graph/afterWrite.js`).
+After a plain `write_note` commits, the sections it changed seed
+`suggestLinks`, and the block is appended to the write's existing text result
+(`apps/mcp/src/tools/notes/write.js`, `apps/mcp/src/graph/afterWrite.js`,
+`apps/mcp/src/graph/suggest.js`, `apps/mcp/src/graph/changes.js`). This is
+owner decision O3 as built. Everything below it is a controller ruling,
+reversible at review, unless it says otherwise.
 
-**No `structuredContent` (fix round 1, reversing the OPEN-43
+**Only the plain `write_note` call gets suggestions (O3; controller ruling
+OPEN-37).** `toolWriteNote` is also called by comments, forms and `remember`,
+so the switch is opt-in: only the plain `write_note` branch of
+`apps/mcp/src/tools/dispatch.js` passes `linkSuggestions: true`, and every
+other caller is off without having to remember a flag. An opt-out would let a
+future caller return suggestions against O3. No argument turns them on or off.
+
+**What a write is diffed against, and what is skipped.** The pre-write body is
+the merged collaborative document before this write, else the stored body,
+else an empty create (OPEN-38); the committed text is the merged text when a
+merge happened. `detectChangedSections` diffs them line by line (Myers, capped
+at `MAX_EDIT_DISTANCE` 1,000 edits and `MAX_INPUT_CHARS` 256 Ki characters;
+past either cap it takes a limited pass over the new text) and returns at most
+two sections, most changed prose first. Frontmatter, code, and edits that only
+add, remove or retarget link syntax are not seeds, so a follow-up write that
+only adds the suggested links is `skipped` and cannot loop (AGENT-LINKS 13.7).
+An encrypted note or a drawing is `skipped` before any retrieval: its
+plaintext is never a query (OPEN-39).
+
+**The block.** `{ status, basedOnEtag, candidates: [{ path, section, signals,
+excerpt }] }`, rendered as plain lines: one guidance line with the AGENT-LINKS
+13.2 substance, then one line per candidate (OPEN-44). At most three
+candidates (`MAX_CANDIDATES`), deduplicated across sections; the source and
+every target the committed text already links to are excluded, and linked
+targets are dropped before the result limit so a heavily linked note still
+gets text matches. Signals are `links_here`, `shares_target`, `shares_url` and
+`text_match` (OPEN-42). The rendered block is at most 4 KiB of UTF-8
+(`SUGGESTION_BYTE_CAP`, guidance included): sections and excerpts are cut
+first, then the candidate whose line cannot fit is dropped. Every
+candidate-controlled string is note data and is escaped of quotes,
+backslashes, control and format characters and line separators, so it can
+neither end its quotation nor start a line. The statuses:
+
+- `ready`: candidates, and every retrieval complete.
+- `partial`: candidates, but some retrieval was labelled possibly incomplete,
+  or the deadline or budget cut a later section.
+- `none`: no candidates, and at least one retrieval completed.
+- `skipped`: no candidates and no retrieval completed, or nothing to diff, an
+  encrypted note, a drawing, a spent pool or a passed deadline.
+- `unavailable`: an exception inside the suggestion step. Store and search
+  faults are not exceptions here (retrieval never throws), so they surface as
+  `partial` or `skipped`.
+
+On a best-effort store graph health is always possibly incomplete, so answers
+there are only `partial` or `skipped`.
+
+**The linking guidance travels with the tools, not only with candidates**
+(Task 24; controller ruling OPEN-45). The AGENT-LINKS 13.2 substance is in the
+connect-time instructions and in the `write_note` description, which every
+client delivers; `orient` does not carry it. Both say a write "may" end with
+suggestions, because `remember` and a budget of 8 or less return no block, and
+an ineligible edit returns `skipped`.
+
+**No `structuredContent` (Task 23 fix round 1, reversing the OPEN-43
 recommendation).** The block is carried in the text block only, for every
 protocol revision. Some clients pass only `structuredContent` to the model
 when a result has one, which would hide the write's own lines (visibility,
 share, form and status) behind the suggestions, and the 2025-06-18 revision
 asks a tool that returns structured content to also return it serialized as
 text. **Reversible** once the target clients are confirmed to keep `content`
-beside `structuredContent`; the block's shape already exists
-(`suggestLinks`' `{ status, basedOnEtag, candidates }`). Test:
-`writeSuggestions.test.mjs`, "tools/call write_note: the block is in the text
-for every revision, never structuredContent".
+beside `structuredContent`; the block's shape already exists.
 
 **The per-write budget model.** Suggestions and the write's graph update
-spend one enrichment pool: `WRITE_ENRICH_SUBREQUEST_BUDGET` per write, or,
-through the route, one pool for the whole invocation, so a legacy JSON-RPC
-batch shares a single ceiling (the agent loop makes no writes; its writes
-are proposals). Every write keeps `GRAPH_FLOOR` (8, the Task 8 default) of
-the pool for its graph update until that update has run, and the MCP handler
-announces a batch's calls in advance, so each one's floor is held before it
-starts; suggestions take only what exceeds every held floor, with no other
-cap. Consequences:
+spend one enrichment pool, suggestions first and the graph update on what
+remains: `WRITE_ENRICH_SUBREQUEST_BUDGET` per write, or, through the route,
+one pool for the whole invocation, so a legacy JSON-RPC batch shares a single
+ceiling (the agent loop makes no writes; its writes are proposals). Every
+write keeps `GRAPH_FLOOR` (8, the Task 8 default) of the pool for its graph
+update until that update has run, and the MCP handler announces a batch's
+calls in advance, so each one's floor is held before it starts; suggestions
+take only what exceeds every held floor, with no other cap. Consequences:
 
 - A configured budget at or under one floor (8, the default where the
   variable is unset, as on a self-host) runs no suggestions and shows no
   block: a configuration, not a result, and the write's text is unchanged.
-  `skipped` is kept for runtime causes (no eligible change, a pool spent by
-  earlier writes, the deadline). Budget 0 turns the graph off too.
+  `skipped` is kept for runtime causes. Budget 0 turns the graph off too, so
+  it remains the kill switch for all post-commit work. The hosted
+  `apps/mcp/wrangler.toml` sets 80 for production and staging.
 - A batch's later writes still project: earlier suggestions cannot take
-  their floors. Ceiling: the handler counts every `tools/call` in the batch,
-  reads included, so a mixed batch holds back more than it needs.
-- Tests: "a budget with nothing above the graph floor (configuration) omits
-  the block", "the shared pool keeps a graph floor for every write of a batch
-  still to project", "a legacy JSON-RPC batch of six writes at budget 80" and
+  their floors. A call that makes no write gives up its announced floor once
+  it has been handled (Task 23 batch count fix), so reads earlier in a batch
+  do not starve a later write's suggestions. **Ceiling:** calls not yet
+  handled still hold a floor whether or not they will write, so a mixed
+  batch holds back more than it needs until its reads have run; and a
+  sequence of writes that nobody announced in advance could still starve a
+  graph update, which reconciliation then repairs.
+
+**The 250 ms deadline** (`SUGGEST_DEADLINE_MS`, AGENT-LINKS 13.5) starts before
+the diff, so it covers the structural analysis too. After it, no store op
+starts: the budget refuses every take, and a proxy over the store (forked
+logical-delete views included) answers `get`, `list` and `head` with null
+without reaching the store. A retrieval the deadline reached is dropped whole,
+because how far it got depends on timing and, for a strict caller, on hidden
+entries. Ops started before the deadline are awaited, so the step can end one
+read's latency past 250 ms. A `Promise.race` would return earlier but leave
+the read running on the invocation's subrequest counter. That overrun is
+accepted.
+
+**Who may be offered as a link target (controller ruling OPEN-40).** The
+source note's visibility *after* the write decides, since the write may just
+have changed it: a private source may be offered any candidate the caller can
+see; a team source only candidates every team reader can see; a group-scoped
+source only candidates a reader holding just that group can see; anything not
+provably as broad is withheld (AGENT-LINKS 13.7). The rule is applied inside
+retrieval's `canSeeKey`, so a withheld note never takes a ranked slot.
+**Owner decision open: share links.** A team note with an active unlisted
+share link still gets team candidates, whose paths an agent could then write
+into a link-readable page. Share state is not in the bucket: it is a
+control-plane call (`store.links.list()`), outside the store budget, answered
+only for the owner, listing folder links that cover whole subtrees, and absent
+on deployments without a control plane. Closing it needs the owner to decide
+whether to spend that call per write, what non-owners get, and whether folder
+links count. Until then it is a `lean:` comment at the audience rule in
+`afterWrite.js`.
+
+**What a strict caller can learn from the block.** A strict caller is any
+scope but exactly `private`. Suggestions use the same retrieval as
+`related_notes` (one call per changed section), so they carry the same
+accepted residuals (OPEN-27, OPEN-33), now per section. None reveals a path, a
+count, content or a ranking of a hidden note.
+
+- **Graph reasons and text hits, all or none, per section.** Each section's
+  retrieval can withhold its graph families, its text hits, or both, and the
+  block's status steps from `ready` to `partial` (or `none` to `skipped`) with
+  it. The second section's budget is what the first left, which can vary with
+  hidden posting pages, so the allowed outcomes are the per-section
+  combinations of those two bits. Tests: `graphSuggest.test.mjs`, "privacy
+  invariance: for a team caller hidden notes change the block only by the
+  documented withheld bits, single and multi-shard, budgets 0..80";
+  `graphRetrieve.test.mjs`, "text hits are all or none for a strict caller;
+  the owner keeps them on an index larger than the budget" and "multi-shard
+  privacy invariance: hidden notes change only the withheld text bit and the
+  withheld graph bit, budgets 0..80".
+- **A move is active somewhere.** Candidates under an active move's source or
+  destination are withheld and the answer is labelled, and unreadable move
+  state withholds every section. Move jobs are read once per suggestion call,
+  outside the budget but inside the deadline. Tests: `graphSuggest.test.mjs`,
+  "unreadable move state withholds every section's candidates, read once" and
+  "move jobs are read once per call, not once per section: 50 finished moves
+  cost two sections what they cost one"; `graphRetrieve.test.mjs`, "a note
+  under an active move's source or destination is withheld, and the answer is
+  labelled".
+- **Freshness**, as for `related_notes`: graph health and index freshness
+  are workspace-level, and a hidden note's edit can flip them.
+
+Time taken also varies with each of these.
+
+**Subrequests per write (DELIVERY 16.3).** Raw store ops for one two-section
+`write_note` update, through the worker test harness over a memory bucket with
+logical delete (41 notes, ready graph, converged index), deferred work
+included (Task 23 fix round 1):
+
+| Finished moves | Budget 0 | Budget 8 | Budget 80 |
+|---|---|---|---|
+| 0 | 44 | 49 (no block) | 84 (`ready`) |
+| 50 | 95 | 100 (no block) | 186 (`ready`) |
+
+Cloudflare's limits page (read 2026-10-07) gives 50 subrequests per invocation
+on Workers Free and 10,000 by default on Workers Paid, and counts R2 binding
+calls as subrequests; `apps/mcp/wrangler.toml` records that the hosted
+deployment is on Workers Paid.
+
+- **Free tier (50).** Suggestions do not run there at the default budget of 8,
+  and the write with its graph update is already at 49 with no move history.
+  An earlier S3 measurement put a plain write alone at 26 to 60 subrequests.
+  At the hosted budget of 80 a write is at 84, past 50. **Move history is the risk** (owner list, pre-existing): a
+  finished move's marker is a logical-delete tombstone nothing removes, and
+  the write already pays about one read per finished move (44 to 95 over 50
+  moves at budget 0), so on these figures a free-tier write passes 50 after
+  about six finished moves at budget 0 and two at the default 8, with or
+  without suggestions. It needs a physical
+  delete or tombstone cleanup for `.context/moves/`.
+- **Hosted (10,000).** 84 ops at budget 80, growing about 2 per finished move
+  (one for the write, one for suggestions; it was 3 before move jobs were read
+  once per call), so on a straight-line extrapolation from these two points a
+  write reaches 10,000 at about 4,900 finished moves.
+- **Not measured:** real R2 or S3, real subrequest counts in a deployed
+  Worker, and the hosted ceiling in a live run. These figures are store ops
+  in tests, which equal subrequests only if every op is one call.
+
+**What reversing it costs.** Opting out instead of in returns suggestions to
+`remember`, comments or forms, against O3. Dropping the audience rule offers a
+private note's path to a team note's writer. Taking suggestions before the
+graph floors starves later writes' graph updates in a batch. Letting ops start
+after the deadline lets a slow store hold the write's response. Rendering
+candidate text unescaped lets a note pose as tool output. Removing the feature
+entirely loses nothing a caller cannot rebuild with searches after a write.
+
+**The tests that fail if it is reversed.** All under `apps/mcp/test/`:
+
+- Which callers: `writeSuggestions.test.mjs`, "through dispatch: plain
+  write_note gets the block; comments and forms never do and never search";
+  `remember.test.mjs`, "remember never returns link suggestions or searches
+  for them, on either path, while write_note does".
+- The write is unaffected: `writeSuggestions.test.mjs`, "a plain write gets
+  the block appended; text, note, audit row and index are otherwise today's",
+  "kill switch: budget 0 is today's result exactly, with no graph or search
+  op", "a search store that throws: the write is today's and the block says
+  so without failing it" and "a throw inside the suggestion step itself is
+  unavailable, never a failed write".
+- Changed sections: `graphChanges.test.mjs`, "duplicate headings are told
+  apart by position", "an edit under a nested heading maps to that heading's
+  interval", "a pure link-wrap edit is skipped (AGENT-LINKS 13.3 step 6)",
+  "code is not a seed: fenced, inline, and headings inside fences", "an input
+  over the cap is a limited new pass within the cap" and "the edit-distance
+  cap: exact under it, a limited pass over it, fast either way";
+  `writeSuggestions.test.mjs`, "a link-only follow-up write is skipped, and
+  its graph facts still update", "a collaborative merged write diffs the
+  merged text: a link another edit added is not suggested again" and "an
+  encrypted note is skipped without any retrieval".
+- The block: `graphSuggest.test.mjs`, "a ready block: text matches by
+  section, with excerpt, signals and the etag; source and linked target
+  excluded", "a note with more outgoing links than the result limit still
+  gets its text match", "signals: graph reasons pass through, related_text is
+  text_match, nearby and linked_from_here never appear", "deduplicated across
+  sections, attributed to the first, at most three", "rendered block stays
+  within 4 KiB of UTF-8 with three long multibyte excerpts and headings;
+  untrusted text is escaped", "format characters (\p{Cf}) in untrusted text
+  are escaped", "none: a complete search that finds nothing worth returning"
+  and "a throwing search store does not throw and returns no candidates
+  (retrieveCandidates never throws)".
+- Guidance: `linkGuidance.test.mjs`, "initialize instructions carry the
+  linking guidance" and "the listed write_note description carries the
+  linking guidance".
+- Text only: `writeSuggestions.test.mjs`, "tools/call write_note: the block is
+  in the text for every revision, never structuredContent".
+- Budget: `writeSuggestions.test.mjs`, "a budget with nothing above the graph
+  floor (configuration) omits the block; the write is today's exactly",
   "post-commit ops (suggestions plus graph) never exceed
-  WRITE_ENRICH_SUBREQUEST_BUDGET".
-
-**Move jobs are read once per suggestion call**, not once per changed
-section, and passed to each section's retrieval (`retrieveCandidates`'
-`moveJobs`; unreadable state still withholds everything). A write therefore
-pays one unbudgeted read per historical move for its suggestions, beside the
-write's own. Test: `graphSuggest.test.mjs`, "move jobs are read once per
-call".
-
-**The 250 ms deadline can be overrun by one read.** No store op starts after
-the deadline (the budget and the store proxy both refuse), but an op started
-just before it is awaited, so the suggestion step can end one read's latency
-past 250 ms. A `Promise.race` would return earlier but leave the read running
-on the invocation's subrequest counter. That overrun is accepted.
+  WRITE_ENRICH_SUBREQUEST_BUDGET", "the shared pool keeps a graph floor for
+  every write of a batch still to project: six writes at 80 all project",
+  "suggestions get the pool minus every pending graph floor, with no fixed
+  cap", "one invocation's pool bounds every write in it together", "a legacy
+  JSON-RPC batch of six writes at budget 80: every note projects and every
+  write carries a block" and "a batch's reads stop reserving once handled:
+  nine read_note then one write_note at 80 still suggests";
+  `graphSuggest.test.mjs`, "budget.spent and the ops made never exceed the
+  budget, budgets 0..80".
+- Deadline: `graphSuggest.test.mjs`, "deadline: a clock that passes during
+  CPU work (no I/O in between) starts no further op", "deadline: a retrieval
+  the deadline reached is dropped whole, at every op it could pass after",
+  "deadline: no store op starts after the clock passes, at every op of a
+  crowded two-section write (snippet waves included)" and "deadline on a
+  logical-delete store (the gateway's): forked views are cut off too";
+  `writeSuggestions.test.mjs`, "deadline: once the injected clock passes it,
+  no further search op starts".
+- Audience: `graphSuggest.test.mjs`, "audience: a team source never gets a
+  private candidate, even for the owner; a private source does" and
+  "audience: a group source keeps team and same-group candidates, withholds
+  another group's and private ones"; `writeSuggestions.test.mjs`, "a team
+  note's write never suggests a private candidate; a private note's may" and
+  "the write's own visibility change decides the audience: team to private,
+  and private to team".
+- Strict-caller residuals: the tests named under "What a strict caller can
+  learn from the block" above.

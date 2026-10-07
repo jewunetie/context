@@ -11,7 +11,9 @@
  * reasons only: no counts, no health, no unresolved links (OPEN-35).
  */
 
+import { eligible as collaborationEligible, supported as collaborationSupported, readDocument as readCollaborationDocument } from "@context/collaboration";
 import { canSee } from "../privacy/engine.js";
+import { isEncryptedNote } from "../encryption.js";
 import { forwardPath, readForwarding } from "../forwarding.js";
 import { retrieveCandidates } from "../graph/retrieve.js";
 import { getVisibleMovedNote } from "../notes/visibleKeys.js";
@@ -32,7 +34,9 @@ export async function toolRelatedNotes(store, scope, rules, overrides, args) {
   let path = requested;
   const found = await getVisibleMovedNote(store, scope, rules, overrides, requested, probeWithLegacyFallback);
   let present = Boolean(found.object);
-  let obj = seen && present ? await getWithLegacyFallback(store, found.physicalPath) : null;
+  let physicalPath = found.physicalPath;
+  let logicalMove = found.logicalMove === true;
+  let obj = seen && present ? await getWithLegacyFallback(store, physicalPath) : null;
   if (seen && present && !obj) present = false;
   if (!seen || !present) {
     const forwarded = forwardPath(await readForwarding(store), requested);
@@ -43,6 +47,8 @@ export async function toolRelatedNotes(store, scope, rules, overrides, args) {
         if (landedObject) {
           present = true;
           path = forwarded;
+          physicalPath = landed.physicalPath;
+          logicalMove = landed.logicalMove === true;
           obj = landedObject;
         }
       }
@@ -51,7 +57,17 @@ export async function toolRelatedNotes(store, scope, rules, overrides, args) {
   if (!seen || !present || !obj) return toolError("not found");
   // The stored bytes, not decrypted: an encrypted seed gets backlinks only and
   // no text query (OPEN-32), which retrieve.js decides from the envelope.
-  const body = await obj.text();
+  let body = await obj.text();
+  // Otherwise the text read_note serves: a collaborative note's accepted text
+  // may be ahead of its Markdown. Unreadable state leaves the stored bytes,
+  // which can only make the answer staler, never wider.
+  if (!logicalMove && !isEncryptedNote(body) && collaborationSupported(store) && collaborationEligible(path, body)) {
+    try {
+      body = (await readCollaborationDocument(store, physicalPath)).text;
+    } catch {
+      // Stored bytes.
+    }
+  }
 
   // lean: limit clamped rather than refused by the schema, per the OPEN-34 ruling.
   const limit = Math.min(MAX_LIMIT, Math.max(1, Number.isInteger(args.limit) ? args.limit : SEARCH_RESULT_LIMIT));

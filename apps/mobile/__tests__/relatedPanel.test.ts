@@ -220,6 +220,10 @@ describe("the related panel", () => {
     await settle();
     expect(panel.find("related-incomplete")).not.toBeNull();
     expect(panel.find("related-empty")).toBeNull();
+    // The label covers many causes (graph not swept, index behind, a move in
+    // progress, the kill switch), so the notice names none (final review).
+    expect(panel.text()).toContain("This may be incomplete.");
+    expect(panel.text()).not.toMatch(/link index|has not finished/i);
     panel.unmount();
   });
 

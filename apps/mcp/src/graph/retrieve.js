@@ -126,6 +126,9 @@ export async function retrieveCandidates(store, { seed, intent, canSeeKey, isInd
   const limit = Number.isInteger(limits?.results) && limits.results > 0 ? limits.results : RESULT_LIMIT;
   const strict = scope !== "private";
   let incomplete = false;
+  // WRITE_ENRICH_SUBREQUEST_BUDGET=0 is the graph's kill switch: with the
+  // graph frozen, its postings are not served at all.
+  const graphOff = store.writeEnrichBudget === 0;
 
   // Move jobs first, fail closed: unreadable job state withholds every
   // candidate, and an active job labels the answer. Read on `store` itself,
@@ -158,7 +161,8 @@ export async function retrieveCandidates(store, { seed, intent, canSeeKey, isInd
     for (const p of docmap.paths) if (await see(p)) shown.add(p);
   } else incomplete = true;
   const catalog = docmap
-    ? { byName: indexByName([...shown]), paths: shown, partial: indexIsBehind(docmap.freshness) }
+    ? // During a move, a note under it is withheld from `shown`, so a link to it is unknown, not missing.
+      { byName: indexByName([...shown]), paths: shown, partial: indexIsBehind(docmap.freshness) || moving.length > 0 }
     : { byName: new Map() };
 
   // Lexical: one loose query. An encrypted seed has no words to ask with
@@ -185,18 +189,24 @@ export async function retrieveCandidates(store, { seed, intent, canSeeKey, isInd
   }
 
   let graph = { incoming: new Map(), outgoing: new Map(), sharedTargets: new Map(), sharedUrls: new Map(), unresolved: [] };
-  try {
-    graph = await graphNeighbors(store, budget, { path: seed.path, body: seed.body ?? "", catalog, canSeeKey: see, scope, limits });
-    if (!graph.complete || graph.health.possiblyIncomplete) incomplete = true;
-  } catch {
+  if (graphOff) {
     incomplete = true;
+  } else {
+    try {
+      graph = await graphNeighbors(store, budget, { path: seed.path, body: seed.body ?? "", catalog, canSeeKey: see, scope, limits });
+      if (!graph.complete || graph.health.possiblyIncomplete) incomplete = true;
+    } catch {
+      incomplete = true;
+    }
   }
 
   // Every candidate is checked again before it is ranked (each part already
-  // filtered; this is the merge's own guard).
+  // filtered; this is the merge's own guard), and must be in the visible
+  // docmap: postings outlive a move or delete until a sweep, so a graph
+  // candidate is only a note the index still lists (final review).
   const allowed = new Set();
   for (const p of new Set([...graph.outgoing.keys(), ...graph.incoming.keys(), ...graph.sharedTargets.keys(), ...graph.sharedUrls.keys(), ...hits.map((h) => notePathOf(h.key))])) {
-    if (p !== seed.path && (await see(p))) allowed.add(p);
+    if (p !== seed.path && shown.has(p) && (await see(p))) allowed.add(p);
   }
   // Merge by note path, every reason kept.
   const found = new Map();

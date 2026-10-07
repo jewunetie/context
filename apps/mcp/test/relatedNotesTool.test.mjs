@@ -25,6 +25,12 @@
  * Fix round 3:
  *   the round-2 sentinel gate put back                      2 (one active move plus 100, refresh racing), 3 in moveSentinel and graphRetrieve
  *   job read on the charged view (inside the budget)        1 (one active move plus 100)
+ *
+ * Phase 3 final review:
+ *   graph candidates not filtered by the visible docmap paths 1 (moves out of sight)
+ *   writeEnrichBudget 0 ignored by retrieval                1 (kill switch)
+ *   writeEnrichBudget 0 ignored by indexedReferrerKeys      1 (kill switch)
+ *   the seed read from stored bytes, not collaboration text 1 (read as read_note reads it)
  *   move_folder writing its marker before the sentinel      1 (sentinel before its job marker)
  *
  * RED: every test failed on "unknown tool: related_notes" before the tool existed.
@@ -43,6 +49,7 @@ import { moveJobKey, refreshMoveSentinel, writeMoveSentinel } from "../src/moves
 import { MOVE_SENTINEL_KEY } from "../src/moves/limits.js";
 import { withLogicalDelete } from "../src/store/logicalDelete.js";
 import { recordForwarding } from "../src/forwarding.js";
+import { readDocument, replaceText } from "@context/collaboration";
 import { CONTROL_PLANE_ORIGIN, GATEWAY_SECRET, createControlPlaneStub } from "./controlPlaneStub.mjs";
 import { memoryBucket } from "./store/fixtures.mjs";
 import { createWorkerCtx } from "./workerCtx.mjs";
@@ -388,6 +395,81 @@ test("a logical folder move writes the sentinel before its job marker", async ()
     const marker = puts.findIndex((op) => op.endsWith(".json"));
     assert.ok(marker > 0, puts.join("\n"));
     assert.ok(puts.slice(0, marker).includes(`put:${MOVE_SENTINEL_KEY}`), puts.join("\n"));
+  } finally {
+    env.REL_BUCKET = plain;
+  }
+});
+
+// Phase 3 final review fixes.
+test("after a note moves out of sight, related_notes never shows its old path", async () => {
+  const plain = env.REL_BUCKET;
+  try {
+    env.REL_BUCKET = await world(BASE);
+    assert.ok((await related(TEAM, { path: SEED })).text.includes("1-projects/beta.md"), "non-vacuous: listed before the move");
+    const moved = (await rpc(OWNER, "tools/call", { name: "move_note", arguments: { source: "1-projects/beta.md", destination: "private/beta.md" } })).result;
+    assert.notEqual(moved.isError, true, moved.content[0].text);
+    assert.equal((await rpc(TEAM, "tools/call", { name: "read_note", arguments: { path: "1-projects/beta.md" } })).result.content[0].text, "not found");
+    const after = await related(TEAM, { path: SEED });
+    assert.ok(!after.text.includes("beta.md"), after.text);
+    assert.ok(after.text.includes("1-projects/alpha.md"), after.text);
+  } finally {
+    env.REL_BUCKET = plain;
+  }
+});
+
+test("with the kill switch on, a move makes no graph op and related_notes serves no graph, labelled", async () => {
+  const plain = env.REL_BUCKET;
+  try {
+    const graphOps = async (enrich) => {
+      if (enrich === undefined) delete env.WRITE_ENRICH_SUBREQUEST_BUDGET;
+      else env.WRITE_ENRICH_SUBREQUEST_BUDGET = enrich;
+      const rec = recording(await world(BASE));
+      env.REL_BUCKET = rec;
+      const moved = (await rpc(OWNER, "tools/call", { name: "move_note", arguments: { source: "1-projects/alpha.md", destination: "1-projects/sub/alpha.md" } })).result;
+      assert.notEqual(moved.isError, true, moved.content[0].text);
+      const moveOps = rec.log.filter((op) => op.includes(".context/graph")).length;
+      rec.log.length = 0;
+      const answer = await related(TEAM, { path: SEED });
+      return { moveOps, relatedOps: rec.log.filter((op) => op.includes(".context/graph")).length, answer };
+    };
+    const on = await graphOps(undefined);
+    assert.ok(on.moveOps > 0 && on.relatedOps > 0, "non-vacuous: the graph is read with the switch off");
+    assert.ok(on.answer.text.includes("links_here"), on.answer.text);
+    const off = await graphOps("0");
+    assert.deepEqual([off.moveOps, off.relatedOps], [0, 0]);
+    assert.ok(!/links_here|linked_from_here|shares_/.test(off.answer.text), off.answer.text);
+    assert.ok(off.answer.text.includes("related_text"), off.answer.text);
+    assert.equal(off.answer.text.split("\n").at(-1), "may be incomplete");
+  } finally {
+    delete env.WRITE_ENRICH_SUBREQUEST_BUDGET;
+    env.REL_BUCKET = plain;
+  }
+});
+
+test("the seed is read as read_note reads it: accepted collaborative text the Markdown has not caught up with", async () => {
+  const plain = env.REL_BUCKET;
+  try {
+    const raw = await world({ ...BASE, "1-projects/gamma.md": "# Gamma\n\nzzz unrelated words only\n" });
+    raw.capabilities = { conditionalWrite: true, conditionalCreate: true, conditionalDelete: true };
+    const doc = await readDocument(raw, SEED);
+    const { put } = raw;
+    let failOnce = true;
+    raw.put = async (key, value, options) => {
+      if (key === SEED && failOnce) {
+        failOnce = false;
+        throw new Error("transient provider failure");
+      }
+      return put(key, value, options);
+    };
+    await assert.rejects(replaceText(raw, SEED, { documentId: doc.documentId, expectedEtag: doc.etag, text: `${doc.text}\nNow also [[gamma]].\n` }));
+    raw.put = put;
+    assert.doesNotMatch(raw.objects.get(SEED).body, /gamma/, "fixture: the stored body lacks the link");
+    env.REL_BUCKET = raw;
+    // related_notes first: read_note's collaboration read may finish the
+    // pending edit and write the Markdown, which would hide the difference.
+    const { text } = await related(OWNER, { path: SEED });
+    assert.ok(text.split("\n").some((l) => l.startsWith("1-projects/gamma.md (linked_from_here")), text);
+    assert.match((await rpc(OWNER, "tools/call", { name: "read_note", arguments: { path: SEED } })).result.content[0].text, /\[\[gamma\]\]/);
   } finally {
     env.REL_BUCKET = plain;
   }

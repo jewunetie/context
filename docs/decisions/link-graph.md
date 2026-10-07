@@ -66,7 +66,19 @@ a reviewer.
   logical-delete store the wrapper's extra physical calls count against that
   budget too. Setting the budget to 0 is the graph's kill switch (Phase 2 final
   review ruling): the write hook spends nothing and search maintenance skips
-  reconciliation and garbage collection, so no graph store op runs.
+  reconciliation and garbage collection, so no graph store op runs. Readers
+  honour it too (Phase 3 final review), since the graph it leaves is frozen:
+  moves never trust postings (`indexedReferrerKeys` returns null and the
+  move scans, with zero graph ops), and the gateway's `related_notes` skips
+  the graph entirely, returning text hits only, labelled possibly
+  incomplete. The console's panel calls the same `retrieveCandidates`
+  through Convex, whose environment has no such switch: it reads the
+  graph whatever the gateway's budget says, and only the docmap filter
+  above keeps its candidates to notes the index lists. The tests are
+  `graphRetrieve.test.mjs` "the kill switch (writeEnrichBudget 0) skips the
+  graph: no graph op, labelled possibly incomplete" and
+  `relatedNotesTool.test.mjs` "with the kill switch on, a move makes no
+  graph op and related_notes serves no graph, labelled".
 - **Moves and archive are left to reconciliation** (controller ruling
   OPEN-20). They go through `recordChange`, which has no body, so the write
   hook does not run for them. The same holds for referrers that a move
@@ -365,8 +377,19 @@ relate to it, and why. It is a convenience, not a new capability (arch 14):
 
 - **Read-only, and nothing else changes.** `readOnlyHint: true`, so read-only
   sessions get it; it is in neither `PRIVATE_TIER_ONLY_TOOLS` nor
-  `EXISTENCE_MASKED_TOOLS`; `search` and `fetch` are untouched. Everything it
-  returns is reachable through `read_note`, `list_notes` and `search_notes`.
+  `EXISTENCE_MASKED_TOOLS`; `search` and `fetch` are untouched. It returns
+  only paths the caller may see that the search index's docmap still lists
+  (a graph candidate outside the visible docmap paths is dropped, because
+  postings outlive a move or delete until a sweep) and that are not under an
+  active move. Those are the notes `list_notes` and `search_notes` show,
+  except while the index is behind: a note moved or deleted since the
+  index's last pass can still be listed until it catches up (the answer is
+  then labelled possibly incomplete whenever a text query runs, from
+  search's own incomplete-index report; an encrypted seed asks none). The
+  test is `graphRetrieve.test.mjs`
+  "a graph candidate that is not in the visible docmap paths is never
+  returned" and `relatedNotesTool.test.mjs` "after a note moves out of
+  sight, related_notes never shows its old path".
 - **A hidden note and a missing one answer the same.** The seed resolves
   exactly as `read_note` resolves a path, move overlay and forwarding
   included, and both refusals are `not found` at the same raw op count. The

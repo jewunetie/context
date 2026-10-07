@@ -10,8 +10,7 @@
  *
  * Idempotence is not a property of Porter2, so it is not asserted.
  *
- * TODO: add Snowball's full published vocabulary (voc.txt / output.txt from
- * snowballstem/snowball-data) as a fixture once the owner approves downloading it.
+ * Snowball's full published vocabulary is checked in porter2Snowball.test.mjs.
  *
  * ## Sabotage record
  *

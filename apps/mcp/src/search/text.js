@@ -15,6 +15,13 @@
 
 import { porter2 } from "./porter2.js";
 
+/**
+ * The tokenizer version used when a caller names none: the gateway's default
+ * and the app's local search read this one constant, so flipping it (Task 39,
+ * owner-approved) flips both together.
+ */
+export const DEFAULT_TOKENIZER = 1;
+
 /** Lowercased runs of Unicode letters/digits, length ≥ 2. */
 export function tokenize(text) {
   if (typeof text !== "string" || !text) return [];
@@ -28,7 +35,7 @@ export function tokenize(text) {
  * version: 1 is tokenize + stem (today's index), 2 is `tokenizeV2`. Any other
  * value throws, so a version this code does not know is never read as 1.
  */
-export function termsOf(text, tokenizer = 1) {
+export function termsOf(text, tokenizer = DEFAULT_TOKENIZER) {
   if (tokenizer === 1) return tokenize(text).map(stem);
   if (tokenizer === 2) return tokenizeV2(text);
   throw new RangeError(`unknown tokenizer version ${tokenizer}`);

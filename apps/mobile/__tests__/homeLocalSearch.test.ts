@@ -9,8 +9,8 @@
  */
 
 import { describe, expect, test } from "@jest/globals";
-import { termsOf } from "../../mcp/src/search/text.js";
-import { DEFAULT_TOKENIZER, localTerms, searchLocalNotes, snippetFor } from "../features/home/localSearch";
+import { DEFAULT_TOKENIZER as GATEWAY_DEFAULT, termsOf } from "../../mcp/src/search/text.js";
+import { localTerms, searchLocalNotes, snippetFor } from "../features/home/localSearch";
 
 const NOTES = {
   "01-context.md": "---\ntitle: wth is this\n---\n# wth is this\n\ncontext is a notes app for you, your team, claude.\n",
@@ -77,12 +77,14 @@ describe("snippetFor", () => {
  * tokenizer together" holds by construction; these tests pin it.
  *
  * Sabotage record (each guard broken once, named test confirmed red, restored):
- *  - `DEFAULT_TOKENIZER` set to 2: "the app default is tokenizer 1", "app terms
+ *  - `DEFAULT_TOKENIZER` set to 2: "the shared default is tokenizer 1", "app terms
  *    equal the gateway's terms" and the `private` snippet case failed.
  *  - `localTerms` pinned to tokenizer 1: "app terms equal the gateway's terms"
  *    failed, and so did the Chinese, identifier and snippet tokenizer 2 searches.
  *  - matching on the whole query string instead of its terms: the
  *    tokenizer 2 stem, identifier and snippet tests failed.
+ *  - app given its own literal 2 while text.js stays 1: "app terms equal the
+ *    gateway's terms" (the no-version check) failed.
  *  There is no second copy of the rules to drift (the app imports `termsOf`),
  *  so "one rule changed in one copy" is the second sabotage.
  */
@@ -97,16 +99,18 @@ const FIXTURES = [
 ];
 
 describe("parity with the gateway tokenizer", () => {
-  test("the app default is tokenizer 1", () => {
-    expect(DEFAULT_TOKENIZER).toBe(1);
+  test("the shared default is tokenizer 1, and the app reads it", () => {
+    expect(GATEWAY_DEFAULT).toBe(1);
   });
 
   test("app terms equal the gateway's terms, term for term, for tokenizers 1 and 2", () => {
     for (const version of [1, 2]) {
       for (const text of FIXTURES) expect(localTerms(text, version)).toEqual(termsOf(text, version));
     }
-    for (const text of FIXTURES) expect(localTerms(text)).toEqual(termsOf(text, 1));
+    // No version argument on either side: both read the one shared default.
+    for (const text of FIXTURES) expect(localTerms(text)).toEqual(termsOf(text));
   });
+
 });
 
 describe("searchLocalNotes with the default tokenizer", () => {

@@ -1,24 +1,32 @@
 /**
  * Porter2 against Snowball's full published English vocabulary (OPEN-47).
  *
- * Fixtures: test/fixtures/snowball-english/{voc,output}.txt, copied unmodified (last change to english/voc.txt: commit ca1919d3, 2025-10-28)
- * from https://github.com/snowballstem/snowball-data (english/), BSD-3-Clause,
- * notice in test/fixtures/snowball-english/COPYING. Line i of output.txt is the
- * stem of line i of voc.txt.
+ * Fixtures: test/fixtures/snowball-english/, a lossless split of snowball-data
+ * english/voc.txt and output.txt (BSD-3-Clause; source URLs in README.md,
+ * notice in COPYING). voc/NAME.txt and output/NAME.txt pair line for line.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { porter2 } from "../src/search/porter2.js";
 
-const read = (name) =>
-  readFileSync(new URL(`fixtures/snowball-english/${name}`, import.meta.url), "utf8").trimEnd().split("\n");
+const dir = new URL("fixtures/snowball-english/", import.meta.url);
+const read = (path) => readFileSync(new URL(path, dir), "utf8").trimEnd().split("\n");
 
-test("porter2 matches Snowball output.txt for every word in voc.txt", () => {
-  const words = read("voc.txt");
-  const stems = read("output.txt");
-  assert.equal(words.length, stems.length);
-  assert.ok(words.length > 40000);
+test("porter2 matches Snowball output for every word in the vocabulary", () => {
+  const names = readdirSync(new URL("voc/", dir)).sort();
+  assert.deepEqual(readdirSync(new URL("output/", dir)).sort(), names);
+  const words = [];
+  const stems = [];
+  for (const name of names) {
+    const w = read(`voc/${name}`);
+    const s = read(`output/${name}`);
+    assert.equal(w.length, s.length, name);
+    words.push(...w);
+    stems.push(...s);
+  }
+  assert.equal(words.length, 42649);
+  assert.equal(new Set(words).size, words.length, "a word appears twice");
   const failures = [];
   words.forEach((w, i) => {
     const got = porter2(w);

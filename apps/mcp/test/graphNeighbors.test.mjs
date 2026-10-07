@@ -26,6 +26,7 @@
  *   limits.expand taken as given                                          1
  *   shared loop walks on after the budget is gone                         1
  *   "Private", true or undefined scope treated as the owner               1 (incomplete chain)
+ *   seed guard outside a catch (fix round 2)                              1 (throwing canSeeKey)
  *
  * RED: the file failed to load on the missing module before neighbors.js existed.
  */
@@ -377,4 +378,13 @@ test("the shared loop stops once the budget is gone", async () => {
   const r = await neighbours(notes, { store, budget });
   assert.equal(r.complete, false);
   assert.ok(takes <= 8 + 2, `${takes} takes`);
+});
+
+test("a canSeeKey that throws on the seed is treated as not visible: the empty answer, no throw", async () => {
+  const notes = { [SEED]: "[[t/target]]", "t/target.md": "" };
+  const store = await world(notes);
+  const canSeeKey = (p) => { if (p === SEED) throw new Error("boom"); return true; };
+  const catalog = { byName: indexByName(Object.keys(notes)), paths: new Set(Object.keys(notes)) };
+  const r = await graphNeighbors(store, big(), { path: SEED, body: notes[SEED], catalog, canSeeKey, scope: "workspace" });
+  assert.deepEqual([r.outgoing.size, r.incoming.size, r.unresolved.length, r.complete, r.health.state], [0, 0, 0, false, "unavailable"]);
 });

@@ -48,7 +48,8 @@ const baseName = (path) => path.slice(path.lastIndexOf("/") + 1).replace(/\.md$/
  * An encrypted body yields incoming only (OPEN-32, arch 7.6).
  */
 export async function graphNeighbors(store, budget, { path, body, catalog, canSeeKey, scope, limits }) {
-  if (!(await canSeeKey(path))) {
+  // A throwing canSeeKey counts as not visible (the never-throws contract).
+  if (!(await Promise.resolve().then(() => canSeeKey(path)).catch(() => false))) {
     return { incoming: new Map(), outgoing: new Map(), sharedTargets: new Map(), sharedUrls: new Map(), unresolved: [], complete: false, health: unavailableHealth(store) };
   }
   const outgoing = new Map();

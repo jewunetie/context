@@ -56,6 +56,7 @@ import { loadCensus } from "../src/search/d1/backfill.js";
 import { createSearchBudget, defaultIsIndexable } from "../src/search/maintain.js";
 import { isPlumbing } from "../src/privacy/engine.js";
 import { writerFor } from "../src/search/shards/revisions.js";
+import { syncShardedIndex } from "../src/search/shards.js";
 import { memoryBucket } from "./store/fixtures.mjs";
 
 const TOKENIZER_2 = { tokenizer: 2, chunk: null };
@@ -311,4 +312,19 @@ test("segmenter gate: a tokenizer-2 store without a segmenter reads and writes o
   const { store } = bucketWith({ v3: v4Text(), format: TOKENIZER_2 });
   assert.equal((await loadIndexManifest(store, createSearchBudget(10), 0)).layout, V3_LAYOUT);
   assert.equal(writerFor(store).v3, true);
+});
+
+test("segmenter gate: a real sync pass with the self-test failing writes no v3 key", async () => {
+  const run = async () => {
+    const bucket = memoryBucket();
+    for (let i = 0; i < 3; i += 1) await bucket.put(`notes/n${i}.md`, `# Note ${i}\n\n数据库迁移计划已经确认 item${i}\n`);
+    bucket.searchIndexFormat = TOKENIZER_2;
+    await syncShardedIndex(bucket, { budget: 10_000 });
+    return [...bucket.objects.keys()];
+  };
+  const without = await withoutSegmenter(run);
+  assert.ok(without.includes(MANIFEST_KEY), "v2 is built");
+  assert.deepEqual(without.filter((key) => key.startsWith(".context/search/v3/")), []);
+  // Control: with the segmenter the same pass writes v3 keys.
+  assert.ok((await run()).some((key) => key.startsWith(".context/search/v3/")));
 });

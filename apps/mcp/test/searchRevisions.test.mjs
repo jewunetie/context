@@ -482,27 +482,53 @@ test("a chunked format indexes the chunks chunkNote returns for the format", asy
 
 // -- one log line per pass (amendment e) -----------------------------------------
 
-test("the resolved format is logged once per v3 pass, with no note content", async () => {
+async function formatLines(run) {
   const lines = [];
   const original = console.log;
   console.log = (line) => lines.push(String(line));
   try {
-    const bucket = conditionalBucket();
-    await seedNotes(bucket, 3);
-    await sync(bucket);
-    assert.deepEqual(lines, [], "the default format logs nothing new");
-    bucket.searchIndexFormat = TOKENIZER_2;
-    await sync(bucket);
+    await run();
   } finally {
     console.log = original;
   }
+  return lines.filter((line) => line.includes("search-index-format"));
+}
+
+test("the resolved format is logged once per v3 pass, with counts and no note content", async () => {
+  const bucket = conditionalBucket();
+  await seedNotes(bucket, 3);
+  assert.deepEqual(await formatLines(() => sync(bucket)), [], "the default format logs nothing new");
+  bucket.searchIndexFormat = TOKENIZER_2;
+  const lines = await formatLines(() => sync(bucket));
   assert.equal(lines.length, 1);
   const line = JSON.parse(lines[0]);
   assert.equal(line.event, "search-index-format");
   assert.equal(line.namespace, "v3");
   assert.equal(line.tokenizer, 2);
   assert.equal(line.chunk, null);
+  assert.equal(typeof line.built, "boolean");
+  assert.equal(typeof line.pending, "number");
   assert.equal(lines[0].includes("notes/"), false);
+});
+
+test("the v3 log line reports built and pending: pending while building, built once served", async () => {
+  const bucket = conditionalBucket();
+  await seedNotes(bucket, 60);
+  bucket.searchIndexFormat = TOKENIZER_2;
+  const building = [];
+  for (let pass = 0; pass < 40; pass += 1) {
+    const lines = await formatLines(() => sync(bucket, { backfillOps: 20 }));
+    assert.equal(lines.length, 1);
+    building.push(JSON.parse(lines[0]));
+    if (building.at(-1).built) break;
+  }
+  assert.equal(building[0].built, false);
+  assert.ok(building[0].pending > 0, "the first limited pass leaves notes pending");
+  assert.equal(building.at(-1).built, true);
+  assert.equal(building.at(-1).pending, 0);
+  // Once served, the line keeps saying built.
+  const after = JSON.parse((await formatLines(() => sync(bucket)))[0]);
+  assert.equal(after.built, true);
 });
 
 // -- v2 stays current until v3 is served (fix round 1) ---------------------------

@@ -103,6 +103,7 @@ jobs:
         run: |
           node scripts/check-secrets-allowlist.mjs --self-test
           node --test scripts/staging-config.test.mjs
+          node --test scripts/staging-search-check.test.mjs
           node scripts/check-secrets-allowlist.mjs
           node scripts/check-no-identifiers.mjs --self-test
           node scripts/check-no-identifiers.mjs

@@ -142,13 +142,16 @@ try {
     log: quiet,
   });
   assert.ok(written.ok, "the segmenter check note was not written");
+  const searchFor = (query) => async () => {
+    const lines = [];
+    await commands.runTool({ name: "search-notes", flags: { query }, endpoint: ENDPOINT, cwd: home, log: (line) => lines.push(String(line)) });
+    return lines.join("\n");
+  };
   const segmented = await segmentsChinese({
     path: segmenterNotePath,
-    search: async () => {
-      const lines = [];
-      await commands.runTool({ name: "search-notes", flags: { query: "迁移" }, endpoint: ENDPOINT, cwd: home, log: (line) => lines.push(String(line)) });
-      return lines.join("\n");
-    },
+    search: searchFor("迁移"),
+    // Not a term or a prefix under any tokenizer: a hit means the literal scan answered.
+    control: searchFor("qmarker"),
   });
   assert.ok(segmented.ok, segmented.reason);
   pass(`the deployed Worker segments Chinese: v3 built and served, hit on search ${segmented.attempts}`);

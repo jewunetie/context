@@ -129,8 +129,11 @@ The v3 pass runs against the v3 layout with these differences only:
   written in the shard only when set, so v2 shard bytes are unchanged. Chunk
   titles and anchors are Task 36.
 - **v1 cleanup** is the v2 writer's job only.
-- One log line per pass, `{"event":"search-index-format", workspace,
-  namespace, tokenizer, chunk}`, with no path or term.
+- One log line per v3 pass, after the pass, `{"event":"search-index-format",
+  workspace, namespace, tokenizer, chunk, built, pending, oversizedShards}`,
+  counts only, with no path or term. It is the only place v3 `built` and
+  `pending` are visible; the `search` log's `index.pending` is the served v2
+  manifest's.
 
 Revisioning applies to v3 only (ruling OPEN-74): the v2 writer keeps fixed-key
 unconditional shard writes in Phase 5. Letting the served v2 index fall behind

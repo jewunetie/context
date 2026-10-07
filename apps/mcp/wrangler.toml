@@ -227,7 +227,8 @@ APP_ORIGIN = "https://staging.context.lc"
 SEARCH_SUBREQUEST_BUDGET = "600"
 # Staging only (Task 35): builds the tokenizer 2 index under `v3/`. Never put
 # this in `[vars]`. `scripts/staging-cli-live.mjs` checks that this Worker
-# segments Chinese before the switch is considered for production.
+# segments Chinese before the switch is considered for production; v3 `built`
+# and `pending` are in the `search-index-format` log.
 SEARCH_TOKENIZER = "2"
 
 [[env.staging.durable_objects.bindings]]

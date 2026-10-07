@@ -59,15 +59,23 @@ export const V2_WRITER = Object.freeze({
   },
 });
 
-/**
- * The writer for one pass over `store`. Logs the resolved format once when it
- * is not the default: identifiers only, never a path or a term.
- */
+/** The writer for one pass over `store`: v3 when the configured format says so. */
 export function writerFor(store) {
   const configured = store?.searchIndexFormat;
   if (!usesV3(configured)) return V2_WRITER;
   const format = readFormat(configured);
+  return v3Writer(format);
+}
+
+/**
+ * The operator log line for one v3 pass: the resolved format and where the v3
+ * build stands (`built`, `pending`, `oversizedShards`). Counts and identifiers
+ * only, never a path or a term. Callers never see these (`visible.js`), and the
+ * `search` log's `index.pending` describes the served v2 manifest, not v3.
+ */
+export function logV3Pass(store, { built, pending, oversizedShards }) {
   try {
+    const format = readFormat(store?.searchIndexFormat);
     console.log(
       JSON.stringify({
         event: "search-index-format",
@@ -75,12 +83,14 @@ export function writerFor(store) {
         namespace: "v3",
         tokenizer: format.tokenizer,
         chunk: format.chunk?.target ?? null,
+        built: Boolean(built),
+        pending: Number.isFinite(pending) ? pending : 0,
+        oversizedShards: Number.isFinite(oversizedShards) ? oversizedShards : 0,
       })
     );
   } catch {
     // Instrumentation never fails a pass (`trace.js`).
   }
-  return v3Writer(format);
 }
 
 function v3Writer(format) {

@@ -6,34 +6,35 @@
  * tokenizer 2 can answer: a hit proves the Worker's `Intl.Segmenter` works and
  * the v3 index is built and served.
  *
- * Callers never see index counts (`visible.js`: withheld so a team connection
- * cannot subtract them from what it sees), so "built" and "pending" are read
- * from what a caller can see: a hit is `built`, and the "still catching up"
- * note is `pending`. The numbers themselves are operator-only, in the Worker's
- * `search` log line as `index.pending`.
+ * A hit is only believed after a control search for a substring of the note's
+ * marker that no tokenizer produces as a term or prefix (`control`). If that
+ * also hits, the literal scan answered rather than an index, so the run is
+ * inconclusive, not a pass.
+ *
+ * Callers never see index counts (`visible.js` withholds them so a team
+ * connection cannot subtract them from what it sees), so this check cannot
+ * report them. They are operator-only: v3 `built` and `pending` are in the
+ * Worker's `search-index-format` log line, one per v3 pass.
  *
  * Known limit: a bucket with a permanently oversized shard never reaches
- * `built`, so v3 is never served there and this check fails as pending.
+ * `built`, so v3 is never served there and this check fails with no hit.
  *
  * Returns identifiers and booleans only, never note text.
  */
 
-export const CATCHING_UP = "the search index is still catching up";
-
 /**
- * @param {{ search: () => Promise<string>, path: string, sleep?: (ms: number) => Promise<void>, attempts?: number, delayMs?: number }} options
- * @returns {Promise<{ ok: boolean, built?: boolean, pending: boolean, attempts: number, reason?: string }>}
+ * @param {{ search: () => Promise<string>, control: () => Promise<string>, path: string, sleep?: (ms: number) => Promise<void>, attempts?: number, delayMs?: number }} options
+ * @returns {Promise<{ ok: boolean, attempts: number, inconclusive?: boolean, reason?: string }>}
  */
-export async function segmentsChinese({ search, path, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), attempts = 30, delayMs = 4000 }) {
-  let pending = false;
+export async function segmentsChinese({ search, control, path, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), attempts = 30, delayMs = 4000 }) {
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    const text = await search();
-    if (text.includes(path)) return { ok: true, built: true, attempts: attempt, pending: false };
-    pending = text.includes(CATCHING_UP);
+    if ((await search()).includes(path)) {
+      if ((await control()).includes(path)) {
+        return { ok: false, attempts: attempt, inconclusive: true, reason: "inconclusive: the control search also hit, so the literal scan answered rather than an index" };
+      }
+      return { ok: true, attempts: attempt };
+    }
     if (attempt < attempts) await sleep(delayMs);
   }
-  const reason = pending
-    ? `no hit after ${attempts} searches and the index is still catching up: the v3 index may not be built yet, or this bucket has a permanently oversized shard, which never reaches built (v3 is then never served); pending and built counts are in the Worker's search log`
-    : `no hit after ${attempts} searches with a complete index: the Worker is serving v2 (the Intl.Segmenter self-test failed) or the v3 index does not segment Chinese`;
-  return { ok: false, pending, attempts, reason };
+  return { ok: false, attempts, reason: `no hit in ${attempts} attempts; v3 built and pending are in the Worker search-index-format log` };
 }

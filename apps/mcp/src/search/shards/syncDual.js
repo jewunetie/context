@@ -14,7 +14,7 @@
  */
 
 import { createSearchBudget } from "../maintain.js";
-import { V2_WRITER, writerFor } from "./revisions.js";
+import { V2_WRITER, logV3Pass, writerFor } from "./revisions.js";
 import { syncPass } from "./sync.js";
 
 /**
@@ -31,7 +31,11 @@ export async function syncShardedIndex(store, options = {}) {
   const ops =
     typeof options.budget === "object" && options.budget ? options.budget : createSearchBudget(options.budget);
   const shared = { ...options, budget: ops };
-  if (await v3IsServed(store, ops, options.reserve ?? 0, v3)) return syncPass(store, shared, v3);
+  if (await v3IsServed(store, ops, options.reserve ?? 0, v3)) {
+    const served = await syncPass(store, shared, v3);
+    logV3Pass(store, { built: true, pending: served.pending, oversizedShards: served.oversizedShards });
+    return served;
+  }
 
   const before = ops.spent;
   const served = await syncPass(store, shared, V2_WRITER);
@@ -41,6 +45,13 @@ export async function syncShardedIndex(store, options = {}) {
     ? Math.max(0, options.backfillOps - (ops.spent - before))
     : options.backfillOps;
   const building = await syncPass(store, { ...shared, backfillOps }, v3);
+  // `built` only once the manifest saying so was written; the pass sets the flag
+  // on the in-memory manifest before it knows the write won.
+  logV3Pass(store, {
+    built: building.manifest?.built === true && building.committed,
+    pending: building.pending,
+    oversizedShards: building.oversizedShards,
+  });
   return {
     ...served,
     pending: served.pending + building.pending,

@@ -129,6 +129,11 @@ conversation.
 - **\`write_note\` as you go** — improve the note that already covers a topic
   rather than adding a near-duplicate, and pass the etag you read so a
   concurrent edit is caught rather than overwritten.
+- **Link what a note relies on.** Preserve existing useful references, and when a
+  source materially explains a claim, link it where that relationship is stated.
+  A write may end with link suggestions: optional leads, not verified
+  relationships, so read enough of a candidate to confirm it and skip topic-only
+  matches. Either way, do not rewrite a note just to add links.
 - **\`save_context\` before you finish** — the decisions, the constraints, the
   preferences, anything they should never have to say twice. Ask what no agent
   should have to rediscover, and keep that. Their own end-of-session procedure

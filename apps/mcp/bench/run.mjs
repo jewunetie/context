@@ -11,6 +11,28 @@
  *   pnpm --filter @context/mcp bench:search -- --sizes 10000
  *   pnpm --filter @context/mcp bench:search -- --latency 20 --d1-latency 60
  *   pnpm --filter @context/mcp bench:search -- --census ~/notes
+ *   pnpm --filter @context/mcp bench:search -- --set heldout --engines B0,B1:c1000,B1,B1:c4000,B1:tok2,B2,B3,B4,B5
+ *
+ * Arms (`--engines`, default `B0,B5`; Task 37, ruling OPEN-75): B0 and B5 as
+ * below; B1 is the v3 format at `--format tok1|tok2` (default tok1) and
+ * `--chunk 0|1000|2000|4000` (default 2000), with `--graph off|b2|b3|b4`
+ * (default off) as its graph variant; B2, B3 and B4 are B1's lexical format
+ * with that graph variant. An arm may override the lexical flags for itself,
+ * `B1:c1000` or `B2:tok2:c4000`, so one run can hold the whole matrix. Chunk 0
+ * with tok1 is the default format, built in the v3 namespace (`format.js`'s
+ * bench hook) so B1 is always a v3 index. `--set judged|heldout` picks seed 1
+ * (BASELINE.md) or the held-out set (`generateHeldOut`, ruling OPEN-64).
+ * Engines are built in `engines.mjs`.
+ *
+ * Per arm the run also prints the index costs: build passes (and graph
+ * passes), shard count, index bytes (manifest, docmap and the shards it
+ * names), notes shed, oversized shards, notes reported partial, the
+ * chunk-size distribution of what the writer indexed, and subrequests per
+ * query (mean, max, and queries over the free tier's 50 and the hosted 600,
+ * DELIVERY 16.3). Subrequests are measured at `--budget` (600) only: a run at
+ * 50 would change the answers, not only the count. A v3 build logs one
+ * `search-index-format` JSON line per pass (`revisions.js`); `grep -v
+ * '^{"event"'` leaves the tables.
  *
  * B0 runs the real `syncShardedIndex` and `searchIndexedNotes` against an
  * in-memory bucket that sleeps `--latency` ms per operation. B5 runs the real
@@ -29,149 +51,37 @@
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 
-import { createSearchBudget } from "../src/search/maintain.js";
-import { syncShardedIndex } from "../src/search/shards.js";
-import { searchIndexedNotes } from "../src/search/visible.js";
-import { projectNote, upsertStatements } from "../src/search/d1/project.js";
-import { answerFromProjection } from "../src/search/d1/serve.js";
-import { generateCorpus } from "./fixtures.js";
+import { indexFormatFor } from "../src/search/format.js";
+import { buildB5, buildBucketEngine } from "./engines.mjs";
+import { generateCorpus, generateHeldOut } from "./fixtures.js";
 import { mean, ndcgAt, percentile, recallAt, reciprocalRank } from "./metrics.js";
-
-const encoder = new TextEncoder();
-const sleep = (ms) => (ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve());
 
 function arg(name, fallback) {
   const at = process.argv.indexOf(`--${name}`);
   return at === -1 || at === process.argv.length - 1 ? fallback : process.argv[at + 1];
 }
 
-/* -- B0: the bucket index ------------------------------------------------ */
+/* -- arms ---------------------------------------------------------------- */
 
-/** The in-memory bucket of `test/bench/shardSizing.mjs`, with latency. */
-function createBucket(latency) {
-  const objects = new Map();
-  let etags = 0;
-  return {
-    seed(key, body) {
-      objects.set(key, { body, etag: `e${++etags}`, uploaded: new Date() });
-    },
-    async get(key) {
-      await sleep(latency);
-      const stored = objects.get(key);
-      if (!stored) return null;
-      return {
-        etag: stored.etag,
-        text: async () => stored.body,
-        arrayBuffer: async () => encoder.encode(stored.body).buffer,
-      };
-    },
-    async put(key, value, options = {}) {
-      await sleep(latency);
-      const expected = options?.onlyIf?.etagMatches;
-      if (expected && objects.get(key)?.etag !== expected) return null;
-      const body = typeof value === "string" ? value : new TextDecoder().decode(value);
-      objects.set(key, { body, etag: `e${++etags}`, uploaded: new Date() });
-      return { etag: `e${etags}` };
-    },
-    async delete(key) {
-      await sleep(latency);
-      objects.delete(key);
-    },
-    async list({ prefix = "", delimiter, cursor, limit = 1000 } = {}) {
-      await sleep(latency);
-      const keys = [...objects.keys()].filter((key) => key.startsWith(prefix)).sort();
-      const from = cursor ? keys.findIndex((key) => key > cursor) : 0;
-      if (from === -1) return { objects: [], delimitedPrefixes: [], truncated: false };
-      const page = [];
-      const prefixes = new Set();
-      let index = from;
-      for (let spent = 0; index < keys.length && spent < limit; index += 1, spent += 1) {
-        const key = keys[index];
-        const remainder = key.slice(prefix.length);
-        const slash = delimiter ? remainder.indexOf(delimiter) : -1;
-        if (slash === -1) {
-          const stored = objects.get(key);
-          page.push({ key, size: encoder.encode(stored.body).length, uploaded: stored.uploaded, etag: stored.etag });
-        } else {
-          prefixes.add(`${prefix}${remainder.slice(0, slash + 1)}`);
-        }
-      }
-      const truncated = index < keys.length;
-      return { objects: page, delimitedPrefixes: [...prefixes], truncated, cursor: truncated ? keys[index - 1] : undefined };
-    },
-    setLatency(ms) {
-      latency = ms;
-    },
-  };
-}
+const GRAPH_ARMS = { B2: "b2", B3: "b3", B4: "b4" };
 
-async function buildB0(notes, latency, budget) {
-  const bucket = createBucket(0);
-  for (const note of notes) bucket.seed(note.path, note.text);
-  // Built without latency: the build is not what is being measured, and at
-  // 10,000 notes it would be most of the run.
-  let passes = 0;
-  for (; passes < 400; passes += 1) {
-    const pass = await syncShardedIndex(bucket, { budget: createSearchBudget(budget) });
-    if (pass.pending === 0 && !pass.listingTruncated) break;
+/** `B1:tok2:c1000` and the flag defaults to `{ name, label, format, graph }`. */
+function parseArm(spec, defaults) {
+  const [name, ...overrides] = spec.split(":");
+  if (name === "B0") return { name, label: "B0 bucket search" };
+  if (name === "B5") return { name, label: "B5 Fast Search" };
+  if (name !== "B1" && !GRAPH_ARMS[name]) throw new Error(`unknown engine ${spec}`);
+  let { tok, chunk } = defaults;
+  for (const part of overrides) {
+    if (/^tok[12]$/.test(part)) tok = part;
+    else if (/^c(0|1000|2000|4000)$/.test(part)) chunk = part.slice(1);
+    else throw new Error(`unknown override ${part} in ${spec}`);
   }
-  bucket.setLatency(latency);
-  return {
-    passes: passes + 1,
-    async search(query) {
-      const spend = createSearchBudget(budget);
-      const answer = await searchIndexedNotes(bucket, {
-        isVisible: () => true,
-        isIndexable: (key) => key.endsWith(".md"),
-        query,
-        budget: spend,
-        // As production runs it (src/search/visibleNotes.js): an empty answer
-        // over a converged index buys a listing and asks again.
-        refreshOnMiss: true,
-      });
-      return { paths: (answer.hits ?? []).map((hit) => hit.key), subrequests: spend.spent };
-    },
-  };
-}
-
-/* -- B5: the Fast Search projection -------------------------------------- */
-
-/** The schema in `test/searchD1.test.mjs`, kept in step with `lib/d1.ts`. */
-const SCHEMA = [
-  `CREATE TABLE IF NOT EXISTS notes (
-     path TEXT PRIMARY KEY, version TEXT NOT NULL, visibility TEXT NOT NULL,
-     title TEXT NOT NULL, uploaded TEXT, chunks INTEGER NOT NULL,
-     indexed_at TEXT NOT NULL)`,
-  `CREATE VIRTUAL TABLE IF NOT EXISTS notes_private_fts USING fts5(
-     path UNINDEXED, ord UNINDEXED, title, headings, tags, body,
-     tokenize = 'unicode61 remove_diacritics 2')`,
-  `CREATE VIRTUAL TABLE IF NOT EXISTS notes_team_fts USING fts5(
-     path UNINDEXED, ord UNINDEXED, title, headings, tags, body,
-     tokenize = 'unicode61 remove_diacritics 2')`,
-];
-
-function buildB5(notes, latency, budget) {
-  const db = new DatabaseSync(":memory:");
-  for (const sql of SCHEMA) db.exec(sql);
-  for (const note of notes) {
-    const projected = projectNote(note.path, { version: "v1", uploaded: null, visibility: note.visibility, content: note.text });
-    for (const { sql, params } of upsertStatements(note.path, projected)) db.prepare(sql).run(...params);
-  }
-  const client = {
-    async query(sql, params) {
-      await sleep(latency);
-      return db.prepare(sql).all(...params);
-    },
-  };
-  return {
-    async search(query) {
-      const spend = createSearchBudget(budget);
-      const answer = await answerFromProjection(client, { query, tier: "private", isVisible: () => true, budget: spend });
-      return { paths: (answer?.hits ?? []).map((hit) => hit.key), subrequests: spend.spent };
-    },
-  };
+  const graph = GRAPH_ARMS[name] ?? (defaults.graph === "off" ? null : defaults.graph);
+  if (graph !== null && !["b2", "b3", "b4"].includes(graph)) throw new Error(`unknown graph variant ${graph}`);
+  const format = { ...indexFormatFor({ SEARCH_TOKENIZER: tok.slice(3), SEARCH_CHUNK_CHARS: chunk }), namespace: "v3" };
+  return { name, label: `${name} ${tok} c${chunk}${graph ? ` ${graph}` : ""}`, format, graph };
 }
 
 /* -- scoring ------------------------------------------------------------- */
@@ -237,6 +147,26 @@ function printTable(size, results) {
   }
 }
 
+function printCosts(built, results) {
+  console.log(`\nIndex costs per arm:\n`);
+  console.log("| Arm | Build passes | Graph passes | Shards | Index bytes | Shed notes | Oversized shards | Partial notes | Docs | Doc chars p50 / p95 / max | Subrequests mean / max | Over 50 | Over 600 | Graph withheld |");
+  console.log("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+  built.forEach(([arm, engine], i) => {
+    const subrequests = results[i][1].map((row) => row.subrequests);
+    const over = (ceiling) => subrequests.filter((n) => n > ceiling).length;
+    const sub = `${f2(mean(subrequests))} / ${Math.max(...subrequests)}`;
+    if (!engine.costs) {
+      console.log(`| ${arm.label} | - | - | - | - | - | - | - | - | - | ${sub} | ${over(50)} | ${over(600)} | - |`);
+      return;
+    }
+    const { shards, bytes, shed, partial, oversizedShards } = engine.costs;
+    const { docs, p50, p95, max } = engine.chunks;
+    const graph = engine.graphPasses ?? "-";
+    const withheld = engine.graphPasses ? engine.graphIncomplete : "-";
+    console.log(`| ${arm.label} | ${engine.passes} | ${graph} | ${shards} | ${bytes.toLocaleString("en-US")} | ${shed} | ${oversizedShards} | ${partial} | ${docs} | ${p50} / ${p95} / ${max} | ${sub} | ${over(50)} | ${over(600)} | ${withheld} |`);
+  });
+}
+
 /* -- census -------------------------------------------------------------- */
 
 const SCRIPTS = ["Latin", "Han", "Hiragana", "Katakana", "Hangul", "Thai", "Cyrillic", "Arabic", "Hebrew", "Devanagari", "Greek"];
@@ -274,22 +204,34 @@ const d1Latency = Number(arg("d1-latency", 20));
 const budget = Number(arg("budget", 600));
 const sizes = String(arg("sizes", "100,1000")).split(",").map(Number);
 const censusDir = arg("census", null);
+const set = arg("set", "judged");
+const defaults = { tok: arg("format", "tok1"), chunk: String(arg("chunk", "2000")), graph: arg("graph", "off") };
+const arms = String(arg("engines", "B0,B5")).split(",").map((spec) => parseArm(spec, defaults));
+if (!["judged", "heldout"].includes(set)) throw new Error(`unknown set ${set}`);
+if (!/^tok[12]$/.test(defaults.tok)) throw new Error(`unknown format ${defaults.tok}`);
 
 if (censusDir) {
   printCensus(censusDir, census((function* () {
     for (const path of markdownFiles(censusDir)) yield readFileSync(path, "utf8");
   })()));
 } else {
-  console.log(`Store latency ${latency} ms per operation (B0), ${d1Latency} ms per request (B5), budget ${budget}.`);
+  console.log(`Store latency ${latency} ms per operation (B0), ${d1Latency} ms per request (B5), budget ${budget}. Set: ${set}.`);
   for (const size of sizes) {
-    const { notes, queries } = generateCorpus({ size });
-    const b0 = await buildB0(notes, latency, budget);
-    const b5 = buildB5(notes, d1Latency, budget);
-    printTable(size, [
-      ["B0 bucket search", await score(b0, queries)],
-      ["B5 Fast Search", await score(b5, queries)],
-    ]);
-    console.log(`\nB0 index built in ${b0.passes} passes. ${queries.length} judged queries.`);
+    const { notes, queries } = (set === "heldout" ? generateHeldOut : generateCorpus)({ size });
+    const results = [];
+    const built = [];
+    for (const arm of arms) {
+      const engine = arm.name === "B5"
+        ? buildB5(notes, d1Latency, budget)
+        : await buildBucketEngine(notes, { latency, budget, format: arm.format ?? null, graph: arm.graph ?? null });
+      results.push([arm.label, await score(engine, queries)]);
+      built.push([arm, engine]);
+    }
+    printTable(size, results);
+    printCosts(built, results);
+    const b0 = built.find(([arm]) => arm.name === "B0");
+    if (b0) console.log(`\nB0 index built in ${b0[1].passes} passes. ${queries.length} judged queries.`);
+    else console.log(`\n${queries.length} judged queries.`);
     printCensus(`${size} fixture notes`, census(notes.map((note) => note.text)));
   }
 }

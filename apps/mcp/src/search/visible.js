@@ -53,6 +53,7 @@ import { readTermFilter, termFilterMayHold } from "./filter.js";
 import { createSearchBudget, inWaves } from "./maintain.js";
 import { MAX_RESULTS, gatherTermsFor, parseQuery, rankedVisibleTo } from "./query.js";
 import { collectShardCandidates, scoreCollected } from "./shardQuery.js";
+import { readFallbackPieceShards } from "./pieceShards.js";
 import {
   SHARD_READ_CONCURRENCY,
   decodeShard,
@@ -381,10 +382,8 @@ async function answerFromIndex(store, options) {
   // comment above on why it must not be gated on that.
   const reducedRecallNotes = [...new Set(shedNotePathsOf(manifest).filter(isVisible))].sort();
 
-  // Parsed once, with the served index's own tokenizer, and asked of every
-  // shard, so no two shards can be asked a different question.
-  // With tokenizer 2 the list also holds CJK pieces, for the scorer's fallback.
-  const queryTerms = gatherTermsFor(parseQuery(query, manifest.format?.tokenizer), manifest.format?.tokenizer);
+  // Parsed once, with the served index's own tokenizer, so every shard is asked the same question.
+  const queryTerms = gatherTermsFor(parseQuery(query, manifest.format?.tokenizer));
   const collections = [];
   // A shard this answer could not look inside. Not the same as one the routing
   // filter ruled out: that shard cannot hold a query term at all, while this is
@@ -479,7 +478,7 @@ async function answerFromIndex(store, options) {
     // not be read is a floor on this answer, and a rule enforced in two places
     // is a rule that can disagree with itself.
     const bodies = await Promise.all(wave.map((id) => fetchShardBytes(store, budget, limit, id, undefined, manifest)));
-    for (const bytes of bodies) {
+    for (const [at, bytes] of bodies.entries()) {
       const shard = bytes && decodeShard(bytes);
       if (!shard) {
         // Absent, oversized or corrupt — and never empty, since empty shards
@@ -494,7 +493,7 @@ async function answerFromIndex(store, options) {
       // whole-corpus heap v2 exists to remove, wearing a loop — `collections`
       // holds one small summary each.
       shardsRead += 1;
-      collections.push(collectShardCandidates(shard, queryTerms, isVisible));
+      collections.push({ ...collectShardCandidates(shard, queryTerms, isVisible), id: wave[at] });
     }
   }
   // **A claim is a maybe, and this is where the walk learns which.**
@@ -541,10 +540,11 @@ async function answerFromIndex(store, options) {
           continue;
         }
         shardsRead += 1;
-        collections.push(collectShardCandidates(shard, queryTerms, isVisible));
+        collections.push({ ...collectShardCandidates(shard, queryTerms, isVisible), id });
       }
     }
   }
+  if (!shardsUnread) ({ shardsUnread, shardsRead } = await readFallbackPieceShards(store, budget, limit, manifest, { queryTerms, occupied, collections, isVisible, shardsRead }));
   const ranked = scoreCollected(collections, query, { tokenizer: manifest.format?.tokenizer });
   const visible = rankedVisibleTo(ranked, isVisible, prefix);
   // Every op is taken before any read starts, so a wave can never overspend the

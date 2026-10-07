@@ -464,9 +464,10 @@ export function scoreCollected(perShardCollections, query, { now, tokenizer } = 
    * The CJK fallback (ruling OPEN-48), tokenizer 2 only: a term the index never
    * stored as a word is scored as its two-character pieces, on the docs that
    * hold every piece, each piece at its own df, all credited to `queryTerm` so
-   * coverage still counts it once. The pieces' postings were gathered because
-   * the collectors were handed `gatherTermsFor`'s list. False when any piece is
-   * absent or no doc holds them all, so expansion runs as before.
+   * coverage still counts it once. The pieces' postings were gathered by the
+   * walk's fallback rung (`pieceShards.js`), only for terms found nowhere.
+   * False when any piece is absent or no doc holds them all, so expansion runs
+   * as before.
    */
   function scorePieces(queryTerm) {
     const pieces = cjkPieces(queryTerm);

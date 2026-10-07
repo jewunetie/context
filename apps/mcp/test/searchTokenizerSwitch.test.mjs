@@ -18,7 +18,10 @@
  *   query side emits the CJK two-character pieces                          2
  *   CJK fallback disabled                                                  1
  *   CJK fallback pieces not required together (any piece credits)          1
- *   fallback pieces not handed to the shard collectors                     1
+ *   fallback rung never runs (pieces never read)                           3
+ *   pieces routed for every CJK term, found or not (fix round 1)           1
+ *   re-read shard collected in full, N and df counted twice (fix round 1)  1
+ *   piece routing ignores the filters, reads every shard (fix round 1)     1
  *   no per-note dedupe of chunk docs                                       6
  *   dedupe also applied to channel-day message docs                        1
  *   kept chunk does not carry the union of matched terms                   1
@@ -47,6 +50,9 @@ import { createSearchBudget } from "../src/search/maintain.js";
 import { searchIndexedNotes } from "../src/search/visible.js";
 import { parseQuery } from "../src/search/query.js";
 import { termsOf } from "../src/search/text.js";
+import { readTermFilter, termFilterMayHold } from "../src/search/filter.js";
+import { readFallbackPieceShards } from "../src/search/pieceShards.js";
+import { collectShardCandidates } from "../src/search/shardQuery.js";
 import { renderChannelDayNote } from "../../../packages/communications/src/note.js";
 import { memoryBucket } from "./store/fixtures.mjs";
 
@@ -69,9 +75,9 @@ function bucketWith(notes, format) {
   return bucket;
 }
 
-async function build(bucket) {
+async function build(bucket, options = {}) {
   for (let pass = 0; pass < 40; pass += 1) {
-    const result = await syncShardedIndex(bucket, { budget: createSearchBudget(10_000), now: NOW });
+    const result = await syncShardedIndex(bucket, { budget: createSearchBudget(10_000), now: NOW, ...options });
     if (result.pending === 0 && !result.listingTruncated) return;
   }
   throw new Error("index did not converge");
@@ -295,4 +301,92 @@ test("tokenizer 2 with chunks: a chunk hit's key is the note path", async () => 
   const answer = await search(bucket, "user profile");
   assert.deepEqual(keys(answer), ["notes/api.md"]);
   assert.ok(!answer.hits[0].key.includes("#c"));
+});
+
+// Piece routing (fix round 1): pieces are routed and read only for a term the
+// first read found nowhere.
+
+/** Many notes spread over several shards, each holding 南京 but not 京市. */
+function manyShards(extra) {
+  const notes = { ...extra };
+  for (let i = 0; i < 80; i += 1) {
+    notes[`notes/w${String(i).padStart(2, "0")}.md`] = `南京的天气很好 ${i}\n\n${"filler words for size ".repeat(30)}`;
+  }
+  return notes;
+}
+
+async function shardedIndex(notes) {
+  const bucket = bucketWith(notes, TOKENIZER_2);
+  await build(bucket, { shardByteCap: 30_000 });
+  const reads = [];
+  const get = bucket.get.bind(bucket);
+  bucket.get = async (key) => {
+    if (key.startsWith(".context/search/v3/shards/")) reads.push(key);
+    return get(key);
+  };
+  return { bucket, reads };
+}
+
+test("a CJK word that hits directly reads only the shards its word routes to", async () => {
+  // 南京市 is a stored word here, so its pieces 南京 and 京市 must not route.
+  const { bucket, reads } = await shardedIndex(manyShards({ "notes/city.md": "南京市很大" }));
+  const manifest = await loadIndexManifest(bucket, createSearchBudget(100), 0);
+  assert.ok(manifest.shardCount > 2, `several shards, got ${manifest.shardCount}`);
+  const claimed = [];
+  for (let id = 0; id < manifest.shardCount; id += 1) {
+    if ((manifest.stats[id]?.docCount || 0) === 0) continue;
+    const filter = readTermFilter(manifest.filters[id]);
+    if (!filter || termFilterMayHold(filter, "南京市")) claimed.push(id);
+  }
+  assert.ok(claimed.length < manifest.stats.filter((s) => s.docCount > 0).length, "the word does not claim every shard");
+  reads.length = 0;
+  const answer = await search(bucket, "南京市");
+  assert.deepEqual(keys(answer), ["notes/city.md"]);
+  assert.equal(reads.length, claimed.length, "reads equal the word's own routing");
+});
+
+test("a CJK word found nowhere still finds its note through pieces across shards", async () => {
+  const { bucket } = await shardedIndex(manyShards({ "notes/market.md": "在南京市场买菜" }));
+  const answer = await search(bucket, "南京市");
+  assert.deepEqual(keys(answer), ["notes/market.md"]);
+  assert.equal(answer.matchCount, 1);
+});
+
+test("the fallback rung reads only the shards claiming every piece and counts nothing twice", async () => {
+  const { bucket, reads } = await shardedIndex(manyShards({ "notes/market.md": "在南京市场买菜" }));
+  const budget = createSearchBudget(600);
+  const manifest = await loadIndexManifest(bucket, budget, 0);
+  const occupied = [];
+  for (let id = 0; id < manifest.shardCount; id += 1) if ((manifest.stats[id]?.docCount || 0) > 0) occupied.push(id);
+  const queryTerms = ["南京市"];
+  // The first read, simulated over every occupied shard: what the walk holds
+  // before the rung runs.
+  const collections = [];
+  const held = new Map(); // piece -> docs holding it, over every shard
+  for (const id of occupied) {
+    const shard = await loadShard(bucket, budget, 0, id, undefined, manifest);
+    collections.push({ ...collectShardCandidates(shard, queryTerms, () => true), id });
+    for (const piece of ["南京", "京市"]) held.set(piece, (held.get(piece) || 0) + (shard.terms.get(piece)?.size || 0));
+  }
+  const claimed = occupied.filter((id) => {
+    const filter = readTermFilter(manifest.filters[id]);
+    return !filter || (termFilterMayHold(filter, "南京") && termFilterMayHold(filter, "京市"));
+  });
+  assert.ok(claimed.length < occupied.length, "the pieces do not claim every shard");
+  const before = collections.reduce((n, c) => n + c.visibleN, 0);
+  reads.length = 0;
+  const result = await readFallbackPieceShards(bucket, budget, 10, manifest, {
+    queryTerms,
+    occupied,
+    collections,
+    isVisible: () => true,
+    shardsRead: occupied.length,
+  });
+  assert.deepEqual(result, { shardsUnread: false, shardsRead: occupied.length + claimed.length });
+  assert.equal(reads.length, claimed.length, "only shards whose filter may hold every piece are read");
+  assert.equal(collections.reduce((n, c) => n + c.visibleN, 0), before, "N is not counted twice");
+  // 京市 is only in the market note; 南京 is counted once per doc in the claimed shards.
+  const df = (term) => collections.reduce((n, c) => n + (c.dfByTerm.get(term) || 0), 0);
+  assert.equal(df("京市"), held.get("京市"));
+  assert.ok(df("南京") <= held.get("南京"));
 });

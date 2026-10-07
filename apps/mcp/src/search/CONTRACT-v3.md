@@ -150,8 +150,13 @@ completes but coherence between concurrent passes is not claimed, as for v2.
   (`cjkPieces`), on the docs that hold every piece, each piece at its own df,
   credited to the original term (so coverage counts it once). This runs
   before prefix and trigram expansion, which still run when any piece is
-  absent or no doc holds them all. The shard walk gathers the pieces
-  (`gatherTermsFor`), so routing and collection see them.
+  absent or no doc holds them all. The walk routes and collects on the
+  query's own terms only (`gatherTermsFor`). After the first read and the
+  expansion wave, a CJK term with visible df 0 routes its pieces as one more
+  rung within the same budget (`pieceShards.js`): the shards whose filter may
+  hold every piece are read, an already-read shard again for the pieces only
+  (its doc count, lengths and vocabulary zeroed so nothing counts twice). A
+  term that hit directly never routes or collects its pieces.
 - **One result per note (ruling OPEN-61, README 12.5).** Each chunk is scored
   as a document. `rankedVisibleTo`, after the visibility filter, keeps the
   best-scoring entry per `notePath` among entries carrying `chunk`, with the

@@ -19,7 +19,7 @@
  * plain objects.
  */
 
-import { cjkPieces, queryTermsOf, trigrams } from "./text.js";
+import { queryTermsOf, trigrams } from "./text.js";
 
 // -- pinned scoring constants (CONTRACT.md § Scoring) -----------------------
 //
@@ -113,18 +113,15 @@ export function parseQuery(query, tokenizer = 1) {
 }
 
 /**
- * Every term the shard walk must gather for a parsed query: its loose and
- * phrase terms, plus, for tokenizer 2, the CJK pieces of each term, so the
- * scorer's CJK fallback (`scoreCollected`) has their df and postings. Routing
- * and collection use this list; scoring parses the query itself and credits a
- * piece only through that fallback.
+ * The terms the shard walk routes and collects on for a parsed query: its
+ * loose and phrase terms, first occurrence kept. CJK fallback pieces are never
+ * in it; they are routed only for a term the walk found nowhere
+ * (`pieceShards.js`).
  *
  * @param {{ phrases: string[][], terms: string[] }} parsed
- * @param {1 | 2} [tokenizer]
  */
-export function gatherTermsFor({ phrases, terms }, tokenizer = 1) {
-  const queryTerms = dedupe([...terms, ...phrases.flat()]);
-  return tokenizer === 2 ? dedupe([...queryTerms, ...queryTerms.flatMap(cjkPieces)]) : queryTerms;
+export function gatherTermsFor({ phrases, terms }) {
+  return dedupe([...terms, ...phrases.flat()]);
 }
 
 /**

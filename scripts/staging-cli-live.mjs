@@ -36,6 +36,7 @@ process.env.CONTEXT_CONFIG = join(home, ".context", "config.json");
 process.env.CONTEXT_HOOK_CONFIG = join(home, ".context", "credentials.json");
 delete process.env.CONTEXT_ENDPOINT;
 
+const { segmentsChinese } = await import("./staging-search-check.mjs");
 const commands = await import("../plugins/context/src/commands.js");
 const { listWorkspaces } = await import("../plugins/context/src/mcp.js");
 
@@ -50,6 +51,7 @@ const pass = (label) => console.log(`PASS  ${label}`);
 let grantClientId = null;
 let captured = null;
 let capturePath = null;
+let segmenterNotePath = null;
 let personalWorkspaceId = null;
 
 try {
@@ -126,6 +128,31 @@ try {
   await commands.use({ workspace: `@${personal.slug}`, endpoint: ENDPOINT, log });
   pass("use switches the workspace commands act on");
 
+  // -- the deployed Worker segments Chinese (Task 35, OPEN-63). Tokenizer 1
+  // reads this run as one token, so a hit for 迁移 proves tokenizer 2 and the
+  // v3 index serve here. Output is captured, not printed: search results are
+  // the persona's notes. Only counts and booleans are logged.
+  segmenterNotePath = `0-inbox/cli-live-segmenter-${Date.now()}.md`;
+  const quiet = () => {};
+  const written = await commands.runTool({
+    name: "write-note",
+    flags: { path: segmenterNotePath, content: `数据库迁移计划已经确认\n\nzqmarker${Date.now()}` },
+    endpoint: ENDPOINT,
+    cwd: home,
+    log: quiet,
+  });
+  assert.ok(written.ok, "the segmenter check note was not written");
+  const segmented = await segmentsChinese({
+    path: segmenterNotePath,
+    search: async () => {
+      const lines = [];
+      await commands.runTool({ name: "search-notes", flags: { query: "迁移" }, endpoint: ENDPOINT, cwd: home, log: (line) => lines.push(String(line)) });
+      return lines.join("\n");
+    },
+  });
+  assert.ok(segmented.ok, segmented.reason);
+  pass(`the deployed Worker segments Chinese: v3 built and served, hit on search ${segmented.attempts}`);
+
   // -- the session-end hook, as an agent would run it
   const sessionId = `cli-live-${Date.now()}`;
   const transcript = join(home, "session.jsonl");
@@ -186,6 +213,12 @@ try {
       .action(ref("functions/files:archiveEntry"), { workspaceId: personalWorkspaceId, path: capturePath })
       .then(() => console.log(`  archived ${capturePath}`))
       .catch((error) => console.log(`  could not archive ${capturePath}: ${error.message}`));
+  }
+  if (segmenterNotePath) {
+    await convex
+      .action(ref("functions/files:archiveEntry"), { workspaceId: personalWorkspaceId, path: segmenterNotePath })
+      .then(() => console.log(`  archived ${segmenterNotePath}`))
+      .catch((error) => console.log(`  could not archive ${segmenterNotePath}: ${error.message}`));
   }
   if (grantClientId) {
     for (const workspace of await convex.query(ref("functions/workspaces:listMyWorkspaces"), {}).catch(() => [])) {

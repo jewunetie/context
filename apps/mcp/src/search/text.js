@@ -127,6 +127,14 @@ export function tokenizeV2(text, { pieces = true } = {}) {
   if (typeof text !== "string" || !text) return [];
   const normal = text.normalize("NFKC").replace(/\u2019/g, "'");
   const { instance } = wordSegmenter();
+  // lean: the Segmenter-less fallback is a stopgap with two known defects. It
+  // has no combining marks (`\p{M}`), so Devanagari and Thai split at vowel
+  // signs, and a sentence-final period sticks to its word, which can make a
+  // plain word read as an identifier. Neither is fixed here because tokenizer 2
+  // is never written or queried when `segmenterSelfTest()` is false
+  // (`formatUsable`, Task 35): this branch only runs for a caller of
+  // `tokenizeV2` outside that gate. Upgrade path: add `\p{M}` and trim
+  // trailing periods, only if a Segmenter-less runtime must serve tokenizer 2.
   const words = instance
     ? [...instance.segment(normal)].filter((s) => s.isWordLike).map((s) => ({ at: s.index, word: s.segment }))
     : [...normal.matchAll(/[\p{L}\p{N}_.']+/gu)].map((m) => ({ at: m.index, word: m[0] }));

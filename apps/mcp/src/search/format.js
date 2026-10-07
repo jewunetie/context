@@ -14,6 +14,8 @@
  * `searchBudgetFor` rule, `budget.js`).
  */
 
+import { segmenterSelfTest } from "./text.js";
+
 export const DEFAULT_FORMAT = Object.freeze({ tokenizer: 1, chunk: null });
 
 const TOKENIZERS = [1, 2];
@@ -44,12 +46,17 @@ export function indexFormatFor(source) {
 }
 
 /**
- * Whether this build can build and serve `format`: every value in range. The
- * default is always usable. Task 35 adds the `Intl.Segmenter` gate here.
+ * Whether this runtime can build and serve `format`: every value in range. The
+ * default is always usable. Tokenizer 2 additionally needs a working
+ * `Intl.Segmenter` (`segmenterSelfTest`, memoized per isolate; ruling OPEN-52):
+ * a runtime that fails it neither writes nor queries a tokenizer-2 index, and
+ * serves v2. The reader and the writer both go through `usesV3`, so this one
+ * check gates both.
  */
 export function formatUsable(format) {
   if (typeof format !== "object" || format === null) return false;
   if (!TOKENIZERS.includes(format.tokenizer)) return false;
+  if (format.tokenizer === 2 && !segmenterSelfTest()) return false;
   if (format.chunk === null) return true;
   const chunk = format.chunk;
   if (typeof chunk !== "object" || !CHUNK_TARGETS.includes(chunk.target)) return false;

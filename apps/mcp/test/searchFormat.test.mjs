@@ -20,6 +20,7 @@
  *   `parseManifestV4` accepts an unknown `format.tokenizer`                   2
  *   `parseManifestV4` skips the `shards` length check                         1
  *   null v3 shard key fetched from the store instead of read as empty         1
+ *   formatUsable without the segmenter self-test (Task 35)                    3
  */
 
 import assert from "node:assert/strict";
@@ -54,6 +55,7 @@ import {
 import { loadCensus } from "../src/search/d1/backfill.js";
 import { createSearchBudget, defaultIsIndexable } from "../src/search/maintain.js";
 import { isPlumbing } from "../src/privacy/engine.js";
+import { writerFor } from "../src/search/shards/revisions.js";
 import { memoryBucket } from "./store/fixtures.mjs";
 
 const TOKENIZER_2 = { tokenizer: 2, chunk: null };
@@ -252,4 +254,61 @@ test("every key either layout produces is plumbing", () => {
     assert.equal(defaultIsIndexable(key), false, key);
   }
   assert.equal(V3_LAYOUT.shardKeyFor(1, manifest), null);
+});
+
+// -- the segmenter gate (Task 35) ---------------------------------------------
+
+/** Run `fn` with `Intl.Segmenter` removed, restoring it whatever happens. */
+async function withoutSegmenter(fn) {
+  const saved = Intl.Segmenter;
+  delete Intl.Segmenter;
+  try {
+    return await fn();
+  } finally {
+    Intl.Segmenter = saved;
+  }
+}
+
+test("formatUsable: tokenizer 2 needs a passing segmenter self-test, tokenizer 1 does not", async () => {
+  assert.equal(formatUsable(TOKENIZER_2), true);
+  await withoutSegmenter(() => {
+    assert.equal(formatUsable(TOKENIZER_2), false);
+    assert.equal(formatUsable({ tokenizer: 2, chunk: CHUNKED_2000.chunk }), false);
+    assert.equal(formatUsable(DEFAULT_FORMAT), true);
+    assert.equal(formatUsable(CHUNKED_2000), true);
+  });
+  assert.equal(formatUsable(TOKENIZER_2), true);
+});
+
+test("formatUsable: a segmenter that exists but fails the self-test is refused", () => {
+  const saved = Intl.Segmenter;
+  // Splits identifiers and never yields 迁移.
+  Intl.Segmenter = class {
+    segment(s) {
+      return [...s.matchAll(/[A-Z]?[a-z]+|./g)].map((m) => ({ segment: m[0], index: m.index, isWordLike: true }));
+    }
+  };
+  try {
+    assert.equal(formatUsable(TOKENIZER_2), false);
+    assert.equal(formatUsable(DEFAULT_FORMAT), true);
+  } finally {
+    Intl.Segmenter = saved;
+  }
+  assert.equal(formatUsable(TOKENIZER_2), true);
+});
+
+test("segmenter gate: a tokenizer-2 store without a segmenter reads and writes only v2 keys", async () => {
+  await withoutSegmenter(async () => {
+    const { store, read } = bucketWith({ v3: v4Text(), format: TOKENIZER_2 });
+    const manifest = await loadIndexManifest(store, createSearchBudget(10), 0);
+    assert.equal(manifest.layout, V2_LAYOUT);
+    await loadDocmapPaths(store, createSearchBudget(10), 0);
+    await loadCensus(store, createSearchBudget(10), 0);
+    assert.deepEqual(read.filter((key) => key.includes("/v3/")), []);
+    assert.equal(writerFor(store).v3, false, "the pass writes v2");
+  });
+  // Control: with the segmenter the same store is served and written as v3.
+  const { store } = bucketWith({ v3: v4Text(), format: TOKENIZER_2 });
+  assert.equal((await loadIndexManifest(store, createSearchBudget(10), 0)).layout, V3_LAYOUT);
+  assert.equal(writerFor(store).v3, true);
 });

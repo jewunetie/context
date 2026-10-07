@@ -12,6 +12,14 @@ test('staging gateway has its own origins, queue and presence namespace', () => 
   assert.doesNotMatch(config, /queue = "context-gateway-jobs"|script_name/);
   assert.match(config, /\[\[env.staging.durable_objects.bindings\]\]/);
 });
+test('the search tokenizer switch is on in staging vars only, never in production vars', () => {
+  const toml = read('apps/mcp/wrangler.toml');
+  const [production, staging] = toml.split('[env.staging]');
+  const vars = (text, header) => text.split(header)[1]?.split(/\n\[/)[0] ?? '';
+  assert.match(vars(staging, '[env.staging.vars]'), /^SEARCH_TOKENIZER = "2"$/m);
+  assert.doesNotMatch(vars(production, '[vars]'), /^\s*SEARCH_(TOKENIZER|CHUNK_CHARS)\s*=/m);
+  assert.doesNotMatch(vars(staging, '[env.staging.vars]'), /^SEARCH_CHUNK_CHARS/m, 'chunking waits for the Task 38 arm');
+});
 test('staging native builds use staging credentials', () => {
   const workflow = read('.github/workflows/deploy-mobile-native.yml');
   assert.match(workflow, /environment: \$\{\{ inputs.profile \}\}/);

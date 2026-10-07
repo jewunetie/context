@@ -19,7 +19,8 @@ The switch is two deployment vars, unset in production (ruling OPEN-57):
 `indexFormatFor(env)` reads them and never throws. A chunked format carries
 `max = 1.5 * target` (1,500, 3,000, 6,000; ruling OPEN-54) and `cap = 64,000`
 characters per note. `formatUsable(format)` is true for the default and for any
-format whose values are in range; Task 35 adds the `Intl.Segmenter` gate there.
+format whose values are in range; tokenizer 2 also needs `segmenterSelfTest()`
+(Task 35), so a runtime without a working segmenter serves v2.
 The resolved format travels on the store as `store.searchIndexFormat` (Task
 31), the way `searchSubrequestBudget` does.
 

@@ -87,7 +87,7 @@ SEARCH_SUBREQUEST_BUDGET = "600"
 # Unset everywhere: search reads and writes today's index under
 # `.context/search/v2/`. Setting either to a non-default value builds a second
 # index under `.context/search/v3/` while v2 keeps serving, and search switches
-# to it only once a full pass has built it. Staging is set per Task 35.
+# to it only once a full pass has built it. Staging sets SEARCH_TOKENIZER in `[env.staging.vars]`.
 # SEARCH_TOKENIZER = "2"        # "1" (today) or "2"
 # SEARCH_CHUNK_CHARS = "2000"   # "0" or unset (no chunking), "1000", "2000", "4000"
 
@@ -225,6 +225,10 @@ PUBLIC_ORIGIN = "https://mcp-staging.context.lc"
 ALLOWED_ORIGINS = "https://staging.context.lc"
 APP_ORIGIN = "https://staging.context.lc"
 SEARCH_SUBREQUEST_BUDGET = "600"
+# Staging only (Task 35): builds the tokenizer 2 index under `v3/`. Never put
+# this in `[vars]`. `scripts/staging-cli-live.mjs` checks that this Worker
+# segments Chinese before the switch is considered for production.
+SEARCH_TOKENIZER = "2"
 
 [[env.staging.durable_objects.bindings]]
 name = "PRESENCE_ROOM"

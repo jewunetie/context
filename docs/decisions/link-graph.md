@@ -139,20 +139,32 @@ a reviewer.
   posting entries: run first, it would hand search a remainder that varies
   with hidden data, and search would then vary in which hits it returns. Last,
   it can only lose its own families, all at once for a strict caller, so the
-  merged answer keeps the one bit above. Explicit links rank ahead of
+  merged answer keeps the one bit above. Search's own read count also
+  depends on hidden data once the index has more than one shard (the shard
+  count follows the total note count, and routing reads filters built over
+  private vocabulary), so a strict caller searches only when the budget left
+  after the catalog covers every occupied shard, the hits and the expansion
+  re-check's reserve, and otherwise gets no text hits at all (fix round 1).
+  Explicit links rank ahead of
   text-only hits, the rest by reciprocal rank fusion (k = 60), `nearby` only
   breaks ties and is never a candidate of its own, and the result limit is
-  applied after authorization. **Accepted residual** (OPEN-33): workspace
+  applied after authorization. **Accepted residuals** (OPEN-33): workspace
   health (`graphHealth.possiblyIncomplete`) and search-index freshness are
-  workspace-level, so a hidden note's edit can flip `possiblyIncomplete`, and
-  an index that is behind withholds `catalog.paths`, so rooted and relative
-  links in the seed read as unknown rather than resolved. Neither reveals a
-  path, count, content or ranking of a hidden note; a team caller can infer
-  that something somewhere changed recently. The tests are
-  `graphRetrieve.test.mjs`, "privacy invariance: hidden notes change nothing
-  but the withheld graph bit, at tight and generous budgets" (health and
-  freshness held constant) and "limit applies after canSee: hidden strong
-  matches do not reduce the visible count".
+  workspace-level, so a hidden note's edit can flip `possiblyIncomplete`;
+  behind, the visible docmap paths are still passed and only a target outside
+  them reads `unknown` instead of `missing` (`catalog.partial`), so the seed's
+  links still resolve. And whether text hits are withheld depends on how many
+  shards are occupied, which grows with hidden notes: a strict caller can
+  learn that the index is larger than its budget (one more workspace-level
+  bit). None reveals a path, count, content or ranking of a hidden note; a
+  team caller can infer that something somewhere changed recently, or that
+  the workspace is large. The tests are `graphRetrieve.test.mjs`, "privacy
+  invariance: hidden notes change nothing but the withheld graph bit, at
+  tight and generous budgets" (health and freshness held constant),
+  "multi-shard privacy invariance: hidden notes change only the withheld text
+  bit and the withheld graph bit, budgets 0..80", "a hidden edit that leaves
+  the index behind does not drop the seed's rooted links" and "limit applies
+  after canSee: hidden strong matches do not reduce the visible count".
 
 **What reversing it costs.** Phase 3 backlinks, related notes, and
 index-assisted move repair all read this index; they cannot be built on a

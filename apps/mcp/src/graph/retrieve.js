@@ -6,21 +6,28 @@
 //
 // Privacy. Every part runs over what `canSeeKey` admits before anything is
 // ranked or cut (arch 12.2 step 6). The parts run in a fixed order on the one
-// budget: the catalog (a fixed two reads), then search, then the graph. Search
-// goes before the graph because the graph's read count depends on hidden
-// posting entries (OPEN-27): run first, it would hand search a remainder that
-// varies with hidden data. Last, it can only lose its own families, all at
-// once for a strict caller, which is the one bit docs/decisions/link-graph.md
-// records. Workspace-level health and index freshness can flip with a hidden
-// note's edit (OPEN-33); that changes labels and which rooted links resolve,
-// never a path, count or rank derived from a hidden note.
+// budget: the catalog (the index manifest and docmap, two reads), then search,
+// then the graph. The graph's read count depends on hidden posting entries
+// (OPEN-27), so it goes last, where it can only lose its own families, all at
+// once for a strict caller. Search's own read count also depends on hidden
+// data once the index has more than one shard (shard count, routing over
+// private vocabulary), so a strict caller searches only when the budget covers
+// every occupied shard, and otherwise gets no text hits at all (fix round 1).
+// Both withheld states, workspace health and index freshness are the residuals
+// docs/decisions/link-graph.md records (OPEN-27, OPEN-33); none is a path,
+// count or rank derived from a hidden note.
 import { isEncryptedNote } from "../encryption.js";
 import { extractReferences, indexByName } from "../links.js";
 import { extractFields } from "../search/indexer.js";
-import { indexIsBehind, loadDocmapPaths } from "../search/shards.js";
+import { indexIsBehind, loadDocmapPaths, loadIndexManifest } from "../search/shards.js";
 import { tokenize, stem } from "../search/text.js";
 import { searchIndexedNotes } from "../search/visible.js";
 import { graphNeighbors } from "./neighbors.js";
+
+// Given the manifest, a search reads each occupied shard at most once and
+// one note per hit, keeping the hit count in reserve; its expansion re-check
+// keeps one more (search/visible.js). Below this it may leave shards unread.
+const SEARCH_OVERHEAD = 1;
 
 // Experiment parameters (OPEN-31, arch 12.3), to be tuned in Phase 5.
 export const RRF_K = 60;
@@ -96,60 +103,80 @@ const byScoreThenPath = (map) => [...map].sort(([a, x], [b, y]) => y - x || (a <
  * A seed the caller cannot see gets the empty answer with no store op.
  */
 export async function retrieveCandidates(store, { seed, intent, canSeeKey, isIndexable, budget, limits, scope }) {
-  const visible = (key) => {
+  // Awaited; a throw or a rejection counts as not visible.
+  const see = async (key) => {
     try {
-      return canSeeKey(key) === true;
+      return (await canSeeKey(key)) === true;
     } catch {
       return false;
     }
   };
   const nothing = { relations: [], unresolved: [], possiblyIncomplete: true };
-  if (typeof seed?.path !== "string" || !visible(seed.path)) return nothing;
+  if (typeof seed?.path !== "string" || !(await see(seed.path))) return nothing;
   const limit = Number.isInteger(limits?.results) && limits.results > 0 ? limits.results : RESULT_LIMIT;
+  const strict = scope !== "private";
   let incomplete = false;
 
-  // Catalog: the visible paths of the index's docmap, `paths` only on a
-  // converged index (neighbors.js: an unlisted note is unknown, not missing).
-  let catalog = { byName: new Map() };
+  // Catalog: the visible paths of the index's docmap, from the one manifest
+  // read this call makes. Behind, the list may lack a note, so a path outside
+  // it is unknown rather than missing (`partial`); a path in it still resolves.
+  let manifest = null;
+  let docmap = null;
   try {
-    const docmap = await loadDocmapPaths(store, budget, 0);
-    if (!docmap) incomplete = true;
-    else {
-      const seen = docmap.paths.filter(visible);
-      catalog = { byName: indexByName(seen), ...(!indexIsBehind(docmap.freshness) && { paths: new Set(seen) }) };
-    }
+    manifest = await loadIndexManifest(store, budget, 0);
+    docmap = manifest && (await loadDocmapPaths(store, budget, 0, manifest));
   } catch {
-    incomplete = true;
+    docmap = null;
   }
+  const shown = new Set();
+  if (docmap) {
+    for (const p of docmap.paths) if (await see(p)) shown.add(p);
+  } else incomplete = true;
+  const catalog = docmap
+    ? { byName: indexByName([...shown]), paths: shown, partial: indexIsBehind(docmap.freshness) }
+    : { byName: new Map() };
 
-  // Lexical: one loose query. An encrypted seed has no words to ask with (OPEN-32).
+  // Lexical: one loose query. An encrypted seed has no words to ask with
+  // (OPEN-32). Search filters synchronously, so it is handed the visible
+  // docmap paths; a hit outside them is not shown.
   let hits = [];
   const query = isEncryptedNote(seed.body ?? "") ? "" : seedQuery(seed, intent);
-  if (query) {
-    try {
-      const found = await searchIndexedNotes(store, { isVisible: visible, isIndexable, query, budget, limit: limit + 1 });
-      if (!found.indexed) incomplete = true;
-      else {
-        hits = found.hits;
-        if (found.indexIncomplete) incomplete = true;
+  if (query && docmap) {
+    let occupied = 0;
+    for (let id = 0; id < manifest.shardCount; id += 1) if ((manifest.stats[id]?.docCount || 0) > 0) occupied += 1;
+    if (strict && budget.remaining < occupied + limit + 1 + SEARCH_OVERHEAD) incomplete = true;
+    else {
+      try {
+        const found = await searchIndexedNotes(store, { isVisible: (k) => shown.has(k), isIndexable, query, budget, limit: limit + 1, manifest });
+        if (!found.indexed) incomplete = true;
+        else {
+          hits = found.hits;
+          if (found.indexIncomplete) incomplete = true;
+        }
+      } catch {
+        incomplete = true;
       }
-    } catch {
-      incomplete = true;
     }
   }
 
   let graph = { incoming: new Map(), outgoing: new Map(), sharedTargets: new Map(), sharedUrls: new Map(), unresolved: [] };
   try {
-    graph = await graphNeighbors(store, budget, { path: seed.path, body: seed.body ?? "", catalog, canSeeKey: visible, scope, limits });
+    graph = await graphNeighbors(store, budget, { path: seed.path, body: seed.body ?? "", catalog, canSeeKey: see, scope, limits });
     if (!graph.complete || graph.health.possiblyIncomplete) incomplete = true;
   } catch {
     incomplete = true;
   }
 
+  // Every candidate is checked again before it is ranked (each part already
+  // filtered; this is the merge's own guard).
+  const allowed = new Set();
+  for (const p of new Set([...graph.outgoing.keys(), ...graph.incoming.keys(), ...graph.sharedTargets.keys(), ...graph.sharedUrls.keys(), ...hits.map((h) => notePathOf(h.key))])) {
+    if (p !== seed.path && (await see(p))) allowed.add(p);
+  }
   // Merge by note path, every reason kept.
   const found = new Map();
   const note = (path, reason) => {
-    if (path === seed.path || !visible(path)) return null;
+    if (!allowed.has(path)) return null;
     let r = found.get(path);
     if (!r) found.set(path, (r = { path, reasons: new Set(), score: 0 }));
     r.reasons.add(reason);

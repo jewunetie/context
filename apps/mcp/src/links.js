@@ -496,6 +496,9 @@ function decodeFor(link, file) {
  * candidate is `resolved` either way, because `byName` is built from real paths.
  * Never throws on anything `extractReferences` produces.
  *
+ * `catalog.partial` says `paths` may be missing notes (an index that is behind):
+ * a path in the list still resolves, and one outside it is `unknown`.
+ *
  * `catalog` must contain only targets the caller may see; built from anything
  * wider, `ambiguous`/`missing` versus `resolved` reveals notes the caller cannot
  * see (architecture README section 7.3).
@@ -507,7 +510,7 @@ export function resolveReference(occurrence, fromPath, catalog) {
   const { file } = splitAnchor(target);
   if (file === "" || file === "." || file === "..") return { state: "invalid" };
 
-  const absent = catalog.paths ? "missing" : "unknown";
+  const absent = catalog.paths && !catalog.partial ? "missing" : "unknown";
   const decoded = decodeFor(occurrence, file);
   if (styleOf(decoded) === "bare") {
     const candidates = catalog.byName?.get(decoded.replace(/\.md$/, ""));
@@ -518,7 +521,7 @@ export function resolveReference(occurrence, fromPath, catalog) {
   const path = resolveLink(occurrence, fromPath, catalog.byName);
   if (path === null) return { state: "invalid" };
   if (!catalog.paths) return { state: "unknown" };
-  return catalog.paths.has(path) ? { state: "resolved", path } : { state: "missing" };
+  return catalog.paths.has(path) ? { state: "resolved", path } : { state: absent };
 }
 
 /* ---------------------------- re-expression ------------------------------ */

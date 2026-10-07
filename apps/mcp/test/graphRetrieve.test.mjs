@@ -22,6 +22,15 @@
  *   encrypted seed queried for text                                        1 (encrypted seed)
  *
  * RED: the file failed to load on the missing module before retrieve.js existed.
+ *
+ * Fix round 1 (each new test red first against 24a76905):
+ *   no budget check before searching for a strict caller                   2 (multi-shard invariance, all or none)
+ *   the check applied to the owner too                                      1 (all or none)
+ *   SEARCH_OVERHEAD 0 instead of 1                                          1 (all or none, at its boundary)
+ *   catalog.paths only on a converged index (the old rule)                  1 (hidden edit behind)
+ *   catalog.partial ignored by resolveReference                             2 (hidden edit behind, resolveReference)
+ *   canSeeKey not awaited                                                   1 (async canSeeKey)
+ *   manifest not handed to search                                           1 (one manifest read)
  */
 
 import assert from "node:assert/strict";
@@ -32,7 +41,8 @@ import { initGraphManifest } from "../src/graph/manifest.js";
 import { graphManifestKey } from "../src/graph/keys.js";
 import { projectNote } from "../src/graph/project.js";
 import { createSearchBudget } from "../src/search/maintain.js";
-import { syncShardedIndex } from "../src/search/shards.js";
+import { indexIsBehind, loadIndexManifest, MANIFEST_KEY, syncShardedIndex } from "../src/search/shards.js";
+import { extractReferences, indexByName, resolveReference } from "../src/links.js";
 import { memoryBucket } from "./store/fixtures.mjs";
 
 const gen = "1";
@@ -64,7 +74,7 @@ async function world(notes, { conditional = false, ready = false, graph = true }
       await store.put(graphManifestKey(), JSON.stringify({ ...m, health: { ...m.health, state: "ready", sweepComplete: true } }));
     }
   }
-  for (let pass = 0; pass < 30; pass += 1) {
+  for (let pass = 0; pass < 60; pass += 1) {
     const p = await syncShardedIndex(store, { budget: createSearchBudget(4000), isIndexable: indexable });
     if (p.pending === 0 && !p.listingTruncated) break;
   }
@@ -87,7 +97,8 @@ function ask(store, notes, options = {}) {
 
 const paths = (r) => r.relations.map((x) => x.path);
 const byPath = (r) => Object.fromEntries(r.relations.map((x) => [x.path, x]));
-const hidden = (n, body, prefix = "h") => Object.fromEntries(Array.from({ length: n }, (_, i) => [`private/${prefix}${i}.md`, body]));
+const hidden = (n, body, prefix = "h") =>
+  Object.fromEntries(Array.from({ length: n }, (_, i) => [`private/${prefix}${i}.md`, typeof body === "function" ? body(i) : body]));
 
 test("an unlinked note comes back through related_text, with evidence from its snippet; the seed never does", async () => {
   const notes = {
@@ -288,4 +299,117 @@ test("privacy invariance: hidden notes change nothing but the withheld graph bit
   const full = await ask(plainStore, base, { budget: createSearchBudget(60) });
   assert.equal(full.possiblyIncomplete, false);
   assert.deepEqual(paths(full).sort(), ["notes/back.md", "notes/cotarget.md", "notes/courl.md", "other/text.md", "other/text2.md", "t/target.md"]);
+});
+
+// Fix round 1 (review 1 of Task 16).
+
+const MULTI = {
+  [SEED]: "# Kestrel harbor\n\nkestrel harbor survey [[t/target]] [p](https://example.com/page)\n",
+  "t/target.md": "target note",
+  "notes/back.md": "[[notes/seed]] about the harbor",
+  "notes/cotarget.md": "[[t/target]]",
+  "notes/courl.md": "[p](https://example.com/page)",
+  "other/text.md": "kestrel harbor survey results",
+  "other/text2.md": "a kestrel was seen",
+  "other/text3.md": "harbor survey of the coast, kestrel nests, harbor again",
+};
+
+test("multi-shard privacy invariance: hidden notes change only the withheld text bit and the withheld graph bit, budgets 0..80", async () => {
+  const opts = { conditional: true, ready: true };
+  const plainStore = await world(MULTI, opts);
+  const withheldStore = { ...plainStore, get: (k) => (k === graphManifestKey() ? null : plainStore.get(k)) };
+  const variants = {
+    "700 hidden strong text matches": hidden(700, "# Kestrel harbor\n\nkestrel harbor survey kestrel harbor survey"),
+    "700 hidden unrelated notes": hidden(700, (i) => `filler word${i} alpha${i}`),
+    "700 hidden backlinks": hidden(700, "[[notes/seed]]"),
+    "700 hidden long notes": hidden(700, (i) => `kestrel ${"padding ".repeat(200)} ${i}`),
+  };
+  const stores = {};
+  for (const [k, v] of Object.entries(variants)) {
+    stores[k] = await world({ ...MULTI, ...v }, opts);
+    assert.ok((await loadIndexManifest(stores[k], big(), 0)).shardCount > 1, k);
+  }
+  // Text withheld: a results limit no budget here covers makes a strict
+  // caller skip text on the plain bucket for the same spend (no candidate
+  // list here reaches the default limit, so the cut is the same).
+  const NO_TEXT = { results: 100000 };
+  const seen = new Set();
+  for (let B = 0; B <= 80; B += 1) {
+    const at = async (store, limits) => JSON.stringify(await ask(store, MULTI, { budget: createSearchBudget(B), limits }));
+    const outcomes = new Map([
+      [await at(plainStore), "none"],
+      [await at(withheldStore), "graph withheld"],
+      [await at(plainStore, NO_TEXT), "text withheld"],
+      [await at(withheldStore, NO_TEXT), "both withheld"],
+    ]);
+    for (const [k, v] of Object.entries(variants)) {
+      const out = JSON.stringify(await ask(stores[k], { ...MULTI, ...v }, { budget: createSearchBudget(B) }));
+      assert.ok(outcomes.has(out), `B=${B} ${k}:\n${out}\n${JSON.stringify([...outcomes])}`);
+      seen.add(outcomes.get(out));
+    }
+  }
+  assert.ok(seen.has("text withheld") || seen.has("both withheld"), [...seen].join());
+  const generous = JSON.stringify(await ask(plainStore, MULTI, { budget: createSearchBudget(5000) }));
+  for (const [k, v] of Object.entries(variants)) {
+    assert.equal(JSON.stringify(await ask(stores[k], { ...MULTI, ...v }, { budget: createSearchBudget(5000) })), generous, k);
+  }
+});
+
+test("text hits are all or none for a strict caller; the owner keeps them on an index larger than the budget", async () => {
+  const notes = { ...MULTI, ...hidden(700, (i) => `filler word${i}`) };
+  const store = await world(notes, { conditional: true, ready: true });
+  const occupied = (await loadIndexManifest(store, big(), 0)).stats.filter((e) => e.docCount > 0).length;
+  assert.ok(occupied > 1);
+  // Two catalog reads, then one short of every shard, 11 hits and the re-check's reserve.
+  const B = 2 + occupied + 11;
+  const strict = await ask(store, notes, { budget: createSearchBudget(B) });
+  assert.ok(!strict.relations.some((r) => r.reasons.includes("related_text")), JSON.stringify(strict));
+  assert.equal(strict.possiblyIncomplete, true);
+  const forOwner = await ask(store, notes, { canSeeKey: owner, budget: createSearchBudget(B) });
+  assert.ok(forOwner.relations.some((r) => r.reasons.includes("related_text")), JSON.stringify(forOwner));
+  const enough = await ask(store, notes, { budget: createSearchBudget(B + 1) });
+  assert.ok(enough.relations.some((r) => r.reasons.includes("related_text")), JSON.stringify(enough));
+});
+
+test("a hidden edit that leaves the index behind does not drop the seed's rooted links", async () => {
+  const notes = { [SEED]: "# Kestrel\n\nsee [t](../t/target.md) and [[t/two]] and [g](../t/gone.md) kestrel\n", "t/target.md": "target", "t/two.md": "two", "other/text.md": "kestrel" };
+  const store = await world(notes, { conditional: true, ready: true });
+  const before = await ask(store, notes);
+  assert.deepEqual(before.unresolved.map((u) => u.state), ["missing"]);
+  await store.put("private/new.md", "a hidden edit");
+  await syncShardedIndex(store, { budget: createSearchBudget(3), isIndexable: indexable });
+  assert.ok(indexIsBehind((await loadIndexManifest(store, big(), 0)).freshness));
+  const after = await ask(store, notes);
+  assert.deepEqual(after.relations, before.relations);
+  // Behind, an absent target is not known to be absent.
+  assert.deepEqual(after.unresolved.map((u) => u.state), ["unknown"]);
+});
+
+test("resolveReference with catalog.partial: a path in the list resolves, one outside it is unknown", () => {
+  const catalog = { byName: indexByName(["t/a.md"]), paths: new Set(["t/a.md"]), partial: true };
+  const [a, b, c] = extractReferences("[a](t/a.md) [b](t/b.md) [[nothing]]");
+  assert.deepEqual(resolveReference(a, "x.md", catalog), { state: "resolved", path: "t/a.md" });
+  assert.deepEqual(resolveReference(b, "x.md", catalog), { state: "unknown" });
+  assert.deepEqual(resolveReference(c, "x.md", catalog), { state: "unknown" });
+  assert.deepEqual(resolveReference(b, "x.md", { ...catalog, partial: false }), { state: "missing" });
+});
+
+test("an async canSeeKey is awaited, and a rejecting one counts as not visible", async () => {
+  const notes = { ...MULTI };
+  const store = await world(notes, { conditional: true, ready: true });
+  const sync = JSON.stringify(await ask(store, notes));
+  assert.equal(JSON.stringify(await ask(store, notes, { canSeeKey: async (p) => team(p) })), sync);
+  const rejecting = async (p) => { if (p === "other/text.md") throw new Error("boom"); return team(p); };
+  const r = await ask(store, notes, { canSeeKey: rejecting });
+  assert.ok(!paths(r).includes("other/text.md"));
+  assert.ok(paths(r).includes("other/text2.md"));
+});
+
+test("one call reads the search index manifest once", async () => {
+  const store = await world(MULTI, { conditional: true, ready: true });
+  let reads = 0;
+  const counting = { ...store, get: (k) => ((reads += k === MANIFEST_KEY ? 1 : 0), store.get(k)) };
+  const r = await ask(counting, MULTI);
+  assert.ok(r.relations.some((x) => x.reasons.includes("related_text")));
+  assert.equal(reads, 1);
 });

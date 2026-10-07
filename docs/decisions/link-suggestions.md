@@ -84,9 +84,10 @@ write projects. Suggestions spend a separate budget: through the route, one
 pool of `WRITE_ENRICH_SUBREQUEST_BUDGET` for the whole invocation, so a
 legacy JSON-RPC batch shares a single suggestion ceiling (the agent loop
 makes no writes; its writes are proposals); elsewhere, a budget of that size
-per write. They have no other cap. A write's post-commit ops are therefore at
-most twice the budget, and a batch's at most the budget per write plus one
-budget for all its suggestions. Consequences:
+per write. They have no other cap. A write's budgeted post-commit ops are
+therefore at most twice the budget, and a batch's at most the budget per write
+plus one budget for all its suggestions; move-job reads are outside the budget
+(about two per finished move per write). Consequences:
 
 - Suggestions run only where the deployment raised the budget above its
   default of 8 (unset, as on a self-host). At 8 or less a pass could only be

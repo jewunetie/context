@@ -3,7 +3,9 @@
 _See `docs/decisions/README.md` for the index. The design is
 `docs/design/link-graph/README.md` (owner decisions) and
 `docs/design/link-graph/PLAN.md`; the per-task rulings are in
-`docs/design/link-graph/TASKS.md`. The code is `apps/mcp/src/graph/`._
+`docs/design/link-graph/TASKS.md` (Phases 0 to 2) and
+`docs/design/link-graph/TASKS-PHASE-3-4.md` (Phases 3 and 4). The code is
+`apps/mcp/src/graph/`._
 
 ### The reference index is approved, and it is a derivative that is never the authority
 
@@ -139,12 +141,14 @@ a reviewer.
   posting entries: run first, it would hand search a remainder that varies
   with hidden data, and search would then vary in which hits it returns. Last,
   it can only lose its own families, all at once for a strict caller, so the
-  merged answer keeps the one bit above. Search's own read count also
+  graph part of the merged answer keeps the one bit above. Search's own read count also
   depends on hidden data once the index has more than one shard (the shard
   count follows the total note count, and routing reads filters built over
   private vocabulary), so a strict caller searches only when the budget left
   after the catalog covers every occupied shard, the hits and the expansion
   re-check's reserve, and otherwise gets no text hits at all (fix round 1).
+  A strict caller's answer at a given budget is therefore one of four: both
+  parts, graph withheld, text withheld, or both withheld.
   Explicit links rank ahead of
   text-only hits, the rest by reciprocal rank fusion (k = 60), `nearby` only
   breaks ties and is never a candidate of its own, and the result limit is
@@ -180,11 +184,16 @@ a reviewer.
   moves read_note answers through (fix round 3; a sentinel gate tried in
   round 2 could be removed by a racing refresh before a new move's marker
   landed). A finished move's marker delete is a logical-delete tombstone that
-  nothing removes, so related_notes and indexed moves pay one unbudgeted read
-  per historical move, like read_note; the answer does not change with move
-  history. The tests are `relatedNotesTool.test.mjs` "one active move plus
-  100 finished ones" and "a refresh racing a new move's first sentinel", and
-  `moveSentinel.test.mjs`.
+  nothing removes, so every call pays unbudgeted reads that grow with move
+  history: an indexed move one per historical move, and related_notes two
+  (one in the seed lookup, which resolves the path through read_note's move
+  overlay, and one in the retrieval). The answer does not change with move
+  history. The tests are `relatedNotesTool.test.mjs`, "one active move plus
+  100 finished ones: the answer at the default budget is the no-history
+  answer, the moving note withheld" and "a refresh racing a new move's first
+  sentinel never lets related_notes show the moving note", and
+  `moveSentinel.test.mjs`, "a refresh between a new move's first sentinel and
+  its marker does not hide the move".
 
 **What reversing it costs.** Phase 3 backlinks, related notes, and
 index-assisted move repair all read this index; they cannot be built on a
@@ -259,3 +268,182 @@ behind the response of the write's own invocation, far inside 10 minutes. If
 that ever changes (a queued hook, a retry loop), raise the margin or read the
 nodes. Test: `moveIndexedReferrers.test.mjs`, "a node still owing
 reverseRepair, edited inside the margin, is read like the scan would".
+
+**What "covered" means (controller ruling OPEN-23, Task 13 and its fix
+round).** `graphHealth().complete` says a sweep wrapped; it says nothing about
+writes since (arch 11.1: the index is not a completeness oracle). So the
+sweep also records `sweepCensusAt`, and `graphHealth` reports it as
+`coveredThrough` only when `complete` is true. It is the listing time of the
+census the sweep *started* on (the search manifest's `freshness.listedAt`,
+stamped before the listing is taken), not the wall clock and not the wrapping
+pass's census: a note swept early and edited before the wrap is not
+revisited. It is `null` unless every pass of the sweep ran on a complete
+census with nothing pending in search (a note search could not fetch keeps
+its old version in the census, so the sweep would skip its edit), and a
+cursor time later than the wrapping census (skewed or hostile) is published as
+`null`. A move then reads, besides the posting referrers and the moved notes,
+every visible note listed at or after `coveredThrough` minus the margin
+(inclusive), or with no usable listing time.
+
+**When a move scans instead.** Every path below returns `null` from
+`indexedReferrerKeys`, and `rewriteReferences` reads every visible note as it
+did before Phase 3:
+
+- the graph is not `complete` or has no `coveredThrough`, which includes every
+  best-effort store (PLAN decision P4: those always scan);
+- a renamed path is not a `.md` note (attachments have no `incoming/`
+  postings, OPEN-5);
+- a logical move job is active, or the job listing or a marker cannot be read
+  (OPEN-25, fail closed: postings are keyed by physical paths, the overlay
+  presents logical ones);
+- the store may copy server-side (`serverSideCopy: "same-store"`), because a
+  copy may keep the source's listing time and slip under the top-up; gateway
+  stores never declare it (the logical-delete wrapper forces false, and
+  Dropbox moves re-upload);
+- a posting chain is incomplete, including a chain that reached
+  `MAX_POSTING_PAGES` (a writer drops entries once a chain is full);
+- the collaboration heads cannot be listed within the budget, or the budget
+  runs out anywhere else, or any read throws.
+
+Every visible note with collaboration state is read too, as the scan reads it:
+its accepted text may never have reached the `.md`, and the postings describe
+stored bodies only. **Owner decision point (Task 14 re-review):** every
+collaborative read creates a head, so after one scanned move every eligible
+note in a collaborative workspace is a candidate and the index saves little
+there. Including every head is the cheapest complete rule; the lever is
+upstream (a move-time read of a note with no head need not create one).
+
+**What reversing it costs.** Trusting `complete` alone, recording the wall
+clock, or recording the wrapping census lets a referrer edited after its sweep
+visit keep a broken link while the move reports the rewrite done, which is the
+arch 11.1 failure. Dropping any scan fallback does the same for the case it
+guards. Removing the index path entirely costs only speed: moves read every
+visible note again (at least 200 body reads instead of at most 5 in the
+200-note test).
+
+**The tests that fail if it is reversed.** All under `apps/mcp/test/`:
+
+- Coverage time: `graphCoverage.test.mjs`, "a wrapped sweep on a complete
+  census records the census listing time, not the wall clock", "a sweep
+  spanning passes records the listing time of the pass that started it", "a
+  wrap on a truncated census records nothing, and a sweep begun on one records
+  null", "a note search could not fetch (freshness.pending > 0) never lets
+  coveredThrough pass its edit", "an edit after the listing but before the
+  pass ends is not behind coveredThrough" and "a mid-sweep cursor time later
+  than the wrapping census is never published"; `graphManifest.test.mjs`,
+  "coveredThrough is null whenever complete is false".
+- Same result as the scan: `moveIndexedReferrers.test.mjs`, "single move:
+  same bodies, audit row and counts as the scan, with fewer body reads",
+  "batch move: same result as the scan", "folder move: same result as the
+  scan" and "200 notes, 3 referrers: the index reads fewer note bodies than
+  the scan".
+- Top-up: `moveIndexedReferrers.test.mjs`, "a note edited after the sweep and
+  never projected is rewritten via the top-up".
+- Scan fallbacks: `moveIndexedReferrers.test.mjs`, "a graph that is not ready
+  falls back to the scan and still rewrites everything", "a truncated posting
+  chain falls back to the scan", "a best-effort store always scans and reads
+  no node or posting", "a budget too small for the posting reads scans", "a
+  folder move that includes an attachment scans", "an active logical move job
+  scans", "a move-job listing that fails scans", "an unreadable move-job
+  marker counts as active and scans", "a budget that cannot list the
+  collaboration heads scans" and "a store that may copy server-side scans;
+  Dropbox never declares it"; `graphPostings.test.mjs`, "reader: a chain of
+  exactly MAX_POSTING_PAGES pages is not complete (a writer drops entries once
+  it is full)".
+- Collaborative referrers: the two cases in `moveIndexedReferrers.test.mjs`
+  that begin "a collaborative referrer whose accepted edit", one for an edit
+  before the sweep and one after.
+- Privacy: `moveIndexedReferrers.test.mjs`, "a team caller's move never reads
+  a hidden referrer the postings name, and counts match the scan".
+
+### `related_notes` is a read-only convenience, and a strict caller learns at most a few workspace-level bits from it (Tasks 15 to 19)
+
+`related_notes` (`apps/mcp/src/tools/related.js`) and the console's "Linked
+and related notes" panel (`relatedNotes` action, `RelatedPanel.tsx`) answer
+one question about one note the caller can already read: which visible notes
+relate to it, and why. It is a convenience, not a new capability (arch 14):
+
+- **Read-only, and nothing else changes.** `readOnlyHint: true`, so read-only
+  sessions get it; it is in neither `PRIVATE_TIER_ONLY_TOOLS` nor
+  `EXISTENCE_MASKED_TOOLS`; `search` and `fetch` are untouched. Everything it
+  returns is reachable through `read_note`, `list_notes` and `search_notes`.
+- **A hidden note and a missing one answer the same.** The seed resolves
+  exactly as `read_note` resolves a path, move overlay and forwarding
+  included, and both refusals are `not found` at the same raw op count. The
+  exception is inherited from `read_note`, not closed here: a hidden move
+  destination costs one op more than an absent path. The console's operation
+  returns the `read` operation's not-found, byte for byte (and, like `read`,
+  is one op cheaper for a hidden path).
+- **No counts, no health, no unresolved links in the tool** (OPEN-35:
+  diagnostics live in the console, on the note a person can fix). The limit
+  defaults to 10 and is clamped to 1..25 (OPEN-34); it is applied after
+  authorization. Evidence is note text and is printed as a JSON string, with
+  U+2028, U+2029 and U+0085 escaped, so it cannot forge output lines.
+- **The panel never shows a confident empty list** while loading, offline, on
+  error, or when the answer is labelled possibly incomplete; the empty
+  sentence appears only for a complete, empty answer.
+
+**What a strict caller can still learn.** A strict caller is any scope but
+exactly `private` (a team caller, or the owner through a team-scoped
+session). These are the accepted residuals of controller rulings OPEN-27 and
+OPEN-33, each an owner decision point. None reveals a path, a count, content
+or a ranking of a hidden note; each says only that something somewhere is
+hidden, large, moving or recent.
+
+- **Graph reasons all or none.** Whether every posting chain finished within
+  the budget depends on hidden entries, so a strict caller gets every graph
+  family or none, labelled. Tests: `graphNeighbors.test.mjs`, "one bit at
+  most: hidden notes that add a posting page in any family change nothing but
+  the withheld label, at every budget"; `graphRetrieve.test.mjs`, "privacy
+  invariance: hidden notes change nothing but the withheld graph bit, at
+  tight and generous budgets".
+- **Text hits all or none.** Search's cost depends on how many index shards
+  are occupied, which grows with hidden notes, so a strict caller gets text
+  hits only when the budget covers every occupied shard; a strict caller can
+  learn that the index is larger than the budget. Tests:
+  `graphRetrieve.test.mjs`, "text hits are all or none for a strict caller;
+  the owner keeps them on an index larger than the budget" and "multi-shard
+  privacy invariance: hidden notes change only the withheld text bit and the
+  withheld graph bit, budgets 0..80".
+- **A move is active somewhere.** While any logical move is active, notes
+  under its source or destination are withheld and every answer is labelled
+  possibly incomplete, even when the move is between two private folders.
+  Tests: `graphRetrieve.test.mjs`, "a note under an active move's source or
+  destination is withheld, and the answer is labelled" and "an unreadable
+  move job withholds every candidate; a seed under a move gets nothing";
+  `relatedNotesTool.test.mjs`, "during a logical move of a team folder into a
+  private one, a team caller is never shown a note under it".
+- **Freshness.** The possibly-incomplete label also follows workspace graph
+  health and search-index freshness, which a hidden note's edit can flip.
+  This one is accepted, not withheld, so no test proves it constant; the
+  invariance tests hold health and freshness fixed, and these pin the label
+  itself: `graphRetrieve.test.mjs`, "a best-effort store always labels
+  possiblyIncomplete; a conditional, ready, converged one does not";
+  `relatedNotesTool.test.mjs`, "a best-effort store labels its answer
+  possibly incomplete".
+
+Time taken also varies with each of these, as it does for search.
+
+**What reversing it costs.** Listing partial graph families or partial text
+hits for a strict caller turns each bit into a count of hidden entries.
+Answering a hidden path differently from a missing one confirms that a
+private note exists. Dropping the move withholding shows a note mid-move into
+a private folder that `read_note` already refuses. Printing evidence raw lets
+a note's text pose as tool output. Removing the tool loses nothing a caller
+cannot rebuild from reads and searches, at many more calls.
+
+**The tests that fail if it is reversed.** Besides the residual tests above,
+`relatedNotesTool.test.mjs` (under `apps/mcp/test/`), "listed for a read-only
+session, read-only and with a closed schema", "a team caller gets the same
+answer for a hidden note and for a path that does not exist", "related_notes
+and read_note make the same raw ops for a hidden path as for an absent one",
+"a team caller's answer does not change with hidden notes that link to the
+seed", "evidence is rendered as quoted data", "no Unicode line terminator from
+evidence survives in the tool text" and "limit is clamped to 1..25";
+`graphRetrieve.test.mjs`, "limit applies after canSee: hidden strong matches
+do not reduce the visible count"; `apps/convex/__tests__/relatedNotes.test.ts`,
+"a note outside the caller's clearance is the read operation's not-found,
+byte for byte" and "a team answer does not vary with hidden notes";
+`apps/mobile/__tests__/relatedPanel.test.ts`, "loading never says there are no
+related notes", "the incomplete state shows its notice and no empty sentence"
+and "a failed call is unavailable, not empty, and can be retried".

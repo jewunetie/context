@@ -69,14 +69,16 @@ export async function projectNoteAfterWriteDeferred(store, hint, done = () => {}
 /**
  * One write's claim on the enrichment `pool` (a `createSearchBudget` counter,
  * per write or shared by the whole invocation). A pool may also carry
- * `upcoming`, the calls its invocation has yet to make (a JSON-RPC batch, set
- * by the MCP handler); each claim takes one. `suggestions` sees the pool less
+ * `upcoming`, the calls its invocation has yet to finish without a claim (a
+ * JSON-RPC batch, kept by the MCP handler); each claim takes one and counts
+ * itself in `claimed`. `suggestions` sees the pool less
  * a GRAPH_FLOOR for every claim not yet released, this one's included, and
  * every upcoming call; `graph` sees it less the others' floors; `release()`
  * (after the graph update) frees this claim's floor.
  */
 export function claimEnrichment(pool) {
   pool.pending = (pool.pending ?? 0) + 1;
+  pool.claimed = (pool.claimed ?? 0) + 1;
   if (pool.upcoming > 0) pool.upcoming -= 1;
   const others = () => (pool.upcoming ?? 0) + pool.pending - (open ? 1 : 0);
   let open = true;

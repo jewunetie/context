@@ -562,3 +562,23 @@ test("a legacy JSON-RPC batch of six writes at budget 80: every note projects an
   for (let i = 0; i < 6; i += 1) projected.push(bucket.objects.has(nodeKey("1", await pathHash(`notes/w${i}.md`))));
   assert.deepEqual(projected, [true, true, true, true, true, true]);
 });
+
+test("a batch's reads stop reserving once handled: nine read_note then one write_note at 80 still suggests", async () => {
+  env.SUGGEST_BUCKET = await bucketWith();
+  const reads = Array.from({ length: 9 }, (_, i) => ({
+    jsonrpc: "2.0",
+    id: i + 1,
+    method: "tools/call",
+    params: { name: "read_note", arguments: { path: "notes/survey.md" } },
+  }));
+  const write = {
+    jsonrpc: "2.0",
+    id: 10,
+    method: "tools/call",
+    params: { name: "write_note", arguments: { path: "notes/last.md", content: TWO } },
+  };
+  const replies = await post({ "MCP-Protocol-Version": "2025-03-26" }, [...reads, write]);
+  assert.equal(replies.length, 10);
+  const text = replies.at(-1).result.content[0].text;
+  assert.match(text, /\nLink suggestions \((ready|partial)\)/, text);
+});

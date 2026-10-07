@@ -75,14 +75,19 @@ export async function handleMcp(request, store, session) {
   // era. It survives here only for `2024-11-05` and `2025-03-26`, which are
   // still in `LEGACY_PROTOCOLS` and did define it.
   if (Array.isArray(body)) {
-    // Every call in the batch may be a write whose graph update needs its
-    // floor of the invocation's enrichment pool, so earlier writes' link
-    // suggestions leave it (graph/afterWrite.js claimEnrichment).
-    // lean: counts every tools/call, reads included, so a mixed batch holds back more than it needs.
-    if (store.writeEnrichPool) store.writeEnrichPool.upcoming = body.filter((m) => m?.method === "tools/call").length;
+    // Every call still to come in the batch may be a write whose graph update
+    // needs its floor of the invocation's enrichment pool, so earlier writes'
+    // link suggestions leave it (graph/afterWrite.js claimEnrichment). A write
+    // hands its count to its own claim; any other call stops counting once
+    // handled, so reads already answered hold nothing back.
+    // lean: a read not yet reached still counts, so a mixed batch holds back more than it needs until it runs.
+    const pool = store.writeEnrichPool;
+    if (pool) pool.upcoming = body.filter((m) => m?.method === "tools/call").length;
     const results = [];
     for (const msg of body) {
+      const claimed = pool?.claimed;
       const r = await handleRpc(msg, store, session);
+      if (pool && msg?.method === "tools/call" && pool.claimed === claimed && pool.upcoming > 0) pool.upcoming -= 1;
       if (r) results.push(r);
     }
     return results.length ? json(results) : new Response(null, { status: 202 });

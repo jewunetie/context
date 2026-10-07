@@ -20,8 +20,8 @@
  *    swept graph.
  *  - **Cross-surface (DELIVERY 18.1):** the public action's real serialized
  *    answer passes the action's own `returns` validator (convex-test enforces
- *    it). Task 19's `RelatedAnswer` parser does not exist yet; feeding this
- *    answer through it is Task 19's half.
+ *    it), and then goes through the console's own reader,
+ *    `parseRelatedAnswer` (Task 19), which must accept it unchanged.
  *
  * ## Sabotage record
  *
@@ -43,6 +43,7 @@ import { initGraphManifest } from "../../mcp/src/graph/manifest.js";
 import { graphManifestKey } from "../../mcp/src/graph/keys.js";
 import { projectNote } from "../../mcp/src/graph/project.js";
 import { createSearchBudget } from "../../mcp/src/search/maintain.js";
+import { parseRelatedAnswer } from "../../mobile/features/console/files/browser/relatedAnswer";
 import { indexIsBehind, loadIndexManifest, syncShardedIndex } from "../../mcp/src/search/shards.js";
 import { bucket, shareProjects } from "./fileOps/fixtures.helpers";
 import { asUser, captureError } from "./fixtures.helpers";
@@ -177,7 +178,7 @@ describe("the relatedNotes action", () => {
   test("a member's real serialized answer passes the returns validator; a hidden note is the read's not-found", async () => {
     const f = await fixture();
     await share(f);
-    f.backend.seed("1-projects/shared.md", "# Shared\n\nkestrel harbor cutover\n");
+    f.backend.seed("1-projects/shared.md", "# Shared\n\nkestrel harbor cutover, see [gone](gone.md)\n");
     f.backend.seed("1-projects/plan.md", "# Plan\n\nkestrel harbor steps\n");
     await f.t.action(internal.functions.files.runFileOperation, {
       workspaceId: f.workspaceId,
@@ -192,6 +193,10 @@ describe("the relatedNotes action", () => {
     expect(serialized.kind).toBe("related");
     expect(serialized.relations.map((r: { path: string }) => r.path)).toContain("1-projects/plan.md");
     expect(serialized.possiblyIncomplete).toBe(true);
+    // DELIVERY 18.1: the console's reader takes this exact value, nothing dropped or renamed.
+    expect(serialized.unresolved.length).toBeGreaterThan(0);
+    const { kind: _kind, ...carried } = serialized;
+    expect(parseRelatedAnswer(serialized)).toEqual(carried);
 
     const hidden = await failure(() => as.action(api.functions.files.relatedNotes, { workspaceId: f.workspaceId, path: "2-areas/private-note.md" }));
     const absent = await failure(() => as.action(api.functions.files.relatedNotes, { workspaceId: f.workspaceId, path: "2-areas/never.md" }));

@@ -38,6 +38,7 @@ import type { NoteScope } from "../scope";
 import type { ToastSpec } from "../../../design/components/Toast";
 import type { FolderListing, SettableVisibility } from "../types";
 import type { SyncFacts } from "../../../offline/copy";
+import type { RelatedAnswer } from "./relatedAnswer";
 import type { PendingMarks } from "../pendingMarks";
 import type { ConflictReview } from "../useConflictReview";
 import type { AppliedPluginNoteWrite } from "../../plugins/runtime";
@@ -219,6 +220,16 @@ export interface FileBrowser extends BesideEditing {
    */
   /** `prefix` narrows to one folder and everything under it ("clients/"). */
   search: (query: string, prefix?: string) => Promise<SearchAnswer>;
+
+  /**
+   * The notes linked to and related to one note, and its own unresolved links
+   * (`functions/files.relatedNotes`, read through `parseRelatedAnswer`).
+   *
+   * Rejects when it cannot answer, for the reason `search` does. Optional:
+   * the landing page's demo console and a visitor's browser have no graph to
+   * ask, and absent means the note view draws no related-notes panel at all.
+   */
+  relatedNotes?: (path: string) => Promise<RelatedAnswer>;
 
   editor: EditorState;
   setDraft: (text: string) => void;

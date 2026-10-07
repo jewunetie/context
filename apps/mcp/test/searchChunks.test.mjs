@@ -23,11 +23,18 @@
  *   `partial` on every chunk, not the last                                 1
  *   no title line on later chunks                                          2
  *   `indexVolumeOf` ignores the format                                     1
+ *   drawings chunked like ordinary notes (fix round 1)                    1
+ *   comments not stripped before chunking (fix round 1)                    1
+ *   `placeUnclaimed` ignores the format for claimed load (fix round 1)     1
  *
  * RED first: 7 of 13 failed; the 6 that passed pin behaviour that must not
  * change (channel-day and `chunk: null` documents, an empty or encrypted note's
  * single document, removal of old chunk docs, convergence of Task 31's
  * chunking without `partial`).
+ *
+ * Fix round 1 RED: the drawing and comment tests failed before the change; the
+ * placement test passed (Task 36 already passes the format) and fails only
+ * under its sabotage.
  */
 
 import assert from "node:assert/strict";
@@ -39,6 +46,9 @@ import { searchIndexedNotes } from "../src/search/visible.js";
 import { subDocumentsFor, indexVolumeOf, channelDaySubDocuments } from "../src/search/commsIndex.js";
 import { chunkNote } from "../src/search/chunk.js";
 import { DEFAULT_FORMAT } from "../src/search/format.js";
+import { extractFields } from "../src/search/indexer.js";
+import { placeUnclaimed } from "../src/search/shards/placement.js";
+import { emptyManifest } from "../src/search/shards/shapes.js";
 import { renderChannelDayNote } from "../../../packages/communications/src/note.js";
 import { memoryBucket } from "./store/fixtures.mjs";
 
@@ -304,4 +314,82 @@ test("an encrypted note teaches a chunked index no plaintext term", async () => 
   const docs = (await storedDocs(bucket)).filter(([, doc]) => doc.notePath === "notes/sealed.md");
   assert.deepEqual(docs.map(([key]) => key), ["notes/sealed.md"], "one whole-note document, so its version is recorded");
   assert.deepEqual((await search(bucket, "kestrel")).hits, []);
+});
+
+// -- fix round 1: drawings, comments, placement --------------------------------
+
+function drawingNote() {
+  const elements = [];
+  for (let i = 0; i < 120; i += 1) {
+    elements.push({ id: `elemid${i}xyz`, type: "text", x: 100 + i, y: 200 + i, text: `label number ${i} secretlabel${i}`, strokeColor: "#1e1e1e", seed: 12345 + i });
+  }
+  return `---\nexcalidraw-plugin: parsed\n---\n# Excalidraw Data\n\n## Text Elements\nlabel one ^abc\n\n## Drawing\n\`\`\`json\n${JSON.stringify({ type: "excalidraw", elements }, null, 2)}\n\`\`\`\n`;
+}
+
+function indexedTermsOf(path, docs) {
+  const terms = new Set();
+  for (const doc of docs) {
+    const fields = extractFields(path, doc.content);
+    for (const text of [fields.title, fields.headings, fields.tags.join(" "), fields.body]) {
+      for (const term of String(text).toLowerCase().match(/[a-z0-9]+/g) || []) terms.add(term);
+    }
+  }
+  return terms;
+}
+
+test("a drawing stays one whole-note document under a chunked format, indexed up to the cap", async () => {
+  const path = "d/plan.excalidraw.md";
+  const drawing = drawingNote();
+  assert.ok(drawing.length > 20_000);
+  const docs = subDocumentsFor(path, drawing, CHUNKED);
+  assert.deepEqual(docs, [{ key: path, notePath: path, anchor: null, content: drawing, comms: null }]);
+  const whole = indexedTermsOf(path, [{ content: drawing }]);
+  assert.ok(whole.size > 200, `${whole.size} terms in the whole drawing`);
+  assert.deepEqual([...indexedTermsOf(path, docs)].sort(), [...whole].sort());
+  const bucket = bucketWith({ [path]: drawing });
+  await build(bucket);
+  assert.ok((await storedTerms(bucket)).has("secretlabel119"), "a label far past 2,048 characters is indexed");
+  // Past the cap, the one document is cut there and reported as partial.
+  const huge = subDocumentsFor(path, drawing + " ".repeat(64_000), CHUNKED);
+  assert.equal(huge.length, 1);
+  assert.equal(huge[0].content.length, 64_000);
+  assert.equal(huge[0].partial, true);
+});
+
+test("comments are stripped before chunking: no comment word is indexed at any chunk boundary", () => {
+  const paragraph = "plain filler words about nothing in particular written to take up room. ".repeat(6);
+  for (const bodyLength of [500, 1_800, 2_600, 5_000]) {
+    let note = "# Note\n\n";
+    while (note.length < bodyLength) note += `${paragraph}\n\n`;
+    let block = "```comments\n";
+    for (let i = 0; i < 12; i += 1) {
+      block += `t${i}xx "quoted words"\n- 2026-09-27T07:30:12Z Reviewer: commentonlyword${i} ${"reviewerchatter ".repeat(20)}\n`;
+    }
+    note += `${block}\`\`\`\n`;
+    assert.ok(!/commentonlyword|reviewerchatter/.test(extractFields("n/c.md", note).body), "the whole note indexes no comment word");
+    const docs = subDocumentsFor("n/c.md", note, CHUNKED);
+    const terms = indexedTermsOf("n/c.md", docs);
+    const leaking = [...terms].filter((term) => /commentonlyword|reviewerchatter/.test(term));
+    assert.deepEqual(leaking, [], `body ${bodyLength}: ${docs.length} chunks`);
+    assert.ok(terms.has("filler"), `body ${bodyLength}: the note's own words are indexed`);
+  }
+});
+
+test("placement: a channel-day note avoids a shard that holds long chunked notes", () => {
+  const manifest = emptyManifest(2);
+  const entries = new Map();
+  const claimed = new Map();
+  for (let i = 0; i < 3; i += 1) {
+    entries.set(`notes/long-${i}.md`, { version: "v", uploaded: null, size: 60_000 });
+    claimed.set(`notes/long-${i}.md`, 0);
+  }
+  for (let i = 0; i < 10; i += 1) {
+    entries.set(`notes/short-${i}.md`, { version: "v", uploaded: null, size: 2_000 });
+    claimed.set(`notes/short-${i}.md`, 1);
+  }
+  const day = "0-inbox/email/name-at-example-com/2026-09-07.md";
+  entries.set(day, { version: "v", uploaded: null, size: 30_000 });
+  // Shard 0 holds 180,000 indexed characters under the chunked format, 6,144 without.
+  assert.equal(placeUnclaimed(emptyManifest(2), entries, claimed, 1e9).get(day), 0, "today's rule");
+  assert.equal(placeUnclaimed(manifest, entries, claimed, 1e9, CHUNKED).get(day), 1);
 });

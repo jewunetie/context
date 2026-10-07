@@ -19,6 +19,7 @@
  *
  *   v2 shard written with a trailing space in its body                       1
  *   v2 manifest written create-only instead of unconditionally when absent   1
+ *   scoring reads the clock per doc again (shardQuery.js)                    1 (the ticking-clock test)
  */
 
 import assert from "node:assert/strict";
@@ -105,4 +106,19 @@ test("switch off: the v2 store operations, bodies and answers match the pre-Task
   const digest = await scenario();
   assert.equal(await scenario(), digest, "the scenario is deterministic");
   assert.equal(digest, FROZEN_DIGEST);
+});
+
+// The cause of a past flake where the repeat run above produced another digest:
+// scoring read `Date.now()` once per doc when no `now` was given, so a clock
+// tick partway through one query gave tied docs (same score, same upload time)
+// different recency and reordered them. Here the clock ticks on every read.
+test("switch off: the digest holds while the clock ticks during the scenario", async () => {
+  const realNow = Date.now;
+  let clock = realNow();
+  Date.now = () => (clock += 1);
+  try {
+    assert.equal(await scenario(), FROZEN_DIGEST);
+  } finally {
+    Date.now = realNow;
+  }
 });

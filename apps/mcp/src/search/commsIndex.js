@@ -49,6 +49,8 @@
 import { isMessageAnchor } from "../../../../packages/communications/src/anchors.js";
 import { FENCE_MARKER } from "../../../../packages/communications/src/note.js";
 import { isChannelDayNotePath } from "../../../../packages/communications/src/paths.js";
+import { isDrawingPath } from "../../../../packages/drawings/src/excalidraw.js";
+import comments from "../../../../packages/shared/src/comments.cjs";
 import { NOTE_INDEX_CHAR_CAP } from "./maintain.js";
 import { chunkNote } from "./chunk.js";
 import { DEFAULT_FORMAT } from "./format.js";
@@ -279,11 +281,21 @@ export function subDocumentsFor(path, full, format = DEFAULT_FORMAT) {
  *   fact `statsOfShard` turns into `partialPaths`.
  * - **No chunks** (an empty or encrypted note, whose indexable text is empty)
  *   is the single whole-note document, so its version is still recorded.
+ * - **Comments are stripped before chunking** (`comments.cjs`, as
+ *   `extractFields` does for a whole note), so a comment block cut by a chunk
+ *   boundary is still removed whole; the cap counts the note's own words.
+ * - **A drawing is one document**, its first `cap` characters: `extractFields`
+ *   reads a drawing's words out of the parsed file, which a fragment is not.
  */
 function chunkDocuments(path, text, chunk) {
-  const { chunks, partial } = chunkNote(path, text, chunk);
+  if (isDrawingPath(path)) {
+    const content = text.slice(0, chunk.cap);
+    return [{ key: path, notePath: path, anchor: null, content, comms: null, ...(text.length > chunk.cap ? { partial: true } : {}) }];
+  }
+  const words = comments.stripComments(text.replace(/\r\n/g, "\n"));
+  const { chunks, partial } = chunkNote(path, words, chunk);
   if (chunks.length === 0) return [wholeNoteDocument(path, text)];
-  const fields = extractFields(path, text.slice(0, chunk.cap));
+  const fields = extractFields(path, words.slice(0, chunk.cap));
   const titleLine = fields.headings ? `# ${fields.title}\n` : "";
   return chunks.map(({ index, text: chunkText }) => ({
     key: `${path}#c${index}`,

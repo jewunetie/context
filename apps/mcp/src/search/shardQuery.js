@@ -524,6 +524,9 @@ export function scoreCollected(perShardCollections, query, { now, tokenizer } = 
     }
   }
 
+  // One clock for the whole call: read per doc, a tick mid-call would give tied
+  // docs different recency and reorder them.
+  const clock = now ?? Date.now();
   const results = [];
   for (const [path, byTerm] of perDoc) {
     let bm25 = 0;
@@ -539,7 +542,7 @@ export function scoreCollected(perShardCollections, query, { now, tokenizer } = 
     // PageRank neutral in v2: 0.75 + 0.25 * 1 === 1.0, so the multiplication
     // is a no-op and is skipped rather than performed for show.
 
-    score *= recencyMultiplier(meta.get(path)?.uploaded, now);
+    score *= recencyMultiplier(meta.get(path)?.uploaded, clock);
     if (!Number.isFinite(score) || score <= 0) continue;
 
     const docMeta = meta.get(path);

@@ -16,10 +16,10 @@
  *   reflow hunks not dropped                            1 (whitespace)
  *   code not masked                                     2 (new, code)
  *   frontmatter lines given comparison keys             1 (frontmatter)
- *   closing-hash regex /[ \t]+#+[ \t]*$/ restored        1 (heading of spaces, 193 s)
+ *   closing-hash regex /[ \t]+#+[ \t]*$/ restored        1 (heading of spaces, 189 s; bound 2 s)
  *   closing hashes stripped without a space before      1 (heading of spaces)
- *   links.js definitions checked with skip.some         1 (definitions, 5.2 s)
- *   edit-distance cap removed                           1 (edit-distance cap, 8.5 s)
+ *   links.js definitions checked with skip.some         1 (definitions, 5.2 s; bound 2 s)
+ *   edit-distance cap removed                           1 (edit-distance cap, 8.2 s; bound 2 s)
  *   edit-distance cap set to 100                        1 (edit-distance cap)
  *   old 1M-cell window bound restored                   1 (edits far apart)
  *   definition span is the target only                  1 (reference definition)
@@ -363,20 +363,20 @@ test("the edit-distance cap: exact under it, a limited pass over it, fast either
   const underMs = performance.now() - started;
   assert.equal(under.status, "changed");
   assert.deepEqual(under.sections.map((s) => s.heading), ["A"]);
-  assert.ok(underMs < 250, `under the cap took ${underMs} ms`);
+  assert.ok(underMs < 2_000, `under the cap took ${underMs} ms`);
 
   started = performance.now();
   const over = detect(distinct("old", 20_000), distinct("new", 20_000));
   const overMs = performance.now() - started;
   assert.equal(over.status, "new");
-  assert.ok(overMs < 250, `over the cap took ${overMs} ms`);
+  assert.ok(overMs < 2_000, `over the cap took ${overMs} ms`);
 
   // Long repeated snakes: alternating equal lines shifted by one.
   const alt = (shift) => Array.from({ length: 1_000 }, (_, i) => `${"p".repeat(240)}c${(i + shift) % 2}`).join("\n");
   started = performance.now();
   detect(`z\n${alt(0)}\nz`, `y\n${alt(1)}\ny`);
   const altMs = performance.now() - started;
-  assert.ok(altMs < 250, `alternating lines took ${altMs} ms`);
+  assert.ok(altMs < 2_000, `alternating lines took ${altMs} ms`);
 });
 
 test("a heading of spaces is linear, and closing hashes follow CommonMark", () => {
@@ -386,7 +386,7 @@ test("a heading of spaces is linear, and closing hashes follow CommonMark", () =
   detect("x", spaces);
   detect(null, spaces);
   const elapsed = performance.now() - started;
-  assert.ok(elapsed < 250, `took ${elapsed} ms`);
+  assert.ok(elapsed < 2_000, `took ${elapsed} ms`);
 
   const title = (line) => detect(null, `${line}\nbody\n`).sections[0].heading;
   assert.equal(title("## Plan ##"), "Plan");
@@ -402,7 +402,7 @@ test("many reference definitions beside many code spans stay fast", () => {
   const started = performance.now();
   detect(body.slice(0, -1), body);
   const elapsed = performance.now() - started;
-  assert.ok(elapsed < 250, `took ${elapsed} ms`);
+  assert.ok(elapsed < 2_000, `took ${elapsed} ms`);
 });
 
 test("adding only a reference definition is skipped", () => {

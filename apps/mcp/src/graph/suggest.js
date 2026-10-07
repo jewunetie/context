@@ -45,9 +45,11 @@ const GUIDANCE =
  * is an epoch-ms time against `now()` after which no op starts. Never throws:
  * any exception is `unavailable`.
  */
-export async function suggestLinks(store, scope, { path, committed, etag, sections, audience, canSeeKey, isIndexable }, budget, { deadline = Infinity, now = Date.now } = {}) {
-  const block = (status, candidates = []) => fit({ status, basedOnEtag: etag ?? null, candidates });
+export async function suggestLinks(store, scope, args, budget, clock) {
+  const block = (status, candidates = []) => fit({ status, basedOnEtag: args?.etag ?? null, candidates });
   try {
+    const { path, committed, sections, audience, canSeeKey, isIndexable } = args;
+    const { deadline = Infinity, now = Date.now } = clock ?? {};
     // Without the source's privacy state the audience cannot be proven, and an
     // unproven audience is withheld (AGENT-LINKS 13.7).
     if (!Array.isArray(audience?.rules)) throw new TypeError("suggestLinks needs the source's audience { rules, overrides }");
@@ -62,6 +64,10 @@ export async function suggestLinks(store, scope, { path, committed, etag, sectio
       late = true;
       return true;
     };
+    // Search reads a wave of snippets on ops taken before the wave starts, and
+    // retrieval reads move jobs outside the budget, so the store refuses too:
+    // after the deadline no read reaches it.
+    const timedStore = untilDeadline(store, expired);
     const clocked = {
       get remaining() {
         return expired() ? 0 : budget.remaining;
@@ -80,13 +86,14 @@ export async function suggestLinks(store, scope, { path, committed, etag, sectio
         incomplete = true;
         break;
       }
-      const found = await retrieveCandidates(store, {
+      const found = await retrieveCandidates(timedStore, {
         seed: { path, body: committed, sections: [s] },
         intent: "link_suggestions",
         canSeeKey: see,
         isIndexable,
         budget: clocked,
         scope,
+        excludeLinked: true,
       });
       if (late) {
         incomplete = true;
@@ -131,6 +138,23 @@ export async function suggestLinks(store, scope, { path, committed, etag, sectio
   }
 }
 
+/**
+ * `store` whose reads (get, list, head) answer null once `expired()`, without
+ * reaching the store; a logical view forked from it is wrapped the same way.
+ * Writes pass through (retrieval makes none).
+ */
+function untilDeadline(store, expired) {
+  return new Proxy(store, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop, target);
+      if (typeof value !== "function") return value;
+      if (prop === "get" || prop === "list" || prop === "head") return (...a) => (expired() ? Promise.resolve(null) : value.apply(target, a));
+      if (prop === "forkLogicalView") return (...a) => untilDeadline(value.apply(target, a), expired);
+      return value.bind(target);
+    },
+  });
+}
+
 /** Who may be offered as a link target from `path`: every reader of it may read it. */
 function audienceOf(path, { rules, overrides }) {
   const visibility = effectiveVisibility(path, rules, overrides);
@@ -152,8 +176,13 @@ export function renderLinkSuggestions({ status, candidates }) {
   return [`Link suggestions (${status}): ${GUIDANCE}`, ...candidates.map(line)].join("\n");
 }
 
+const utf8 = new TextEncoder();
 const escape = (s) =>
-  s.replace(/[\p{Cc}\p{Zl}\p{Zp}"\\]/gu, (ch) => (ch === '"' || ch === "\\" ? `\\${ch}` : `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`));
+  s.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}"\\]/gu, (ch) => {
+    if (ch === '"' || ch === "\\") return `\\${ch}`;
+    const cp = ch.codePointAt(0);
+    return cp > 0xffff ? `\\u{${cp.toString(16)}}` : `\\u${cp.toString(16).padStart(4, "0")}`;
+  });
 const quote = (s) => `"${escape(s)}"`;
 
 /** At most `k` code points, marked when cut; never splits a surrogate pair. */
@@ -166,7 +195,9 @@ function clip(s, k) {
 /**
  * The block trimmed until its rendering fits SUGGESTION_BYTE_CAP: section and
  * excerpt cut to the longest common length that fits, and when even empty
- * ones do not (long paths), the last candidate dropped.
+ * ones do not, the candidate with the longest line at that length dropped (a
+ * path too long to fit), never one that would fit. A list emptied this way is
+ * `none` (or stays `partial`).
  */
 function fit(block) {
   let candidates = block.candidates;
@@ -184,6 +215,12 @@ function fit(block) {
       }
       return at(lo);
     }
-    candidates = candidates.slice(0, -1);
+    const lines = renderLinkSuggestions(at(0)).split("\n").slice(1);
+    let worst = 0;
+    lines.forEach((line, i) => {
+      if (utf8.encode(line).length >= utf8.encode(lines[worst]).length) worst = i;
+    });
+    candidates = candidates.filter((_, i) => i !== worst);
+    if (candidates.length === 0 && block.status === "ready") block = { ...block, status: "none" };
   }
 }

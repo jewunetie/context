@@ -384,6 +384,25 @@ test("text hits are all or none for a strict caller; the owner keeps them on an 
   assert.ok(enough.relations.some((r) => r.reasons.includes("related_text")), JSON.stringify(enough));
 });
 
+test("excludeLinked drops linked targets before the cut, and the strict text gate covers the wider search", async () => {
+  const links = Array.from({ length: 4 }, (_, i) => `[[t/l${i}]]`).join(" ");
+  const notes = { ...MULTI, [SEED]: `# Kestrel harbor\n\nkestrel harbor survey ${links}\n`, ...hidden(700, (i) => `filler word${i}`) };
+  for (let i = 0; i < 4; i += 1) notes[`t/l${i}.md`] = `kestrel harbor survey ${i}`;
+  const store = await world(notes, { conditional: true, ready: true });
+  const occupied = (await loadIndexManifest(store, big(), 0)).stats.filter((e) => e.docCount > 0).length;
+  const ask2 = (budget) =>
+    retrieveCandidates(store, { seed: { path: SEED, body: notes[SEED] }, intent: "related_notes", canSeeKey: team, isIndexable: indexable, budget, scope: "workspace", excludeLinked: true });
+  const generous = await ask2(big());
+  assert.ok(!generous.relations.some((r) => r.reasons.includes("linked_from_here")), JSON.stringify(generous));
+  assert.ok(generous.relations.some((r) => r.reasons.includes("related_text")));
+  // Two catalog reads, then one short of every shard, 10 + 4 hits and the re-check's reserve.
+  const B = 2 + occupied + 11 + 4;
+  const short = await ask2(createSearchBudget(B));
+  assert.ok(!short.relations.some((r) => r.reasons.includes("related_text")), JSON.stringify(short));
+  const enough = await ask2(createSearchBudget(B + 1));
+  assert.ok(enough.relations.some((r) => r.reasons.includes("related_text")), JSON.stringify(enough));
+});
+
 test("a hidden edit that leaves the index behind does not drop the seed's rooted links", async () => {
   const notes = { [SEED]: "# Kestrel\n\nsee [t](../t/target.md) and [[t/two]] and [g](../t/gone.md) kestrel\n", "t/target.md": "target", "t/two.md": "two", "other/text.md": "kestrel" };
   const store = await world(notes, { conditional: true, ready: true });

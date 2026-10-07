@@ -18,7 +18,7 @@
 // docs/decisions/link-graph.md records (OPEN-27, OPEN-33); none is a path,
 // count or rank derived from a hidden note.
 import { isEncryptedNote } from "../encryption.js";
-import { extractReferences, indexByName } from "../links.js";
+import { extractReferences, indexByName, resolveReference } from "../links.js";
 import { extractFields } from "../search/indexer.js";
 import { indexIsBehind, loadDocmapPaths, loadIndexManifest } from "../search/shards.js";
 import { tokenize, stem } from "../search/text.js";
@@ -37,6 +37,10 @@ export const RRF_K = 60;
 export const NEARBY_DISTANCE = 2;
 export const MAX_QUERY_TERMS = 12;
 export const RESULT_LIMIT = 10;
+// With `excludeLinked`, search is asked for this many more hits at most, one
+// per distinct target the seed already links to, so linked targets matching
+// the text do not crowd out the rest (Task 22 fix round 1).
+export const MAX_LINKED_OVERFETCH = 20;
 
 const REASONS = ["links_here", "linked_from_here", "shares_target", "shares_url", "related_text", "nearby"];
 const EXPLICIT = new Set(["links_here", "linked_from_here"]);
@@ -103,9 +107,11 @@ const byScoreThenPath = (map) => [...map].sort(([a, x], [b, y]) => y - x || (a <
  * "link_suggestions". `scope` is the caller's scope, passed to graphNeighbors
  * (only exactly "private" keeps partial graph families). `limits.results`
  * caps the relations (after authorization), `limits.expand` is graphNeighbors'.
+ * `excludeLinked` drops the targets the seed already links to
+ * (`linked_from_here`) before that cap, and widens the search by their number.
  * A seed the caller cannot see gets the empty answer with no store op.
  */
-export async function retrieveCandidates(store, { seed, intent, canSeeKey, isIndexable, budget, limits, scope }) {
+export async function retrieveCandidates(store, { seed, intent, canSeeKey, isIndexable, budget, limits, scope, excludeLinked = false }) {
   // Paths under an active logical move's source or destination (fix round 1).
   // Candidates are physical paths, and read_note answers for these through the
   // move overlay, so one moved into a private folder could be shown here at
@@ -161,6 +167,17 @@ export async function retrieveCandidates(store, { seed, intent, canSeeKey, isInd
     ? { byName: indexByName([...shown]), paths: shown, partial: indexIsBehind(docmap.freshness) }
     : { byName: new Map() };
 
+  // The seed's own visible targets, resolved as graphNeighbors resolves them
+  // (same catalog, so from the seed's text and visible paths only).
+  const linked = new Set();
+  if (excludeLinked && !isEncryptedNote(seed.body ?? "")) {
+    for (const occ of extractReferences(seed.body ?? "")) {
+      const r = resolveReference(occ, seed.path, catalog);
+      if (r.state === "resolved" && r.path !== seed.path) linked.add(r.path);
+    }
+  }
+  const searchLimit = limit + Math.min(linked.size, MAX_LINKED_OVERFETCH);
+
   // Lexical: one loose query. An encrypted seed has no words to ask with
   // (OPEN-32). Search filters synchronously, so it is handed the visible
   // docmap paths; a hit outside them is not shown.
@@ -169,10 +186,10 @@ export async function retrieveCandidates(store, { seed, intent, canSeeKey, isInd
   if (query && docmap) {
     let occupied = 0;
     for (let id = 0; id < manifest.shardCount; id += 1) if ((manifest.stats[id]?.docCount || 0) > 0) occupied += 1;
-    if (strict && budget.remaining < occupied + limit + 1 + SEARCH_OVERHEAD) incomplete = true;
+    if (strict && budget.remaining < occupied + searchLimit + 1 + SEARCH_OVERHEAD) incomplete = true;
     else {
       try {
-        const found = await searchIndexedNotes(store, { isVisible: (k) => shown.has(k), isIndexable, query, budget, limit: limit + 1, manifest });
+        const found = await searchIndexedNotes(store, { isVisible: (k) => shown.has(k), isIndexable, query, budget, limit: searchLimit + 1, manifest });
         if (!found.indexed) incomplete = true;
         else {
           hits = found.hits;
@@ -235,7 +252,8 @@ export async function retrieveCandidates(store, { seed, intent, canSeeKey, isInd
   const tier = (r) => ([...r.reasons].some((x) => EXPLICIT.has(x)) ? 0 : 1);
   const ranked = [...found.values()].sort((a, b) =>
     tier(a) - tier(b) || b.score - a.score || Number(b.reasons.has("nearby")) - Number(a.reasons.has("nearby")) || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-  const relations = ranked.slice(0, limit).map((r) => ({
+  const kept = excludeLinked ? ranked.filter((r) => !r.reasons.has("linked_from_here")) : ranked;
+  const relations = kept.slice(0, limit).map((r) => ({
     path: r.path,
     reasons: REASONS.filter((x) => r.reasons.has(x)),
     ...(r.evidence !== undefined && { evidence: r.evidence }),

@@ -19,6 +19,17 @@
  *   retrieval run with scope "private" for every caller                     1 (invariance)
  *
  * RED: the file failed to load on the missing module before suggest.js existed.
+ *
+ * Fix round 1 (each new test red first against 3401aa0f; counts span this file and graphRetrieve.test.mjs):
+ *   excludeLinked not passed to retrieval                                   1 (more links than the limit)
+ *   no over-fetch for linked targets                                        2 (more links than the limit, retrieve gate)
+ *   strict text gate on the old limit                                       1 (retrieve gate)
+ *   store not wrapped (budget only)                                         3 (crowded write, dropped whole, logical-delete)
+ *   forked logical views not wrapped                                        1 (logical-delete)
+ *   arguments destructured outside the try                                  1 (null arguments)
+ *   fit drops the last candidate                                            1 (fit)
+ *   an emptied list kept "ready"                                            1 (fit)
+ *   \p{Cf} not escaped                                                      1 (format characters)
  */
 
 import assert from "node:assert/strict";
@@ -32,6 +43,7 @@ import { projectNote } from "../src/graph/project.js";
 import { canSee } from "../src/privacy/engine.js";
 import { createSearchBudget } from "../src/search/maintain.js";
 import { MANIFEST_KEY, shardKey, syncShardedIndex } from "../src/search/shards.js";
+import { withLogicalDelete } from "../src/store/logicalDelete.js";
 import { memoryBucket } from "./store/fixtures.mjs";
 
 const gen = "1";
@@ -65,20 +77,26 @@ async function world(notes, { conditional = true, ready = true } = {}) {
     const m = JSON.parse(store.objects.get(graphManifestKey()).body);
     await store.put(graphManifestKey(), JSON.stringify({ ...m, health: { ...m.health, state: "ready", sweepComplete: true } }));
   }
-  for (let pass = 0; pass < 60; pass += 1) {
+  for (let pass = 0; pass < 200; pass += 1) {
     const p = await syncShardedIndex(store, { budget: createSearchBudget(4000), isIndexable: indexable });
     if (p.pending === 0 && !p.listingTruncated) break;
   }
   return store;
 }
 
-/** A store counting every op it is asked for, with an optional hook after each. */
+/**
+ * A store counting every op it is asked for, with an optional hook after each.
+ * `moveOps` lists the move-job reads apart (retrieval makes them outside the
+ * budget, as read_note does; graphRetrieve's budget test counts them the same way).
+ */
 function counting(store, after = () => {}) {
-  const c = { ...store, ops: 0 };
+  const c = { ...store, ops: 0, moveOps: [] };
   for (const m of ["get", "put", "list", "delete", "head"]) {
     if (typeof store[m] !== "function") continue;
     c[m] = (...args) => {
       c.ops += 1;
+      const key = String(m === "list" ? args[0]?.prefix : args[0]);
+      if (key.startsWith(".context/moves/")) c.moveOps.push(key);
       after(c.ops, m, args);
       return store[m](...args);
     };
@@ -107,6 +125,7 @@ function suggest(store, options = {}) {
   });
 }
 
+const SHARD_PREFIX = shardKey(0).slice(0, -"000.json".length);
 const paths = (b) => b.candidates.map((c) => c.path);
 const bytes = (s) => new TextEncoder().encode(s).length;
 const hidden = (n, body, prefix = "h") =>
@@ -270,7 +289,8 @@ test("deadline: a clock that passes during CPU work (no I/O in between) starts n
     return team(k);
   };
   const block = await suggest(c, { committed: BASE[SEED], sections: SECTIONS, canSeeKey: slow, deadline: 250, now: () => t });
-  assert.equal(c.ops, 2, "the manifest and the docmap, nothing after");
+  assert.deepEqual(c.moveOps, [".context/moves/"]);
+  assert.equal(c.ops - c.moveOps.length, 2, "the manifest and the docmap, nothing after");
   assert.equal(block.status, "skipped");
 });
 
@@ -301,9 +321,95 @@ test("deadline: a retrieval the deadline reached is dropped whole, at every op i
     });
     const block = await suggest(c, { committed: BASE[SEED], sections: [SECTIONS[0]], deadline: 250, now: () => t });
     assert.deepEqual(block, { status: "skipped", basedOnEtag: "v2", candidates: [] }, `k=${k}`);
-    // Ops already taken before the clock passed (a wave of snippet reads) may still run.
-    assert.ok(c.ops <= one.ops, `k=${k}`);
+    assert.equal(c.ops, k, `k=${k}`);
   }
+});
+
+test("deadline: no store op starts after the clock passes, at every op of a crowded two-section write (snippet waves included)", async () => {
+  const notes = { [SEED]: "# Seed\n\n## Harbor\n\nkestrel harbor survey [[t/target]]\n\n## Fog\n\nlighthouse fog signal\n", "t/target.md": "x [[notes/seed]]" };
+  for (let i = 0; i < 20; i += 1) notes[`other/k${i}.md`] = `kestrel harbor survey lighthouse fog signal ${i} [[t/target]]`;
+  const sections = [section("Harbor", "## Harbor\n\nkestrel harbor survey [[t/target]]\n"), section("Fog", "## Fog\n\nlighthouse fog signal\n")];
+  const store = await world(notes);
+  const all = counting(store);
+  const full = await suggest(all, { committed: notes[SEED], sections, budget: createSearchBudget(5000) });
+  assert.equal(full.status, "ready");
+  for (let k = 1; k <= all.ops; k += 1) {
+    let t = 0;
+    const c = counting(store, (n) => {
+      if (n === k) t = 1000;
+    });
+    const block = await suggest(c, { committed: notes[SEED], sections, budget: createSearchBudget(5000), deadline: 250, now: () => t });
+    assert.equal(c.ops, k, `k=${k}: an op started after the deadline`);
+    assert.ok(block.status === "skipped" || block.status === "partial" || (k === all.ops && block.status === "ready"), `k=${k} ${block.status}`);
+  }
+});
+
+test("deadline on a logical-delete store (the gateway's): forked views are cut off too", async () => {
+  const raw = await world(BASE);
+  const full = await suggest(withLogicalDelete(counting(raw)), { committed: BASE[SEED], sections: SECTIONS, budget: createSearchBudget(5000) });
+  assert.equal(full.status, "ready");
+  const all = counting(raw);
+  await suggest(withLogicalDelete(all), { committed: BASE[SEED], sections: SECTIONS, budget: createSearchBudget(5000) });
+  for (let k = 1; k <= all.ops; k += 1) {
+    let t = 0;
+    const c = counting(raw, (n) => {
+      if (n === k) t = 1000;
+    });
+    await suggest(withLogicalDelete(c), { committed: BASE[SEED], sections: SECTIONS, budget: createSearchBudget(5000), deadline: 250, now: () => t });
+    assert.equal(c.ops, k, `k=${k}`);
+  }
+});
+
+test("a note with more outgoing links than the result limit still gets its text match", async () => {
+  const links = Array.from({ length: 12 }, (_, i) => `[[t/l${i}]]`).join(" ");
+  const seedBody = `# Seed\n\nSee ${links}.\n\n## Harbor\n\nkestrel harbor survey\n`;
+  const notes = { [SEED]: seedBody, "other/text.md": "kestrel harbor survey results" };
+  // The linked targets match more strongly, so without a wider search they fill every hit.
+  for (let i = 0; i < 12; i += 1) notes[`t/l${i}.md`] = `kestrel harbor survey kestrel harbor survey ${i}`;
+  const store = await world(notes);
+  const block = await suggest(store, { committed: seedBody, sections: [section("Harbor", "## Harbor\n\nkestrel harbor survey\n")], budget: createSearchBudget(5000) });
+  assert.equal(block.status, "ready");
+  assert.deepEqual(paths(block), ["other/text.md"]);
+});
+
+test("null or malformed arguments never throw: each is unavailable, and a null clock is the default one", async () => {
+  const store = await world(BASE);
+  const args = { path: SEED, committed: BASE[SEED], etag: "e", sections: SECTIONS, audience: AUDIENCE, canSeeKey: team, isIndexable: indexable };
+  const cases = {
+    "args null": [store, "team", null, big(), {}],
+    "budget undefined": [store, "team", args, undefined, {}],
+    "now throws": [store, "team", args, big(), { now: () => { throw new Error("clock"); } }],
+  };
+  for (const [name, call] of Object.entries(cases)) {
+    const block = await suggestLinks(...call);
+    assert.equal(block.status, "unavailable", name);
+    assert.deepEqual(block.candidates, [], name);
+  }
+  assert.equal((await suggestLinks(store, "team", args, big(), null)).status, "ready");
+});
+
+test("fit drops the candidate that cannot fit, not the last one; a list emptied by fitting is none", async () => {
+  const long = `other/${"p".repeat(4100)}.md`;
+  const notes = { [SEED]: "x", [long]: "kestrel harbor survey strongest kestrel harbor survey", "other/a.md": "kestrel harbor survey", "other/b.md": "kestrel harbor" };
+  const store = await world(notes);
+  const sections = [section("Harbor", "## Harbor\n\nkestrel harbor survey\n")];
+  const block = await suggest(store, { committed: "## Harbor\n\nkestrel harbor survey\n", sections, budget: createSearchBudget(5000) });
+  assert.equal(block.status, "ready");
+  assert.deepEqual(paths(block).sort(), ["other/a.md", "other/b.md"]);
+  assert.ok(bytes(renderLinkSuggestions(block)) <= SUGGESTION_BYTE_CAP);
+  const alone = await world({ [SEED]: "x", [long]: "kestrel harbor survey" });
+  const emptied = await suggest(alone, { committed: "## Harbor\n\nkestrel harbor survey\n", sections, budget: createSearchBudget(5000) });
+  assert.deepEqual(emptied, { status: "none", basedOnEtag: "v2", candidates: [] });
+});
+
+test("format characters (\\p{Cf}) in untrusted text are escaped", async () => {
+  const notes = { [SEED]: "x", "other/a.md": "kestrel \u202Eevil\u200B\u{E0001} harbor" };
+  const store = await world(notes);
+  const block = await suggest(store, { committed: "## H\u2066i\n\nkestrel harbor\n", sections: [section("H\u2066i", "## H\u2066i\n\nkestrel harbor\n")], canSeeKey: owner });
+  assert.equal(block.candidates.length, 1);
+  const rendered = renderLinkSuggestions(block);
+  assert.ok(!/\p{Cf}/u.test(rendered), rendered);
+  assert.ok(rendered.includes("\\u202e") && rendered.includes("\\u2066") && rendered.includes("\\u{e0001}"), rendered);
 });
 
 test("a deadline already passed, a budget of 0 or no section is skipped with zero ops", async () => {
@@ -323,7 +429,9 @@ test("budget.spent and the ops made never exceed the budget, budgets 0..80", asy
     const c = counting(store);
     const block = await suggest(c, { committed: BASE[SEED], sections: SECTIONS, budget });
     assert.ok(budget.spent <= B, `B=${B} spent ${budget.spent}`);
-    assert.ok(c.ops <= B, `B=${B} ops ${c.ops}`);
+    assert.ok(c.ops - c.moveOps.length <= B, `B=${B} ops ${c.ops}`);
+    // One move-job listing per section retrieval run, nothing else outside the budget.
+    assert.ok(c.moveOps.every((k) => k === ".context/moves/") && c.moveOps.length <= SECTIONS.length, `B=${B} ${c.moveOps}`);
     assert.ok(["ready", "none", "skipped", "partial"].includes(block.status), block.status);
   }
 });
@@ -344,7 +452,18 @@ test("a throwing search store does not throw and returns no candidates (retrieve
   assert.equal(block.status, "skipped");
 });
 
-test("privacy invariance: for a team caller hidden notes change the block only by the documented withheld bits, budgets 0..80", async () => {
+/** Run `fn` with Date.now frozen, so search's recency weighting cannot reorder near ties between runs. */
+async function frozenClock(fn) {
+  const real = Date.now;
+  Date.now = () => clock;
+  try {
+    return await fn();
+  } finally {
+    Date.now = real;
+  }
+}
+
+test("privacy invariance: for a team caller hidden notes change the block only by the documented withheld bits, single and multi-shard, budgets 0..80", () => frozenClock(async () => {
   const base = {
     [SEED]: "# Seed\n\n## Harbor\n\nkestrel harbor survey [[t/target]] [p](https://example.com/page)\n\n## Lighthouse\n\nlighthouse fog signal\n",
     "t/target.md": "target note",
@@ -366,10 +485,16 @@ test("privacy invariance: for a team caller hidden notes change the block only b
     "hidden co-citers": hidden(H, "[[t/target]] kestrel"),
     "hidden URL citers": hidden(H, "[p](https://example.com/page)"),
     "a hidden note named like the seed": { "private/seed.md": "kestrel harbor survey", "private/target.md": "[[notes/seed]]" },
+    // Over 300 notes: a multi-shard index, where search's own cost depends on hidden data.
+    "340 hidden strong text matches (multi-shard)": hidden(340, "# Kestrel harbor\n\nkestrel harbor survey lighthouse fog signal", "m"),
+    "340 hidden private vocabulary (multi-shard routing)": hidden(340, (i) => `kestrelish harboring surveyor lighthouses ${i} zzq${i}`, "v"),
   };
   const plain = await world(base);
   const stores = {};
-  for (const [k, v] of Object.entries(variants)) stores[k] = await world({ ...base, ...v });
+  for (const [k, v] of Object.entries(variants)) {
+    stores[k] = await world({ ...base, ...v });
+    if (k.includes("multi-shard")) assert.ok(JSON.parse(stores[k].objects.get(MANIFEST_KEY).body).shardCount > 1, k);
+  }
   const run = async (store, budget) => {
     const block = await suggest(store, { committed: base[SEED], sections, budget });
     return `${JSON.stringify(block)}\n${renderLinkSuggestions(block)}`;
@@ -389,7 +514,7 @@ test("privacy invariance: for a team caller hidden notes change the block only b
           if (k === MANIFEST_KEY) call += 1;
           const m = [m1, m2][call - 1] ?? "";
           if (k === graphManifestKey() && m.includes("g")) return null;
-          if (k === shardKey(0) && m.includes("t")) return null;
+          if (k.startsWith(SHARD_PREFIX) && m.includes("t")) return null;
           return plain.get(k);
         },
       };
@@ -409,4 +534,4 @@ test("privacy invariance: for a team caller hidden notes change the block only b
     }
   }
   assert.ok([...seen].some((o) => o.includes("g")), [...seen].join());
-});
+}));

@@ -156,3 +156,28 @@ and an unfiltered posting read leaks the existence of private notes.
   from a complete census but present in the bucket is never removed",
   "removedHints are confirmed by a direct read before removal" and "an
   incomplete census never removes anything".
+
+### Moves read referrers from the graph only where it can vouch for them (Task 14)
+
+`rewriteReferences` reads only the notes `indexedReferrerKeys`
+(`apps/mcp/src/tools/moves/indexedReferrers.js`) names: the moved notes, the
+`incoming/` and `bare/` posting sources of each renamed path, every note listed
+at or after `coveredThrough` minus `TOP_UP_MARGIN_MS` (10 minutes), and every
+note with collaboration state. Anything it cannot vouch for scans, as before:
+a graph that is not complete, a best-effort store, a renamed attachment, a move
+job that is active or unreadable, a store that may copy server-side, an
+incomplete posting chain, or a budget that runs out.
+
+**The margin stands in for a `reverseRepair` check (controller ruling, Task 14
+fix round 1).** A node still owing `reverseRepair` after a same-note projection
+race can be missing from its targets' postings. Finding such nodes would take
+one node read per note, which is the scan's cost. Instead: a ready wrap means
+no swept node owed repairs, so a node owing them now was projected after its
+sweep visit by the write hook of a write seconds earlier, and that write's
+listing time falls inside the margin. **Ceiling: a write hook delayed past
+`TOP_UP_MARGIN_MS` after the census its sweep started on.** Such a referrer is
+missed by that move until the next sweep, and its link stays stale. Hooks run
+behind the response of the write's own invocation, far inside 10 minutes. If
+that ever changes (a queued hook, a retry loop), raise the margin or read the
+nodes. Test: `moveIndexedReferrers.test.mjs`, "a node still owing
+reverseRepair, edited inside the margin, is read like the scan would".

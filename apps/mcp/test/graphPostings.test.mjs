@@ -324,3 +324,14 @@ test("walker: a chain longer than the cap stops at the cap", async () => {
   assert.equal(g.puts.length, 0);
   assert.equal(await remove(f, "q0-0.md"), "done");
 });
+
+test("reader: a chain of exactly MAX_POSTING_PAGES pages is not complete (a writer drops entries once it is full)", async () => {
+  const b = memoryBucket();
+  for (let n = 0; n < MAX_POSTING_PAGES; n += 1) await seed(b, n, fill(`p${n}-`, 1), n + 1 < MAX_POSTING_PAGES ? String(n + 1) : undefined);
+  const r = await read(b);
+  assert.equal(r.entries.length, MAX_POSTING_PAGES);
+  assert.equal(r.complete, false);
+  const short = memoryBucket();
+  for (let n = 0; n < MAX_POSTING_PAGES - 1; n += 1) await seed(short, n, fill(`p${n}-`, 1), n + 2 < MAX_POSTING_PAGES ? String(n + 1) : undefined);
+  assert.equal((await read(short)).complete, true);
+});

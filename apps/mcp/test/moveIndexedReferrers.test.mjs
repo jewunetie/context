@@ -21,6 +21,16 @@
  *   return the candidate set unfiltered and unordered, with     4 (team caller, and single,
  *   posting sources unfiltered by `canSee`                        batch, folder: audit order)
  *
+ *
+ * Fix round 1:
+ *   collaborative notes not made candidates                     2 (collaborative, before
+ *                                                                 and after the sweep)
+ *   heads listing ignores the budget                            1 (heads budget)
+ *   a move-job listing failure read as no jobs                  1 (job listing)
+ *   an unparseable job marker skipped                           1 (unreadable marker)
+ *   no server-side-copy check                                   1 (server-side copy)
+ *   readPostings complete at exactly MAX_POSTING_PAGES          1 (graphPostings.test.mjs)
+ *
  * In graphCoverage.test.mjs, a cutover publishing no census time fails the
  * rebuild cutover test there (1).
  */
@@ -38,7 +48,9 @@ import { createSearchBudget, defaultIsIndexable } from "../src/search/maintain.j
 import { PrivacyOverrides } from "../src/privacy/engine.js";
 import { moveJobKey } from "../src/moves/jobs.js";
 import { MOVE_JOB_VERSION } from "../src/moves/limits.js";
-import { memoryBucket } from "./store/fixtures.mjs";
+import { DropboxStore } from "../src/store/dropbox.js";
+import { readDocument, replaceText } from "@context/collaboration";
+import { dropbox, memoryBucket } from "./store/fixtures.mjs";
 
 const MIN = 60_000;
 const SEEDED = Date.UTC(2026, 0, 1);
@@ -313,4 +325,96 @@ test("200 notes, 3 referrers: the index reads fewer note bodies than the scan", 
   assert.equal(a.notes, 3);
   assert.ok(i <= 5, `index read ${i}`);
   assert.ok(s >= 200, `scan read ${s}`);
+});
+
+/**
+ * A collaborative note whose accepted edit links the moved note while its
+ * Markdown write failed: the stored body (what the graph projected) lacks the
+ * link, and the scan's collaboration read is what finds it (review R1, R1b).
+ */
+async function pendingEdit(b, doc) {
+  const { put } = b;
+  let failOnce = true;
+  b.put = async (key, value, options) => {
+    if (key === "u004.md" && failOnce) {
+      failOnce = false;
+      throw new Error("transient provider failure");
+    }
+    return put(key, value, options);
+  };
+  await assert.rejects(replaceText(b, "u004.md", { documentId: doc.documentId, expectedEtag: doc.etag, text: `${doc.text}\nnow links [t](./a/t.md)` }));
+  b.put = put;
+  assert.doesNotMatch(b.objects.get("u004.md").body, /a\/t\.md/, "fixture: stored body lacks the link");
+}
+
+async function collaborative(scan, { editAfterSweep }) {
+  const b = timed();
+  for (const [key, body] of Object.entries(NOTES)) await b.put(key, body);
+  const doc = await readDocument(b, "u004.md");
+  if (!editAfterSweep) await pendingEdit(b, doc);
+  await index(b);
+  if (scan) b.objects.delete(graphManifestKey());
+  b.at(LATER);
+  if (editAfterSweep) await pendingEdit(b, doc);
+  return b;
+}
+
+for (const [name, editAfterSweep] of [["before", false], ["after", true]]) {
+  test(`a collaborative referrer whose accepted edit (${name} the sweep) never reached the .md is rewritten like the scan`, async () => {
+    const renames = new Map([["a/t.md", "c/t2.md"]]);
+    const i = await collaborative(false, { editAfterSweep });
+    assert.equal((await graphHealth(i, big())).complete, true);
+    const s = await collaborative(true, { editAfterSweep });
+    const a = await run(i, renames);
+    const r = await run(s, renames);
+    assert.deepEqual(a, r);
+    assert.equal(i.objects.get("u004.md").body, s.objects.get("u004.md").body);
+    assert.match(i.objects.get("u004.md").body, /c\/t2\.md/);
+    assert.ok(!bodyReads(i).includes("u005.md"), "the index path ran");
+  });
+}
+
+test("a budget that cannot list the collaboration heads scans", async () => {
+  const b = await build(NOTES);
+  b.searchSubrequestBudget = 3; // manifest and the two posting heads, nothing for the heads listing
+  await run(b, new Map([["a/t.md", "c/t2.md"]]));
+  assert.ok(bodyReads(b).includes("u005.md"));
+  const c = await build(NOTES);
+  c.searchSubrequestBudget = 4;
+  await run(c, new Map([["a/t.md", "c/t2.md"]]));
+  assert.ok(!bodyReads(c).includes("u005.md"), "one op more is enough: the index path ran");
+});
+
+test("a move-job listing that fails scans", async () => {
+  const b = await build(NOTES);
+  const { list } = b;
+  b.list = async (options) => {
+    if (options?.prefix?.startsWith(".context/moves/")) throw new Error("listing down");
+    return list(options);
+  };
+  await run(b, new Map([["a/t.md", "c/t2.md"]]));
+  assert.ok(bodyReads(b).includes("u005.md"));
+});
+
+test("an unreadable move-job marker counts as active and scans", async () => {
+  const b = await build(NOTES);
+  await b.put(moveJobKey("job-0000000000002"), "{not json");
+  await run(b, new Map([["a/t.md", "c/t2.md"]]));
+  assert.ok(bodyReads(b).includes("u005.md"));
+  // A finished job of this version is not active: the index path runs.
+  const c = await build(NOTES);
+  const id = "job-0000000000003";
+  await c.put(moveJobKey(id), JSON.stringify({ version: MOVE_JOB_VERSION, id, source: "x", destination: "y", objects: [], status: "complete" }));
+  await run(c, new Map([["a/t.md", "c/t2.md"]]));
+  assert.ok(!bodyReads(c).includes("u005.md"));
+});
+
+test("a store that may copy server-side scans; Dropbox never declares it", async () => {
+  const b = await build(NOTES);
+  b.capabilities = { ...b.capabilities, serverSideCopy: "same-store" };
+  await run(b, new Map([["a/t.md", "c/t2.md"]]));
+  assert.ok(bodyReads(b).includes("u005.md"));
+  // Dropbox moves upload (get then put), so copy_v2 timestamps never reach a listing.
+  assert.equal(dropbox(() => null).capabilities.serverSideCopy, false);
+  assert.ok(DropboxStore);
 });

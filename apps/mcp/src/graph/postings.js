@@ -134,7 +134,8 @@ export async function setMembership(store, budget, { gen, family, hash, source, 
  */
 export async function readPostings(store, budget, { gen, family, hash, canSee, validate }) {
   const { slots, status } = await walk(store, budget, { gen, family, hash });
-  let complete = status === "end";
+  // A chain at the cap may have dropped entries (setMembership "full").
+  let complete = status === "end" && slots.length < MAX_POSTING_PAGES;
   const entries = [];
   // One entry per source, the last in chain order winning (a transient
   // duplicate exists while a re-add moves between pages).

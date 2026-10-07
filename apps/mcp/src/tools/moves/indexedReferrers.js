@@ -10,7 +10,10 @@
 // covers a node left owing `reverseRepair` by a same-note projection race (the
 // Task 7 window): a ready wrap means no swept node owed any, so one owing it now
 // was projected after its sweep visit, by the write hook of a write within
-// seconds of that projection, and the margin puts that write in the top-up.
+// seconds of that projection, and the margin puts that write in the top-up
+// (recorded in docs/decisions/link-graph.md with its ceiling). The postings
+// describe stored bodies only, so every note with collaboration state is read
+// too: its accepted text may never have reached the .md.
 //
 // Privacy: posting sources are filtered by `canSeeKey` before anything else, no
 // node record is read (OPEN-24), and the result is intersected with the
@@ -21,12 +24,60 @@ import { graphView } from "../../graph/mode.js";
 import { readPostings } from "../../graph/postings.js";
 import { baseName } from "../../graph/facts.js";
 import { nameHash, pathHash } from "../../graph/keys.js";
-import { loadMoveJobs } from "../../moves/jobs.js";
+import { moveJobActive } from "../../moves/jobs.js";
+import { MOVE_JOB_PREFIX, MOVE_JOB_VERSION } from "../../moves/limits.js";
+import { listAllKeys } from "../../notes/storage.js";
+import { getWithLegacyFallback } from "../../storageLayout.js";
+import { supported as collaborationSupported } from "@context/collaboration";
 import { createSearchBudget } from "../../search/maintain.js";
 import { SEARCH_SUBREQUEST_BUDGET } from "../../search/visible.js";
 
 // lean: fixed 10 minutes (OPEN-23) for provider listing clock versus census clock skew and a late write hook, measure skew on managed buckets before shrinking it
 export const TOP_UP_MARGIN_MS = 10 * 60 * 1000;
+
+// `HEAD_PREFIX` in packages/collaboration/src/storage.js (not exported); a
+// head is `<sha256(path)>.json`, the same hash as the graph's `pathHash`.
+const COLLABORATION_HEADS = ".context/collaboration/v1/heads/";
+const HEAD_FILE = /^([0-9a-f]{64})\.json$/;
+
+/** Any job marker that is active, or that cannot be read as an inactive one (OPEN-25). Throws on a listing failure. */
+async function moveJobMayBeActive(store) {
+  for (const { key } of await listAllKeys(store, MOVE_JOB_PREFIX)) {
+    if (!key.endsWith(".json")) continue;
+    const object = await getWithLegacyFallback(store, key);
+    if (!object) continue;
+    let job;
+    try {
+      job = JSON.parse(await object.text());
+    } catch {
+      return true;
+    }
+    if (job?.version !== MOVE_JOB_VERSION || moveJobActive(job)) return true;
+  }
+  return false;
+}
+
+/**
+ * Hashes of every path with collaboration state, one budgeted op per listing
+ * page, or null when the budget or the listing cannot finish. A note with a
+ * head may hold accepted text its .md (and so the graph) never saw, which the
+ * scan reads through `generatedCollaborationBase`.
+ */
+async function collaborationHashes(view, budget) {
+  const hashes = new Set();
+  let cursor;
+  do {
+    if (!budget.take()) return null;
+    const page = await view.list({ prefix: COLLABORATION_HEADS, cursor, limit: 1000 });
+    for (const { key } of page.objects || []) {
+      const m = typeof key === "string" && key.startsWith(COLLABORATION_HEADS) ? HEAD_FILE.exec(key.slice(COLLABORATION_HEADS.length)) : null;
+      if (m) hashes.add(m[1]);
+    }
+    if (page.truncated && (!page.cursor || page.cursor === cursor)) return null;
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+  return hashes;
+}
 
 /**
  * The visible keys a move must read, in listing order, or null to scan.
@@ -40,13 +91,17 @@ export const TOP_UP_MARGIN_MS = 10 * 60 * 1000;
 export async function indexedReferrerKeys(store, { visibleListing, renames, canSeeKey }) {
   // Attachments have no `incoming/` postings (OPEN-5).
   for (const from of renames.keys()) if (!from.endsWith(".md")) return null;
+  // A server-side copy may keep the source's listing time, so a note moved
+  // since the sweep could miss the top-up. Gateway stores never copy (the
+  // logical-delete wrapper and Dropbox declare false); a bare S3 store does.
+  if (store.capabilities?.serverSideCopy === "same-store") return null;
   try {
     const budget = createSearchBudget(store.searchSubrequestBudget ?? SEARCH_SUBREQUEST_BUDGET);
     const view = graphView(store, budget);
     const health = await graphHealth(view, budget);
     if (!health.complete || !health.coveredThrough) return null;
     // Postings are keyed by physical paths; a logical move presents others (OPEN-25).
-    if ((await loadMoveJobs(store)).length > 0) return null;
+    if (await moveJobMayBeActive(store)) return null;
 
     const candidates = new Set(renames.values());
     for (const from of renames.keys()) {
@@ -60,11 +115,14 @@ export async function indexedReferrerKeys(store, { visibleListing, renames, canS
         for (const { source } of entries) candidates.add(renames.get(source) ?? source);
       }
     }
+    const collaborative = collaborationSupported(store) ? await collaborationHashes(view, budget) : new Set();
+    if (!collaborative) return null;
     const since = Date.parse(health.coveredThrough) - TOP_UP_MARGIN_MS;
     for (const { key, uploaded } of visibleListing) {
       const at = uploaded ? new Date(uploaded).getTime() : NaN;
       // Missing, zero or unparseable: unknown, so read it.
       if (!(at > 0) || at >= since) candidates.add(key);
+      else if (collaborative.size > 0 && collaborative.has(await pathHash(key))) candidates.add(key);
     }
     return visibleListing.map(({ key }) => key).filter((key) => candidates.has(key));
   } catch {

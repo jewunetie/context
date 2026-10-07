@@ -12,17 +12,10 @@ import { isNewer } from "./rebuild.js";
 import { suggestLinks } from "./suggest.js";
 import { afterResponse } from "../search/writeProjection.js";
 import { defaultIsIndexable } from "../search/maintain.js";
-import { WRITE_ENRICH_SUBREQUEST_BUDGET } from "../search/budget.js";
 
 // AGENT-LINKS 13.5: suggestion work, structural analysis included, ends this
 // long after it starts.
 export const SUGGEST_DEADLINE_MS = 250;
-// What every write's graph update keeps of the enrichment pool (the Task 8
-// default) until it has run. Suggestions take only what exceeds the floors of
-// every write still to project, so a budget at or under one floor gives them
-// nothing (configuration) and a batch never starves a later graph update.
-export const GRAPH_FLOOR = WRITE_ENRICH_SUBREQUEST_BUDGET;
-
 /**
  * Project one written note. With budget 0 the manifest read is refused before any store op; with no manifest (reconciliation
  * creates it, Task 10), nothing else runs. A "pending" or "stale" result is
@@ -48,67 +41,13 @@ export async function projectNoteAfterWrite(shared, { path, body, version, budge
   }
 }
 
-/**
- * `projectNoteAfterWrite` behind the response where `store.defer` exists.
- * `done`, if given, runs once the projection has finished or failed. Never rejects.
- */
-export async function projectNoteAfterWriteDeferred(store, hint, done = () => {}) {
+/** `projectNoteAfterWrite` behind the response where `store.defer` exists. Never rejects. */
+export async function projectNoteAfterWriteDeferred(store, hint) {
   try {
-    await afterResponse(store, async () => {
-      try {
-        await projectNoteAfterWrite(store, hint);
-      } finally {
-        done();
-      }
-    });
+    await afterResponse(store, () => projectNoteAfterWrite(store, hint));
   } catch {
     // Same contract as above.
   }
-}
-
-/**
- * One write's claim on the enrichment `pool` (a `createSearchBudget` counter,
- * per write or shared by the whole invocation). A pool may also carry
- * `upcoming`, the calls its invocation has yet to finish without a claim (a
- * JSON-RPC batch, kept by the MCP handler); each claim takes one and counts
- * itself in `claimed`. `suggestions` sees the pool less
- * a GRAPH_FLOOR for every claim not yet released, this one's included, and
- * every upcoming call; `graph` sees it less the others' floors; `release()`
- * (after the graph update) frees this claim's floor.
- */
-export function claimEnrichment(pool) {
-  pool.pending = (pool.pending ?? 0) + 1;
-  pool.claimed = (pool.claimed ?? 0) + 1;
-  if (pool.upcoming > 0) pool.upcoming -= 1;
-  const others = () => (pool.upcoming ?? 0) + pool.pending - (open ? 1 : 0);
-  let open = true;
-  return {
-    suggestions: above(pool, () => GRAPH_FLOOR * (others() + (open ? 1 : 0))),
-    graph: above(pool, () => GRAPH_FLOOR * others()),
-    release() {
-      if (open) pool.pending -= 1;
-      open = false;
-    },
-  };
-}
-
-/** `pool` as a budget that never takes its last `held()` ops. */
-function above(pool, held) {
-  let spent = 0;
-  const view = {
-    get remaining() {
-      return Math.max(0, pool.remaining - held());
-    },
-    get spent() {
-      return spent;
-    },
-    take(reserve = 0) {
-      if (!pool.take(reserve + held())) return false;
-      spent += 1;
-      return true;
-    },
-  };
-  return view;
 }
 
 /**
@@ -118,8 +57,8 @@ function above(pool, held) {
  * the diff starts from (`undefined` when there is none to use, for an
  * encrypted note or a drawing), `committed` the committed plaintext. `rules`
  * and `overrides` are the privacy state the write was authorized under.
- * `budget` is the claim's `suggestions` view. Never throws: any exception is
- * `unavailable`.
+ * `budget` is what suggestions may spend (the invocation's pool, or this
+ * write's own). Never throws: any exception is `unavailable`.
  */
 export async function suggestAfterWrite(store, scope, rules, overrides, write, budget, now = Date.now) {
   try {

@@ -113,7 +113,7 @@ const byScoreThenPath = (map) => [...map].sort(([a, x], [b, y]) => y - x || (a <
  * this call's caller (null withholds everything, as a failed read does).
  * A seed the caller cannot see gets the empty answer with no store op.
  */
-export async function retrieveCandidates(store, { seed, intent, canSeeKey, isIndexable, budget, limits, scope, excludeLinked = false, moveJobs }) {
+export async function retrieveCandidates(store, { seed, intent, canSeeKey, isIndexable, budget, limits, scope, excludeLinked = false, moveJobs = undefined }) {
   // Paths under an active logical move's source or destination (fix round 1).
   // Candidates are physical paths, and read_note answers for these through the
   // move overlay, so one moved into a private folder could be shown here at

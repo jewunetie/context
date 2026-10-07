@@ -34,7 +34,7 @@ import { isPersonalCommunicationsPath, normalizePath } from "../../notes/paths.j
 import { parseFormBlocks } from "../../forms.js";
 import { pathUnderActiveMovedSource } from "../../moves/jobs.js";
 import { persistExactVisibility, UNWRITABLE_PATH_REFUSAL, writesOneRule } from "../../privacy/state.js";
-import { claimEnrichment, GRAPH_FLOOR, projectNoteAfterWriteDeferred, suggestAfterWrite } from "../../graph/afterWrite.js";
+import { projectNoteAfterWriteDeferred, suggestAfterWrite } from "../../graph/afterWrite.js";
 import { renderLinkSuggestions } from "../../graph/suggest.js";
 import { createSearchBudget } from "../../search/maintain.js";
 import { WRITE_ENRICH_SUBREQUEST_BUDGET } from "../../search/budget.js";
@@ -453,19 +453,18 @@ export async function toolWriteNote(store, scope, rules, overrides, args, option
   const shareLines = await shareWrittenNote(store, path, args);
   // Said after the write, never instead of it: a status outside its folder's list is advice.
   const statusLine = isDrawingPath(path) ? null : await statusAdvice(store, scope, rules, overrides, path, body).catch(() => null);
-  // Post-commit enrichment on one budget, neither part able to fail or change
-  // the write (P5, AGENT-LINKS 13.6): link suggestions first, for the plain
-  // write_note call only (OPEN-37), then the link graph's derivative of the
-  // committed body on what remains. The budget is the invocation's pool where
-  // the route made one, so a batch of writes shares one ceiling, and every
-  // write keeps its graph floor in it until its graph update has run. A
-  // configured budget with nothing above that floor runs no suggestions and
-  // shows no block (a configuration, not a result); budget 0 turns the graph
-  // off as well.
+  // Post-commit enrichment, neither part able to fail or change the write
+  // (P5, AGENT-LINKS 13.6): link suggestions first, for the plain write_note
+  // call only (OPEN-37), then the link graph's derivative of the committed
+  // body. The graph update keeps its own budget per write, as before
+  // suggestions existed. Suggestions spend the invocation's pool where the
+  // route made one (a batch shares one ceiling), else a budget of their own,
+  // and run only where the deployment raised the budget above its default:
+  // at the default a pass could only ever be partial, so there is no block (a
+  // configuration, not a result). Budget 0 turns the graph off as well.
   const enrich = store.writeEnrichBudget ?? WRITE_ENRICH_SUBREQUEST_BUDGET;
-  const claim = claimEnrichment(store.writeEnrichPool ?? createSearchBudget(enrich));
   const suggestions =
-    options.linkSuggestions === true && enrich > GRAPH_FLOOR
+    options.linkSuggestions === true && enrich > WRITE_ENRICH_SUBREQUEST_BUDGET
       ? await suggestAfterWrite(store, scope, rules, overrides, {
           path,
           etag: put.etag,
@@ -475,9 +474,10 @@ export async function toolWriteNote(store, scope, rules, overrides, args, option
           // (its plaintext is never a query); none for a drawing's machine data.
           before: isDrawingPath(path) || (storedBody !== null && isEncryptedNote(storedBody)) ? undefined : base ? base.text : storedBody ?? "",
           committed: collaborationResult?.text ?? content,
-        }, claim.suggestions, options.now)
+        }, store.writeEnrichPool ?? createSearchBudget(enrich), options.now)
       : null;
-  await projectNoteAfterWriteDeferred(store, { path, body, version: put.etag, budget: claim.graph }, claim.release);
+  // The link graph's derivative of the committed body; never fails the write.
+  await projectNoteAfterWriteDeferred(store, { path, body, version: put.etag, budget: createSearchBudget(enrich) });
   // Whether this created the note, for the live map's "pops in" (`live/activityHint.js`).
   // The block rides in the text only, for every revision (fix round 1): a
   // client that prefers structuredContent would otherwise show its model the

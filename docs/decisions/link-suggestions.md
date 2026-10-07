@@ -6,7 +6,7 @@ _See `docs/decisions/README.md` for the index. Phase 4 of the link graph
 `related_notes` recorded in `docs/decisions/link-graph.md`. The code is
 `apps/mcp/src/graph/changes.js`, `suggest.js` and `afterWrite.js`._
 
-### Link suggestions ride write_note's text, on one enrichment budget (Tasks 21 to 24)
+### Link suggestions ride write_note's text, on a budget of their own (Tasks 21 to 24)
 
 After a plain `write_note` commits, the sections it changed seed
 `suggestLinks`, and the block is appended to the write's existing text result
@@ -77,30 +77,33 @@ asks a tool that returns structured content to also return it serialized as
 text. **Reversible** once the target clients are confirmed to keep `content`
 beside `structuredContent`; the block's shape already exists.
 
-**The per-write budget model.** Suggestions and the write's graph update
-spend one enrichment pool, suggestions first and the graph update on what
-remains: `WRITE_ENRICH_SUBREQUEST_BUDGET` per write, or, through the route,
-one pool for the whole invocation, so a legacy JSON-RPC batch shares a single
-ceiling (the agent loop makes no writes; its writes are proposals). Every
-write keeps `GRAPH_FLOOR` (8, the Task 8 default) of the pool for its graph
-update until that update has run, and the MCP handler announces a batch's
-calls in advance, so each one's floor is held before it starts; suggestions
-take only what exceeds every held floor, with no other cap. Consequences:
+**The budget model** (Phase 4 final review fix). The graph update keeps its
+own budget of `WRITE_ENRICH_SUBREQUEST_BUDGET` per write, exactly as before
+suggestions existed (Phase 3), so nothing about suggestions can change what a
+write projects. Suggestions spend a separate budget: through the route, one
+pool of `WRITE_ENRICH_SUBREQUEST_BUDGET` for the whole invocation, so a
+legacy JSON-RPC batch shares a single suggestion ceiling (the agent loop
+makes no writes; its writes are proposals); elsewhere, a budget of that size
+per write. They have no other cap. A write's post-commit ops are therefore at
+most twice the budget, and a batch's at most the budget per write plus one
+budget for all its suggestions. Consequences:
 
-- A configured budget at or under one floor (8, the default where the
-  variable is unset, as on a self-host) runs no suggestions and shows no
-  block: a configuration, not a result, and the write's text is unchanged.
-  `skipped` is kept for runtime causes. Budget 0 turns the graph off too, so
-  it remains the kill switch for all post-commit work. The hosted
-  `apps/mcp/wrangler.toml` sets 80 for production and staging.
-- A batch's later writes still project: earlier suggestions cannot take
-  their floors. A call that makes no write gives up its announced floor once
-  it has been handled (Task 23 batch count fix), so reads earlier in a batch
-  do not starve a later write's suggestions. **Ceiling:** calls not yet
-  handled still hold a floor whether or not they will write, so a mixed
-  batch holds back more than it needs until its reads have run; and a
-  sequence of writes that nobody announced in advance could still starve a
-  graph update, which reconciliation then repairs.
+- Suggestions run only where the deployment raised the budget above its
+  default of 8 (unset, as on a self-host). At 8 or less a pass could only be
+  partial, so they do not run and there is no block: a configuration, not a
+  result, and the write's text is unchanged. `skipped` is kept for runtime
+  causes, including a pool spent by earlier writes in the same batch. Budget 0
+  turns the graph off too, so it remains the kill switch for all post-commit
+  work. The hosted `apps/mcp/wrangler.toml` sets 80 for production and
+  staging.
+- Every write in a batch projects at any budget, as on the Phase 3 head.
+  Earlier writes' suggestions can leave later writes in the same batch less
+  for suggestions, or none (`skipped`); they never touch a graph update's
+  budget.
+- An earlier version of this round drew graph updates from the shared pool,
+  holding a floor of 8 for each write still to project. That starved earlier
+  writes' projection whenever later writes were announced (budget 8 with two
+  writes projected one), so it was removed.
 
 **The 250 ms deadline** (`SUGGEST_DEADLINE_MS`, AGENT-LINKS 13.5) starts before
 the diff, so it covers the structural analysis too. After it, no store op
@@ -197,8 +200,8 @@ deployment is on Workers Paid.
 
 **What reversing it costs.** Opting out instead of in returns suggestions to
 `remember`, comments or forms, against O3. Dropping the audience rule offers a
-private note's path to a team note's writer. Taking suggestions before the
-graph floors starves later writes' graph updates in a batch. Letting ops start
+private note's path to a team note's writer. Drawing graph updates from the
+shared suggestion pool starves writes' projection in a batch. Letting ops start
 after the deadline lets a slow store hold the write's response. Rendering
 candidate text unescaped lets a note pose as tool output. Removing the feature
 entirely loses nothing a caller cannot rebuild with searches after a write.
@@ -241,16 +244,17 @@ entirely loses nothing a caller cannot rebuild with searches after a write.
   linking guidance".
 - Text only: `writeSuggestions.test.mjs`, "tools/call write_note: the block is
   in the text for every revision, never structuredContent".
-- Budget: `writeSuggestions.test.mjs`, "a budget with nothing above the graph
-  floor (configuration) omits the block; the write is today's exactly",
-  "post-commit ops (suggestions plus graph) never exceed
-  WRITE_ENRICH_SUBREQUEST_BUDGET", "the shared pool keeps a graph floor for
-  every write of a batch still to project: six writes at 80 all project",
-  "suggestions get the pool minus every pending graph floor, with no fixed
-  cap", "one invocation's pool bounds every write in it together", "a legacy
-  JSON-RPC batch of six writes at budget 80: every note projects and every
-  write carries a block" and "a batch's reads stop reserving once handled:
-  nine read_note then one write_note at 80 still suggests";
+- Budget: `writeSuggestions.test.mjs`, "a budget at or under the default of 8
+  (configuration) omits the block; the write is today's exactly",
+  "post-commit ops: the graph update alone stays within
+  WRITE_ENRICH_SUBREQUEST_BUDGET, and suggestions add at most as much again",
+  "six writes sharing one suggestion pool at 80 all project", "one
+  invocation's pool bounds every write's suggestions together; each graph
+  update keeps its own budget", "a legacy JSON-RPC batch of six writes at
+  budget 80: every note projects and every write carries a block", "a batch's
+  reads hold nothing back: nine read_note then one write_note at 80 still
+  suggests" and "graph updates keep their own per-write budget: legacy
+  batches at 8 (2, 3 writes) and 80 (11, 12 writes) project every note";
   `graphSuggest.test.mjs`, "budget.spent and the ops made never exceed the
   budget, budgets 0..80".
 - Deadline: `graphSuggest.test.mjs`, "deadline: a clock that passes during

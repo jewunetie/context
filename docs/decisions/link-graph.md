@@ -5,7 +5,8 @@ _See `docs/decisions/README.md` for the index. The design is
 `docs/design/link-graph/PLAN.md`; the per-task rulings are in
 `docs/design/link-graph/TASKS.md` (Phases 0 to 2) and
 `docs/design/link-graph/TASKS-PHASE-3-4.md` (Phases 3 and 4). The code is
-`apps/mcp/src/graph/`._
+`apps/mcp/src/graph/`. Phase 4, link suggestions on `write_note`, is recorded
+in `docs/decisions/link-suggestions.md`._
 
 ### The reference index is approved, and it is a derivative that is never the authority
 

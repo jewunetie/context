@@ -46,6 +46,14 @@
  * (Rows above this round's predate it; the structuredContent row there is
  * superseded: no revision gets structuredContent now.)
  *
+ * Phase 4 final fix: graph updates went back to a per-write budget (as on
+ * the Phase 3 head) and the pool now governs suggestions only, so the
+ * floor-reservation rows above (announced calls, claim release, claim views)
+ * describe removed code; the claim-views test went with it. New:
+ *   graph update drawn from the request pool again                          1 (legacy batches at 8 and 80) plus
+ *     the six-write pool test
+ *   (sabotage counts in phase-4-final-fix-report.md)
+ *
  * RED: 14 of 15 failed before the wiring (the op-bound test passed: the
  * graph hook was already bounded), and the remember check failed on its
  * positive control.
@@ -57,7 +65,6 @@ import { after, before, test } from "node:test";
 import worker from "../src/index.js";
 import { callTool } from "../src/tools/dispatch.js";
 import { toolWriteNote } from "../src/tools/notes/write.js";
-import { claimEnrichment } from "../src/graph/afterWrite.js";
 import { initGraphManifest } from "../src/graph/manifest.js";
 import { graphManifestKey, nodeKey, pathHash } from "../src/graph/keys.js";
 import { parseNode } from "../src/graph/records.js";
@@ -205,7 +212,7 @@ test("kill switch: budget 0 is today's result exactly, with no graph or search o
   assert.deepEqual(store.log.filter((op) => op.includes(".context/graph/")), []);
 });
 
-test("a budget with nothing above the graph floor (configuration) omits the block; the write is today's exactly", async () => {
+test("a budget at or under the default of 8 (configuration) omits the block; the write is today's exactly", async () => {
   const args = { path: "notes/new.md", content: `${TWO}See [[notes/fog]].\n` };
   for (const budget of [1, 8]) {
     const plain = asStore(await bucketWith(), { budget });
@@ -326,24 +333,27 @@ test("the write's own visibility change decides the audience: team to private, a
   assert.ok(!paths(blockOf(published)).includes("private/secret.md"), JSON.stringify(blockOf(published)));
 });
 
-test("post-commit ops (suggestions plus graph) never exceed WRITE_ENRICH_SUBREQUEST_BUDGET", async () => {
+test("post-commit ops: the graph update alone stays within WRITE_ENRICH_SUBREQUEST_BUDGET, and suggestions add at most as much again", async () => {
   const args = { path: "notes/new.md", content: `${TWO}See [[notes/fog]] and [[notes/survey]].\n` };
   const zero = asStore(await bucketWith(), { budget: 0 });
   await write(zero, args, { suggest: false });
   const floor = enrichOps(zero).length;
   for (const budget of [1, 8, 9, 20, 30, 48, 60, 80, 200]) {
+    const graphOnly = asStore(await bucketWith(), { budget });
+    await write(graphOnly, args, { suggest: false });
+    assert.ok(enrichOps(graphOnly).length - floor <= budget, `budget ${budget}: graph update ${enrichOps(graphOnly).length - floor} ops`);
     const store = asStore(await bucketWith(), { budget });
     await write(store, args);
     const spent = enrichOps(store).length - floor;
-    assert.ok(spent <= budget, `budget ${budget}: ${spent} ops after commit`);
+    assert.ok(spent <= 2 * budget, `budget ${budget}: ${spent} ops after commit`);
   }
 });
 
-test("the shared pool keeps a graph floor for every write of a batch still to project: six writes at 80 all project", async () => {
+test("six writes sharing one suggestion pool at 80 all project", async () => {
   const run = async (suggest) => {
     const store = asStore(await bucketWith());
-    // A batch of six, as the MCP handler announces one.
-    store.writeEnrichPool = Object.assign(createSearchBudget(80), { upcoming: 6 });
+    // One invocation's suggestion pool, as the route makes it.
+    store.writeEnrichPool = createSearchBudget(80);
     const deferred = [];
     store.defer = (promise) => deferred.push(promise);
     const results = [];
@@ -365,26 +375,7 @@ test("the shared pool keeps a graph floor for every write of a batch still to pr
   assert.ok(on.store.writeEnrichPool.spent <= 80);
 });
 
-test("suggestions get the pool minus every pending graph floor, with no fixed cap", async () => {
-  const pool = createSearchBudget(200);
-  const first = claimEnrichment(pool);
-  assert.equal(first.suggestions.remaining, 192);
-  const second = claimEnrichment(pool);
-  assert.equal(second.suggestions.remaining, 184, "two writes pending: two floors held back");
-  assert.equal(first.graph.remaining, 192, "a graph update may use everything but the other write's floor");
-  first.release();
-  assert.equal(second.suggestions.remaining, 192);
-  for (let i = 0; i < 300 && second.suggestions.take(); i += 1);
-  assert.equal(pool.remaining, 8, "the last pending floor is never taken by suggestions");
-  assert.equal(second.graph.remaining, 8);
-  // Calls announced but not yet made hold their floors too.
-  const batch = Object.assign(createSearchBudget(80), { upcoming: 6 });
-  const head = claimEnrichment(batch);
-  assert.equal(head.suggestions.remaining, 80 - 6 * 8);
-  assert.equal(head.graph.remaining, 80 - 5 * 8);
-});
-
-test("one invocation's pool bounds every write in it together", async () => {
+test("one invocation's pool bounds every write's suggestions together; each graph update keeps its own budget", async () => {
   const writes = [
     { path: "notes/a.md", content: TWO },
     { path: "notes/b.md", content: TWO.replace("New", "Other") },
@@ -395,8 +386,8 @@ test("one invocation's pool bounds every write in it together", async () => {
   store.writeEnrichPool = createSearchBudget(60);
   for (const args of writes) await write(store, args);
   const spent = enrichOps(store).length - enrichOps(zero).length;
-  assert.ok(spent <= 60, `${spent} ops after commit for two writes`);
-  assert.equal(store.writeEnrichPool.spent, spent);
+  assert.ok(store.writeEnrichPool.spent > 0 && store.writeEnrichPool.spent <= 60, `pool spent ${store.writeEnrichPool.spent}`);
+  assert.ok(spent <= 60 + 2 * 60, `${spent} ops after commit for two writes`);
 });
 
 test("a collaborative merged write diffs the merged text: a link another edit added is not suggested again", async () => {
@@ -563,7 +554,7 @@ test("a legacy JSON-RPC batch of six writes at budget 80: every note projects an
   assert.deepEqual(projected, [true, true, true, true, true, true]);
 });
 
-test("a batch's reads stop reserving once handled: nine read_note then one write_note at 80 still suggests", async () => {
+test("a batch's reads hold nothing back: nine read_note then one write_note at 80 still suggests", async () => {
   env.SUGGEST_BUCKET = await bucketWith();
   const reads = Array.from({ length: 9 }, (_, i) => ({
     jsonrpc: "2.0",
@@ -581,4 +572,32 @@ test("a batch's reads stop reserving once handled: nine read_note then one write
   assert.equal(replies.length, 10);
   const text = replies.at(-1).result.content[0].text;
   assert.match(text, /\nLink suggestions \((ready|partial)\)/, text);
+});
+
+test("graph updates keep their own per-write budget: legacy batches at 8 (2, 3 writes) and 80 (11, 12 writes) project every note", async () => {
+  const notes = { ...CORPUS };
+  for (let i = 0; i < 40; i += 1) notes[`notes/n${i}.md`] = `kestrel harbor survey lighthouse fog ${i}`;
+  const body = (i) => `# W${i}\n\n## Harbor\n\nThe kestrel harbor survey continues ${i} [[notes/n${i}]].\n\n## Fog\n\nThe lighthouse fog signal sounded ${i}.\n`;
+  const missed = [];
+  try {
+    for (const [budget, n] of [["8", 2], ["8", 3], ["80", 11], ["80", 12]]) {
+      env.WRITE_ENRICH_SUBREQUEST_BUDGET = budget;
+      const bucket = await bucketWith(notes);
+      env.SUGGEST_BUCKET = bucket;
+      const batch = Array.from({ length: n }, (_, i) => ({
+        jsonrpc: "2.0",
+        id: i + 1,
+        method: "tools/call",
+        params: { name: "write_note", arguments: { path: `notes/w${i}.md`, content: body(i) } },
+      }));
+      const replies = await post({ "MCP-Protocol-Version": "2025-03-26" }, batch);
+      assert.equal(replies.length, n);
+      const projected = [];
+      for (let i = 0; i < n; i += 1) projected.push(bucket.objects.has(nodeKey("1", await pathHash(`notes/w${i}.md`))));
+      if (projected.includes(false)) missed.push(`budget ${budget}, ${n} writes: ${projected.map(Number).join("")}`);
+    }
+  } finally {
+    env.WRITE_ENRICH_SUBREQUEST_BUDGET = "80";
+  }
+  assert.deepEqual(missed, []);
 });

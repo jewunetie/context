@@ -55,7 +55,7 @@ Drafted from PLAN.md Phases 3 and 4 and the architecture. Every point the source
 | Text rendering of the block | OPEN-44 (Task 22) | AGENT-LINKS 13.8: XML optional |
 | Where the guidance lives | OPEN-45 (Task 24) | AGENT-LINKS 13.2 lists instructions, `orient`, `write_note`; PLAN lists instructions and `write_note` |
 | Duplicate-suggestion cache | Not built (AGENT-LINKS 13.7 says "may") | AGENT-LINKS 13.7 |
-| Decision records | Appended to `docs/decisions/link-graph.md` (Task 12, OPEN-17) | PLAN "Across every phase" |
+| Decision records | Appended to `docs/decisions/link-graph.md` (Task 12, OPEN-17); Phase 4 in `docs/decisions/link-suggestions.md` (Task 25) | PLAN "Across every phase" |
 
 ---
 
@@ -259,7 +259,7 @@ Content: the AGENT-LINKS 13.2 substance (preserve useful references; link a sour
 
 ## Task 25: record Phase 4 and close the PR
 
-**Files:** `docs/decisions/link-graph.md`.
+**Files:** `docs/decisions/link-suggestions.md` (Phase 4's record), with a pointer from `docs/decisions/link-graph.md`.
 
 Content: O3 as built (suggestions on `write_note` only, the OPEN-37 mechanism, budget shared with graph work and spent first, 250 ms deadline, 4 KiB, statuses), the audience rule as ruled in OPEN-40, and the measured subrequests per write against the free-tier and hosted ceilings (DELIVERY 16.3 requires both; mark "not measured" if no live run was scheduled). PR text separates unit, runtime, live and real-client evidence (DELIVERY 18.1 "Agent workflow", "Cross-surface contract"); adoption across real clients (AGENT-LINKS 13.2) is listed as not measured unless the controller schedules it.
 

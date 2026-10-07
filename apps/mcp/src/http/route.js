@@ -257,8 +257,9 @@ export async function route(request, env, ctx) {
       // with the request, so a reused isolate carries nothing across tenants.
       store.searchSubrequestBudget = searchBudgetFor(env);
       store.writeEnrichBudget = writeEnrichBudgetFor(env);
-      // One post-commit enrichment ceiling for the whole invocation: a batch
-      // or an agent loop of writes shares it, not one budget per write.
+      // One ceiling on link suggestions for the whole invocation: a batch of
+      // writes shares it, not one budget per write. Graph updates keep their
+      // own per-write budget (tools/notes/write.js).
       store.writeEnrichPool = createSearchBudget(store.writeEnrichBudget);
       attachGatewayJobQueue(store, session, controlPlane, env);
       attachLinkCalls(store, session, controlPlane, env);

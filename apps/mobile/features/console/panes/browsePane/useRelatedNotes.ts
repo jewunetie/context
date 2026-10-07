@@ -25,6 +25,9 @@ export type RelatedState =
  */
 type Settled = { ask: NonNullable<FileBrowser["relatedNotes"]>; path: string; attempt: number; outcome: RelatedAnswer | null };
 
+/** How long the open note's version must hold still after a save before the panel asks again. */
+export const REFRESH_AFTER_SAVE_MS = 2000;
+
 export function useRelatedNotes(
   files: Pick<FileBrowser, "relatedNotes" | "sync" | "editor">,
   path: string,
@@ -33,23 +36,45 @@ export function useRelatedNotes(
   const skipped = isDrawingPath(path) || (open && files.editor.encrypted);
   const ask = skipped ? undefined : files.relatedNotes;
   const offline = files.sync?.reachability === "offline";
-  // The open note's version: a save moves it, and the related notes may have moved with it.
+  /*
+    The version the editor holds of this note, or null until it holds one. No
+    request goes out before that: until the read lands the panel cannot know
+    whether the note is locked, and asking at the path alone and again at the
+    version cost two requests for one open.
+  */
   const version = open ? files.editor.etag : null;
   const [attempt, setAttempt] = useState(0);
   const [settled, setSettled] = useState<Settled | null>(null);
+  // The version the last request was (or is about to be) made at, for this path.
+  const [asked, setAsked] = useState<{ path: string; version: string } | null>(null);
 
   useEffect(() => {
-    if (ask === undefined || offline) return;
+    if (version === null) return;
+    // First sight of this note: ask now.
+    if (asked === null || asked.path !== path) {
+      setAsked({ path, version });
+      return;
+    }
+    if (asked.version === version) return;
+    // A save moved the version: ask again once it has held still, so a burst of autosaves costs one request.
+    const timer = setTimeout(() => setAsked({ path, version }), REFRESH_AFTER_SAVE_MS);
+    return () => clearTimeout(timer);
+  }, [asked, path, version]);
+
+  const askedVersion = asked !== null && asked.path === path ? asked.version : null;
+
+  useEffect(() => {
+    if (ask === undefined || offline || askedVersion === null) return;
     let live = true;
     ask(path).then(
       (answer) => live && setSettled({ ask, path, attempt, outcome: answer }),
       () => live && setSettled({ ask, path, attempt, outcome: null }),
     );
-    // A later note, workspace, retry, save or reconnect makes this answer stale: it is dropped.
+    // A later note, workspace, retry, settled save or reconnect makes this answer stale: it is dropped.
     return () => {
       live = false;
     };
-  }, [ask, offline, path, attempt, version]);
+  }, [ask, offline, path, attempt, askedVersion]);
 
   const retry = useCallback(() => setAttempt((n) => n + 1), []);
 
@@ -57,8 +82,8 @@ export function useRelatedNotes(
   if (offline) return { state: { kind: "offline" }, retry };
   /*
     Only an answer from this asker, about this note, to this attempt counts.
-    A save (`version`) is deliberately not part of the key: the previous
-    answer about the same note stays on screen while the new one is fetched.
+    A save is deliberately not part of the key: the previous answer about the
+    same note stays on screen while the new one is fetched.
   */
   if (settled === null || settled.ask !== ask || settled.path !== path || settled.attempt !== attempt) {
     return { state: { kind: "loading" }, retry };

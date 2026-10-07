@@ -54,10 +54,10 @@
  * on a case-sensitive volume, as CI's is.
  */
 
-import { describe, expect, jest, test } from "@jest/globals";
+import { afterEach, beforeEach, describe, expect, jest, test } from "@jest/globals";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { dataWith, ENTRY, mountConsole, NOTE } from "./noteChrome/fixtures";
+import { dataWith, emptyEditor, ENTRY, FILE, mountConsole, NOTE } from "./noteChrome/fixtures";
 import { parseRelatedAnswer, type RelatedAnswer } from "../features/console/files/browser/relatedAnswer";
 import { RelatedPanel } from "../features/console/panes/browsePane/RelatedPanel";
 import type { FileBrowser } from "../features/console/files/browser";
@@ -139,7 +139,7 @@ type Related = NonNullable<FileBrowser["relatedNotes"]>;
 type PanelInputs = {
   reachability?: "online" | "offline";
   path?: string;
-  editor?: { path: string; etag: string | null; encrypted: boolean };
+  editor?: { path: string | null; etag: string | null; encrypted: boolean };
 };
 
 function mountPanel(relatedNotes: Related | undefined, reachabilityOrInputs: "online" | "offline" | PanelInputs = "online") {
@@ -312,18 +312,88 @@ describe("the related panel: which answer, when", () => {
     panel.unmount();
   });
 
-  test("asks again when the open note's version changes after a save, keeping the answer meanwhile", async () => {
+  test("a cold or deep-link open asks exactly once, when the editor holds the note", async () => {
     const ask = jest.fn<Related>(async () => ANSWER);
-    const panel = mountPanel(ask, { editor: { path: NOTE, etag: "e1", encrypted: false } });
+    // The URL named the note; the editor has not read anything yet.
+    const panel = mountPanel(ask, { editor: { path: null, etag: null, encrypted: false } });
+    await settle();
+    expect(panel.find("related-loading")).not.toBeNull();
+    // The editor took the path; the read has not landed, so no version yet.
+    panel.render(ask, { editor: { path: NOTE, etag: null, encrypted: false } });
+    await settle();
+    panel.render(ask, { editor: { path: NOTE, etag: "e1", encrypted: false } });
     await settle();
     panel.render(ask, { editor: { path: NOTE, etag: "e1", encrypted: false } });
     await settle();
     expect(ask).toHaveBeenCalledTimes(1);
-    panel.render(ask, { editor: { path: NOTE, etag: "e2", encrypted: false } });
     expect(panel.text()).toContain("plan-b");
-    await settle();
-    expect(ask).toHaveBeenCalledTimes(2);
     panel.unmount();
+  });
+
+  test("a cold open of a locked note asks zero times", async () => {
+    const ask = jest.fn<Related>(async () => ANSWER);
+    const panel = mountPanel(ask, { editor: { path: null, etag: null, encrypted: false } });
+    await settle();
+    panel.render(ask, { editor: { path: NOTE, etag: null, encrypted: false } });
+    await settle();
+    panel.render(ask, { editor: { path: NOTE, etag: "e1", encrypted: true } });
+    await settle();
+    expect(ask).not.toHaveBeenCalled();
+    expect(panel.find("related-panel")).toBeNull();
+    panel.unmount();
+  });
+
+  describe("after saves (fake timers)", () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+    const at = (etag: string) => ({ editor: { path: NOTE, etag, encrypted: false } });
+
+    test("asks again once the version has been stable for 2 s, keeping the answer meanwhile", async () => {
+      const ask = jest.fn<Related>(async () => ANSWER);
+      const panel = mountPanel(ask, at("e1"));
+      await settle();
+      expect(ask).toHaveBeenCalledTimes(1);
+      panel.render(ask, at("e2"));
+      await act(async () => jest.advanceTimersByTime(1999));
+      expect(ask).toHaveBeenCalledTimes(1);
+      expect(panel.text()).toContain("plan-b");
+      await act(async () => jest.advanceTimersByTime(1));
+      expect(ask).toHaveBeenCalledTimes(2);
+      panel.unmount();
+    });
+
+    test("a burst of 4 autosaves within 2 s costs one request", async () => {
+      const ask = jest.fn<Related>(async () => ANSWER);
+      const panel = mountPanel(ask, at("e1"));
+      await settle();
+      for (const etag of ["e2", "e3", "e4", "e5"]) {
+        panel.render(ask, at(etag));
+        await act(async () => jest.advanceTimersByTime(500));
+      }
+      expect(ask).toHaveBeenCalledTimes(1);
+      await act(async () => jest.advanceTimersByTime(2000));
+      expect(ask).toHaveBeenCalledTimes(2);
+      await act(async () => jest.advanceTimersByTime(10_000));
+      expect(ask).toHaveBeenCalledTimes(2);
+      panel.unmount();
+    });
+
+    test("a path switch during the wait cancels the refresh", async () => {
+      const ask = jest.fn<Related>(async () => ANSWER);
+      const panel = mountPanel(ask, at("e1"));
+      await settle();
+      panel.render(ask, at("e2"));
+      await act(async () => jest.advanceTimersByTime(1000));
+      const other = "1-projects/other.md";
+      panel.render(ask, { path: other, editor: { path: other, etag: "o1", encrypted: false } });
+      await act(async () => jest.advanceTimersByTime(5000));
+      expect(ask.mock.calls).toEqual([[NOTE], [other]]);
+      panel.unmount();
+    });
   });
 
   test("does not ask about a drawing", async () => {
@@ -393,12 +463,15 @@ describe("the related panel: keyboard and assistive technology", () => {
 
 /* -------------------------------------------------------------------------- */
 
+// The note read and on screen: the panel asks only once the editor holds a version of it.
+const readEditor = { ...emptyEditor, status: "clean", path: NOTE, baseline: FILE, draft: FILE, etag: "e1" };
+
 describe("reachability: under a note in the mounted console", () => {
   for (const [layout, width] of [["phone", 390], ["pointer", 1200]] as const) {
     test(`on the ${layout} layout, and a row opens the note`, async () => {
       const select = jest.fn();
       const relatedNotes = jest.fn<Related>(async () => ANSWER);
-      const app = mountConsole(dataWith({ relatedNotes, select } as never), width);
+      const app = mountConsole(dataWith({ relatedNotes, select, editor: readEditor } as never), width);
       await settle();
       expect(relatedNotes).toHaveBeenCalledWith(NOTE);
       expect(app.find("related-panel")).not.toBeNull();
@@ -419,7 +492,7 @@ describe("reachability: under a note in the mounted console", () => {
         entries: [ENTRY, { ...ENTRY, path: "1-projects/back.md", name: "back.md" }],
       },
     };
-    const app = mountConsole(dataWith({ relatedNotes: async () => ANSWER, select, listings } as never), 1200);
+    const app = mountConsole(dataWith({ relatedNotes: async () => ANSWER, select, listings, editor: readEditor } as never), 1200);
     await settle();
     app.press(app.container.querySelector<HTMLElement>('[aria-label^="Open 1-projects/back.md"]'));
     expect(select).toHaveBeenCalledWith("1-projects/back.md");

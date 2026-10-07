@@ -13,7 +13,6 @@
 
 import { canSee } from "../privacy/engine.js";
 import { forwardPath, readForwarding } from "../forwarding.js";
-import { graphView } from "../graph/mode.js";
 import { retrieveCandidates } from "../graph/retrieve.js";
 import { getVisibleMovedNote } from "../notes/visibleKeys.js";
 import { getWithLegacyFallback } from "../storageLayout.js";
@@ -57,7 +56,7 @@ export async function toolRelatedNotes(store, scope, rules, overrides, args) {
   // lean: limit clamped rather than refused by the schema, per the OPEN-34 ruling.
   const limit = Math.min(MAX_LIMIT, Math.max(1, Number.isInteger(args.limit) ? args.limit : SEARCH_RESULT_LIMIT));
   const budget = createSearchBudget(store.searchSubrequestBudget ?? SEARCH_SUBREQUEST_BUDGET);
-  const { relations, possiblyIncomplete } = await retrieveCandidates(graphView(store, budget), {
+  const { relations, possiblyIncomplete } = await retrieveCandidates(store, {
     seed: { path, body },
     intent: "related_notes",
     canSeeKey: (key) => canSee(key, scope, rules, overrides),

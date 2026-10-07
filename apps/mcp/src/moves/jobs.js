@@ -84,29 +84,18 @@ export async function loadMoveJobs(store) {
 
 /**
  * Active move jobs, or null when any marker cannot be read as an inactive one
- * or the listing fails (OPEN-25: fail closed). The sentinel gates the read: a
- * finished move's marker delete is a logical-delete tombstone that is never
- * removed, so reading every marker would grow with move history. Absent
- * sentinel is no active job in one op; present or unreadable reads the
- * markers. With `budget`, every op is charged to it and running out is null.
+ * or the listing fails (OPEN-25: fail closed). Every marker is read, whatever
+ * the sentinel says, so the answer is the set of jobs read_note's overlay
+ * (`loadMoveJobs`) sees; the sentinel is only `searchMoveJobs`' hint. A
+ * finished move's marker is a logical-delete tombstone that is never removed,
+ * so this costs one unbudgeted read per historical move, as read_note does.
  */
-export async function activeMoveJobsOrNull(store, budget = null) {
-  const reader = budget ? budgetedStore(store, budget, 0) : store;
-  try {
-    if ((await reader.get(MOVE_SENTINEL_KEY)) === null) return [];
-  } catch {
-    // Unreadable: the markers decide.
-  }
-  return readMoveJobsOrNull(store, budget);
-}
-
-async function readMoveJobsOrNull(store, budget = null) {
-  const reader = budget ? budgetedStore(store, budget, 0) : store;
+export async function activeMoveJobsOrNull(store) {
   const jobs = [];
   try {
-    for (const { key } of await listAllKeys(reader, MOVE_JOB_PREFIX)) {
+    for (const { key } of await listAllKeys(store, MOVE_JOB_PREFIX)) {
       if (!key.endsWith(".json")) continue;
-      const object = await (budget ? reader.get(key) : getWithLegacyFallback(store, key));
+      const object = await getWithLegacyFallback(store, key);
       if (!object) continue;
       const job = JSON.parse(await object.text());
       if (job?.version !== MOVE_JOB_VERSION) return null;
@@ -140,8 +129,8 @@ export async function writeMoveSentinel(store) {
  * the markers read as none (never when they cannot be read), and, where the
  * store has conditional delete, only if it is still the sentinel read before
  * the markers were listed, so a move that starts meanwhile keeps its own.
- * Without conditional delete that race can remove a new move's sentinel
- * (docs/decisions/link-graph.md); move_folder writes it again after its marker.
+ * The sentinel is a hint for `searchMoveJobs` only; nothing that withholds a
+ * moving note depends on it (activeMoveJobsOrNull reads every marker).
  */
 export async function refreshMoveSentinel(store) {
   let sentinel;
@@ -150,7 +139,7 @@ export async function refreshMoveSentinel(store) {
   } catch {
     sentinel = undefined;
   }
-  const jobs = await readMoveJobsOrNull(store);
+  const jobs = await activeMoveJobsOrNull(store);
   if (jobs === null) return [];
   if (jobs.length) {
     await writeMoveSentinel(store);

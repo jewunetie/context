@@ -20,7 +20,11 @@
  *   refusing before the metadata probe when canSee fails   1 (same raw ops, held-by-name pair)
  *
  * Fix round 2 (moveSentinel.test.mjs has the rest):
- *   markers read without the sentinel gate                  1 (100 finished moves)
+ *   markers read without the sentinel gate                  1 (100 finished moves; round 2)
+ *
+ * Fix round 3:
+ *   the round-2 sentinel gate put back                      2 (one active move plus 100, refresh racing), 3 in moveSentinel and graphRetrieve
+ *   job read on the charged view (inside the budget)        1 (one active move plus 100)
  *   move_folder writing its marker before the sentinel      1 (sentinel before its job marker)
  *
  * RED: every test failed on "unknown tool: related_notes" before the tool existed.
@@ -298,20 +302,32 @@ test("related_notes and read_note make the same raw ops for a hidden path as for
   }
 });
 
-// Fix round 2: a finished move's marker delete is a logical-delete tombstone
-// that nothing removes, so reading every marker on every call grew with move
-// history until answers were empty. The sentinel gates the read.
-test("100 finished moves cost the job check one op, and the answer is unchanged at the default budget", async () => {
+// Fix rounds 2 and 3: a finished move's marker delete is a logical-delete
+// tombstone that nothing removes. The job read is outside the retrieval
+// budget, the same reads read_note's overlay makes, so history never changes
+// the answer, with or without an active move.
+const MOVING = "1-projects/mv/a.md";
+const activeJob = (id) => JSON.stringify({
+  version: 1, id, source: "1-projects/mv", destination: "private/mv", status: "logical_active",
+  created_at: "2026-01-01", objects: [{ source: MOVING, destination: "private/mv/a.md" }],
+});
+
+test("one active move plus 100 finished ones: the answer at the default budget is the no-history answer, the moving note withheld", async () => {
   const plain = env.REL_BUCKET;
   const budget = env.SEARCH_SUBREQUEST_BUDGET;
   try {
-    const raw = await world(BASE);
+    const raw = await world({ ...BASE, [MOVING]: "# Moving\n\nsecret plan kestrel migration [[seed]]\n" });
     raw.capabilities = { conditionalWrite: true, conditionalCreate: true, conditionalDelete: true };
+    const wrapped = withLogicalDelete(raw);
     env.SEARCH_SUBREQUEST_BUDGET = "40";
     env.REL_BUCKET = raw;
+    await writeMoveSentinel(wrapped);
+    await wrapped.put(moveJobKey("job-9999999999999"), activeJob("job-9999999999999"));
+    await writeMoveSentinel(wrapped);
     const reference = await related(TEAM, { path: SEED });
+    assert.ok(!reference.text.includes("mv/a.md") && reference.text.includes("1-projects/beta.md"), reference.text);
+    assert.equal(reference.text.split("\n").at(-1), "may be incomplete");
     // As move_folder and materialize_move do it, through the wrapper.
-    const wrapped = withLogicalDelete(raw);
     for (let i = 0; i < 100; i += 1) {
       const id = `job-${String(i).padStart(13, "0")}`;
       await writeMoveSentinel(wrapped);
@@ -319,7 +335,7 @@ test("100 finished moves cost the job check one op, and the answer is unchanged 
       await wrapped.delete(moveJobKey(id));
       await refreshMoveSentinel(wrapped);
     }
-    assert.ok([...raw.objects.keys()].filter((k) => k.startsWith(".context/moves/job-")).length >= 100, "tombstones remain");
+    assert.ok([...raw.objects.keys()].filter((k) => k.startsWith(".context/moves/job-")).length >= 101, "tombstones remain");
     const moveOps = async (tool) => {
       const rec = recording(raw);
       env.REL_BUCKET = rec;
@@ -328,13 +344,33 @@ test("100 finished moves cost the job check one op, and the answer is unchanged 
     };
     const after = await moveOps("related_notes");
     assert.equal(after.text, reference.text);
-    // The seed lookup is read_note's and reads the markers itself, unbudgeted
-    // (pre-existing, owner list); the retrieval's own job check is one get.
+    // The retrieval's job read is read_note's own, once more: the seed lookup,
+    // then the same reads for the candidates.
     const lookup = (await moveOps("read_note")).ops;
-    assert.deepEqual(after.ops, [...lookup, `get:${MOVE_SENTINEL_KEY}`]);
+    assert.ok(lookup.length > 100);
+    assert.deepEqual(after.ops, [...lookup, ...lookup]);
   } finally {
     env.REL_BUCKET = plain;
     env.SEARCH_SUBREQUEST_BUDGET = budget;
+  }
+});
+
+test("a refresh racing a new move's first sentinel never lets related_notes show the moving note", async () => {
+  const plain = env.REL_BUCKET;
+  try {
+    const raw = await world({ ...BASE, [MOVING]: "# Moving\n\nsecret plan kestrel migration [[seed]]\n" });
+    raw.capabilities = { conditionalWrite: true, conditionalCreate: true, conditionalDelete: true };
+    const wrapped = withLogicalDelete(raw);
+    await writeMoveSentinel(wrapped); // the move's first write
+    await refreshMoveSentinel(wrapped); // lists no marker yet and removes it
+    await wrapped.put(moveJobKey("job-0000000000003"), activeJob("job-0000000000003")); // the marker lands
+    env.REL_BUCKET = raw;
+    assert.equal((await rpc(TEAM, "tools/call", { name: "read_note", arguments: { path: MOVING } })).result.content[0].text, "not found");
+    const during = await related(TEAM, { path: SEED });
+    assert.ok(!during.text.includes("mv/a.md") && !during.text.includes("secret plan"), during.text);
+    assert.equal(during.text.split("\n").at(-1), "may be incomplete");
+  } finally {
+    env.REL_BUCKET = plain;
   }
 });
 

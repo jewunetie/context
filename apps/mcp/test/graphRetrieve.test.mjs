@@ -248,18 +248,24 @@ test("budget.spent and the store ops made never exceed the budget given", async 
   };
   const store = await world(notes);
   let ops = 0;
+  let moveOps = [];
+  // The move-job read is outside the budget, the same reads read_note's
+  // overlay makes (fix round 3), so it is counted apart: here one listing.
+  const count = (k) => (String(k).startsWith(".context/moves/") ? moveOps.push(String(k)) : (ops += 1));
   const counting = {
     ...store,
-    get: (k) => ((ops += 1), store.get(k)),
-    put: (k, v, o) => ((ops += 1), store.put(k, v, o)),
-    list: (o) => ((ops += 1), store.list(o)),
+    get: (k) => (count(k), store.get(k)),
+    put: (k, v, o) => (count(k), store.put(k, v, o)),
+    list: (o) => (count(o?.prefix), store.list(o)),
   };
   for (let B = 0; B <= 40; B += 1) {
     ops = 0;
+    moveOps = [];
     const budget = createSearchBudget(B);
     await ask(counting, notes, { budget });
     assert.ok(budget.spent <= B, `B=${B} spent ${budget.spent}`);
     assert.ok(ops <= B, `B=${B} ops ${ops}`);
+    assert.deepEqual(moveOps, [".context/moves/"], `B=${B}`);
   }
 });
 
@@ -366,9 +372,9 @@ test("text hits are all or none for a strict caller; the owner keeps them on an 
   const store = await world(notes, { conditional: true, ready: true });
   const occupied = (await loadIndexManifest(store, big(), 0)).stats.filter((e) => e.docCount > 0).length;
   assert.ok(occupied > 1);
-  // One move sentinel read (absent), two catalog reads, then one short of
-  // every shard, 11 hits and the re-check's reserve.
-  const B = 1 + 2 + occupied + 11;
+  // Two catalog reads, then one short of every shard, 11 hits and the
+  // re-check's reserve. The move-job read is outside the budget (fix round 3).
+  const B = 2 + occupied + 11;
   const strict = await ask(store, notes, { budget: createSearchBudget(B) });
   assert.ok(!strict.relations.some((r) => r.reasons.includes("related_text")), JSON.stringify(strict));
   assert.equal(strict.possiblyIncomplete, true);

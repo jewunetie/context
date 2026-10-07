@@ -6,8 +6,8 @@
 //
 // Privacy. Every part runs over what `canSeeKey` admits before anything is
 // ranked or cut (arch 12.2 step 6). The parts run in a fixed order on the one
-// budget: the move jobs (one listing plus one read per marker), the catalog
-// (the index manifest and docmap, two reads), then search,
+// budget, after the move jobs (read outside it, as read_note reads them): the
+// catalog (the index manifest and docmap, two reads), then search,
 // then the graph. The graph's read count depends on hidden posting entries
 // (OPEN-27), so it goes last, where it can only lose its own families, all at
 // once for a strict caller. Search's own read count also depends on hidden
@@ -24,6 +24,7 @@ import { indexIsBehind, loadDocmapPaths, loadIndexManifest } from "../search/sha
 import { tokenize, stem } from "../search/text.js";
 import { searchIndexedNotes } from "../search/visible.js";
 import { activeMoveJobsOrNull, noteUnderPrefix } from "../moves/jobs.js";
+import { graphView } from "./mode.js";
 import { graphNeighbors } from "./neighbors.js";
 
 // Given the manifest, a search reads each occupied shard at most once and
@@ -126,9 +127,11 @@ export async function retrieveCandidates(store, { seed, intent, canSeeKey, isInd
   const strict = scope !== "private";
   let incomplete = false;
 
-  // Move jobs first, fail closed: unreadable job state (or a budget too small
-  // to read it) withholds every candidate, and an active job labels the answer.
-  const jobs = await activeMoveJobsOrNull(store, budget);
+  // Move jobs first, fail closed: unreadable job state withholds every
+  // candidate, and an active job labels the answer. Read on `store` itself,
+  // outside the budget: the same reads read_note's overlay makes, so the jobs
+  // withheld here are exactly the ones read_note answers through (fix round 3).
+  const jobs = await activeMoveJobsOrNull(store);
   if (jobs === null) return nothing;
   if (jobs.length) {
     moving = jobs;
@@ -139,6 +142,9 @@ export async function retrieveCandidates(store, { seed, intent, canSeeKey, isInd
   // Catalog: the visible paths of the index's docmap, from the one manifest
   // read this call makes. Behind, the list may lack a note, so a path outside
   // it is unknown rather than missing (`partial`); a path in it still resolves.
+  // Everything after the jobs is charged to the budget, a logical-delete
+  // store's extra reads included (graphView).
+  store = graphView(store, budget);
   let manifest = null;
   let docmap = null;
   try {

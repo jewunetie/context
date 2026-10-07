@@ -1,16 +1,14 @@
 /**
- * The active-move sentinel (`.context/moves/active`) as the gate in front of
- * the move-job markers (Task 17 fix round 2). Absent means no active move in
- * one op; present or unreadable means the markers are read, fail closed; a
- * refresh removes it only when the markers read as none, and only if it is
- * still the sentinel the refresh saw.
+ * The move-job markers and the active-move sentinel (`.context/moves/active`)
+ * (Task 17 fix rounds 2 and 3). The markers decide, read fail closed whatever
+ * the sentinel says; a refresh removes the sentinel only when the markers read
+ * as none, and only if it is still the sentinel the refresh saw.
  *
  * ## Sabotage record
  *
  * Run as temporary local edits and reverted.
  *
- *   markers read without the sentinel gate             1 here (no sentinel), 1 relatedNotesTool (100 finished moves)
- *   an unreadable sentinel read as absent              1 (cannot be read)
+ *   round 3: the round-2 sentinel gate put back         2 here (no sentinel or unreadable, refresh between), 2 relatedNotesTool
  *   refresh deleting when the markers cannot be read   1 (never removes)
  *   refresh deleting unconditionally                   1 (racing a new move)
  *   move_folder writing its marker before the sentinel 1 relatedNotesTool (sentinel before its job marker)
@@ -27,20 +25,28 @@ const job = (id, status = "logical_active") =>
   JSON.stringify({ version: 1, id, source: "a", destination: "b", status, created_at: "2026-01-01", objects: [] });
 const ID = "job-0000000000001";
 
-test("no sentinel: no active jobs, one get and no listing", async () => {
+// Fix round 3: no sentinel gate. The markers are read whatever the sentinel
+// says, the same reads read_note's overlay makes, so a sentinel removed by a
+// racing refresh cannot hide an active move. (Replaces round 2's "no
+// sentinel: one get and no listing" and "an unreadable sentinel reads the
+// markers", which pinned the gate; this pins the stronger rule that the
+// sentinel never decides.)
+test("an active marker is found with no sentinel and with an unreadable one", async () => {
   const store = memoryBucket();
   await store.put(moveJobKey(ID), job(ID));
-  const ops = [];
-  const watched = { ...store, get: (k) => (ops.push(`get:${k}`), store.get(k)), list: (o) => (ops.push(`list:${o?.prefix}`), store.list(o)) };
-  assert.deepEqual(await activeMoveJobsOrNull(watched), []);
-  assert.deepEqual(ops, [`get:${MOVE_SENTINEL_KEY}`]);
-});
-
-test("a sentinel that cannot be read means the markers are read", async () => {
-  const store = memoryBucket();
-  await store.put(moveJobKey(ID), job(ID));
+  assert.deepEqual((await activeMoveJobsOrNull(store)).map((j) => j.id), [ID]);
   const failing = { ...store, get: (k) => (k === MOVE_SENTINEL_KEY ? Promise.reject(new Error("read failed")) : store.get(k)) };
   assert.deepEqual((await activeMoveJobsOrNull(failing)).map((j) => j.id), [ID]);
+});
+
+test("a refresh between a new move's first sentinel and its marker does not hide the move", async () => {
+  const store = memoryBucket();
+  store.capabilities = { conditionalWrite: true, conditionalCreate: true, conditionalDelete: true };
+  await writeMoveSentinel(store); // the move's first write
+  await refreshMoveSentinel(store); // lists no marker yet and removes it
+  await store.put(moveJobKey(ID), job(ID)); // the marker lands
+  assert.ok(!store.objects.has(MOVE_SENTINEL_KEY), "non-vacuous: the sentinel is gone");
+  assert.deepEqual((await activeMoveJobsOrNull(store)).map((j) => j.id), [ID]);
 });
 
 test("a refresh never removes the sentinel when the markers cannot be read", async () => {

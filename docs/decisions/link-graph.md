@@ -174,21 +174,17 @@ a reviewer.
   The tests are "a note under an active move's source or destination is
   withheld, and the answer is labelled" and "an unreadable move job withholds
   every candidate; a seed under a move gets nothing".
-  The markers are read only when the active-move sentinel
-  (`.context/moves/active`) is present or unreadable (fix round 2): a finished
-  move's marker delete is a logical-delete tombstone that nothing removes, so
-  without the gate every call paid one read per historical move and answers
-  went empty as history grew. move_folder writes the sentinel before its
-  marker and again after it; a refresh removes it only when the markers read
-  as none, and conditionally on the etag it read where the store has
-  conditional delete. **Residual:** on a store without conditional delete, a
-  refresh that lists before a new move's marker lands can remove that move's
-  sentinel after the move's second write, and until the next move or refresh
-  writes it again, readers treat the move as inactive (its notes are not
-  withheld). A marker left without a sentinel by code older than this order
-  is the same case. The tests are `moveSentinel.test.mjs` and
-  `relatedNotesTool.test.mjs` "100 finished moves cost the job check one
-  op".
+  Every job marker is read, whatever the active-move sentinel says, and
+  outside the retrieval budget: the same reads read_note's overlay makes, so
+  related_notes, link suggestions and indexed moves withhold exactly the
+  moves read_note answers through (fix round 3; a sentinel gate tried in
+  round 2 could be removed by a racing refresh before a new move's marker
+  landed). A finished move's marker delete is a logical-delete tombstone that
+  nothing removes, so related_notes and indexed moves pay one unbudgeted read
+  per historical move, like read_note; the answer does not change with move
+  history. The tests are `relatedNotesTool.test.mjs` "one active move plus
+  100 finished ones" and "a refresh racing a new move's first sentinel", and
+  `moveSentinel.test.mjs`.
 
 **What reversing it costs.** Phase 3 backlinks, related notes, and
 index-assisted move repair all read this index; they cannot be built on a

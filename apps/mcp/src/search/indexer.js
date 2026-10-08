@@ -229,12 +229,16 @@ function drawingLinkText(drawing) {
 
 // -- in-memory index -----------------------------------------------------
 
-/** term → per-field token count, for one field's token list. */
-function tallyField(tokens, fieldIndex, into) {
+/**
+ * term → per-field token count, for one field's token list. `width` is 4, or
+ * 5 for a document carrying the anchor field (v3 with anchors only), so every
+ * other tuple keeps its four slots.
+ */
+function tallyField(tokens, fieldIndex, into, width = 4) {
   for (const term of tokens) {
     let counts = into.get(term);
     if (!counts) {
-      counts = [0, 0, 0, 0];
+      counts = new Array(width).fill(0);
       into.set(term, counts);
     }
     counts[fieldIndex] += 1;
@@ -266,9 +270,13 @@ function tallyField(tokens, fieldIndex, into) {
  *   `chunk` is the chunk index of a chunked note's sub-document, stored on the
  *   doc entry only when given (per-note dedupe, `rankedVisibleTo`). `partial`
  *   marks the last chunk of a note cut at the format's cap, stored only when
- *   true (`statsOfShard`'s `partialPaths`).
+ *   true (`statsOfShard`'s `partialPaths`). `anchors` (`{ text, sources }`,
+ *   `search/anchors.js`) is the text of the links pointing at the note: it is
+ *   tokenized into a fifth tf slot and `len.anchors`, and stored on the doc
+ *   entry so the query can drop it for a caller who cannot see every source.
+ *   Absent, the doc is exactly what it was before the field existed.
  */
-export function addDoc(index, path, { etag, uploaded, content, notePath = path, anchor = null, comms = null, tokenizer = 1, chunk = null, partial = false }) {
+export function addDoc(index, path, { etag, uploaded, content, notePath = path, anchor = null, comms = null, tokenizer = 1, chunk = null, partial = false, anchors = null }) {
   if (index.docs.has(path)) removeDoc(index, path);
 
   // The real note's own path/basename decide the filename-fallback title and
@@ -283,8 +291,11 @@ export function addDoc(index, path, { etag, uploaded, content, notePath = path, 
     termsOf(fields.body, tokenizer),
   ];
 
+  const anchorTokens = anchors ? termsOf(anchors.text, tokenizer) : null;
+  const width = anchorTokens ? 5 : 4;
   const counts = new Map();
-  tokensByField.forEach((tokens, fieldIndex) => tallyField(tokens, fieldIndex, counts));
+  tokensByField.forEach((tokens, fieldIndex) => tallyField(tokens, fieldIndex, counts, width));
+  if (anchorTokens) tallyField(anchorTokens, 4, counts, width);
 
   for (const [term, tf] of counts) {
     let postings = index.terms.get(term);
@@ -305,6 +316,7 @@ export function addDoc(index, path, { etag, uploaded, content, notePath = path, 
       headings: tokensByField[1].length,
       tags: tokensByField[2].length,
       body: tokensByField[3].length,
+      ...(anchorTokens && { anchors: anchorTokens.length }),
     },
     rank: 0,
     notePath,
@@ -312,6 +324,7 @@ export function addDoc(index, path, { etag, uploaded, content, notePath = path, 
     comms,
     ...(Number.isInteger(chunk) ? { chunk } : {}),
     ...(partial === true ? { partial: true } : {}),
+    ...(anchors && { anchors: { text: anchors.text, sources: [...anchors.sources] } }),
   });
 }
 

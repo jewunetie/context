@@ -68,7 +68,10 @@ import { toolSearchNotes } from "../src/tools/search.js";
 // Re-pinned for PARSER_VERSION 2 (bare URLs): a dump of { log, answers } under
 // versions 1 and 2 differs only in the graph records' parserVersion and the
 // referenceSetVersion derived from it; the fixture has no bare URLs.
-const OFF_DIGEST = "77e295f5efcfcf7b063aad278bef64a37beb5a611397c31d15044b34fa93e608";
+// Re-pinned for PARSER_VERSION 3 (anchor text): the dumps at fd50bdb6 and
+// after are identical once parserVersion, referenceSetVersion and the node
+// records' new `title` field are masked (no link in the fixture has an alias).
+const OFF_DIGEST = "e4d59ccbf507adfd1e67119303e7f712a47be9de3280a0512622486a3222124f";
 const NOW = Date.parse("2026-01-01T00:00:00Z");
 const gen = "1";
 const RULES = [{ prefix: "w", vis: "team" }];

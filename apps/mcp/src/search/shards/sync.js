@@ -1,4 +1,4 @@
-import { indexableText } from "../../encryption.js";
+import { indexableText, isEncryptedNote } from "../../encryption.js";
 import { buildTermFilter } from "../filter.js";
 import { addDoc, removeDocsForNote } from "../indexer.js";
 import { indexVolumeOf } from "../commsIndex.js";
@@ -16,11 +16,14 @@ import {
   AUDIT_OPS,
   FILTER_BACKFILL_PER_SYNC,
   NEUTRAL_RANK,
+  ANCHORS_UNREAD,
+  unmarked,
 } from "./constants.js";
 import { emptyManifest, emptyShard } from "./shapes.js";
 import { chooseShardCount, growManifest, placeUnclaimed, shardOf } from "./placement.js";
 import { serializeDocmap, parseDocmap, serializeShard } from "./serialize.js";
 import { loadShard } from "./io.js";
+import { ANCHOR_READS, ANCHOR_REFRESH_CAP, anchorReader, refreshPaths } from "../anchors.js";
 import { listNoteObjects } from "./listing.js";
 import {
   statsOfShard,
@@ -204,6 +207,11 @@ export async function syncPass(
      */
     only = null,
     listing = null, // a listing this pass's caller already paid for (`syncDual.js`); returned as `listing`
+    // Anchor text (v3 with `format.anchors` only, `anchors.js`): the privacy
+    // engine bound to this context, for admission, and link targets whose
+    // anchor text changed (`{ path }` or `{ name }`), re-indexed by this pass.
+    visibilityOf,
+    refresh = null,
   } = {},
   writer = V2_WRITER // which namespace this pass writes; chosen by `syncShardedIndex` (`syncDual.js`)
 ) {
@@ -401,14 +409,37 @@ export async function syncPass(
   const touchedPaths = new Set();
   const removedPaths = new Set();
 
+  // Anchor text (`anchors.js`), for a v3 format that has it. Work that only
+  // re-reads a note's anchors (`anchorOnly`: a doc whose anchors were not
+  // read when it was indexed, marked ANCHORS_UNREAD in its version, or a link
+  // target the graph says changed) goes after every other note in its shard,
+  // pays for its anchor reads before its fetch, and is never `pending`: it
+  // does not hold back `built`, so it cannot stall a build at a low budget.
+  const anchors = writer.format?.anchors === true ? anchorPassFor(store, { visibilityOf, entries, claimedShard }) : null;
+  const anchorOnly = (listed, recorded) => ({ ...listed, version: unmarked(recorded), anchorOnly: true });
+  const anchorWork = new Set(); // every anchor-only path this pass was asked for, in any shard
   const staleByShard = new Map();
   const queued = new Set();
   for (const [path, listed] of entries) {
     const id = claimedShard.has(path) ? claimedShard.get(path) : placement.get(path);
-    if (manifest.docsByShard[id].get(path) === listed.version) continue;
-    pushInto(staleByShard, id, [path, listed]);
+    const recorded = manifest.docsByShard[id].get(path);
+    if (recorded === listed.version) continue;
+    const retry = anchors !== null && recorded === listed.version + ANCHORS_UNREAD;
+    pushInto(staleByShard, id, [path, retry ? anchorOnly(listed, recorded) : listed]);
+    if (retry) anchorWork.add(path);
     queued.add(path);
   }
+  // The manifest's carried list and `refresh`, at the version the docmap holds.
+  const refreshing = anchors ? refreshPaths(manifest.anchorRefresh, refresh, anchors.paths, claimedShard) : [];
+  for (const path of refreshing) {
+    if (queued.has(path)) continue;
+    const id = claimedShard.get(path);
+    const listed = entries.get(path);
+    pushInto(staleByShard, id, [path, anchorOnly({ uploaded: listed?.uploaded, fromEtag: false, size: listed?.size ?? null }, manifest.docsByShard[id].get(path))]);
+    anchorWork.add(path);
+    queued.add(path);
+  }
+  const refreshed = new Set();
 
   const removalsByShard = new Map();
   for (const [path, id] of claimedShard) {
@@ -525,13 +556,31 @@ export async function syncPass(
     // keyed `path#anchor`, so `shard.docs.get(path)` for the note's own path
     // finds nothing even when every one of its sub-documents is current.
     const existingVersions = docVersionsOf(shard);
-    const work = [...stale];
+    let work = [...stale];
     for (const path of manifest.docsByShard[id].keys()) {
       if (queued.has(path)) continue;
       const listed = entries.get(path);
       if (!listed) continue;
-      if (existingVersions.get(path) !== listed.version) work.push([path, listed]);
+      const existing = existingVersions.get(path);
+      if (existing === listed.version) continue;
+      work.push([path, anchors && existing === listed.version + ANCHORS_UNREAD ? anchorOnly(listed, existing) : listed]);
     }
+
+    // The graph manifest once per pass, and each note's previous anchor field
+    // and upload time, kept where its postings cannot be read this pass.
+    if (anchors) {
+      work = [...work.filter(([, l]) => !l.anchorOnly), ...work.filter(([, l]) => l.anchorOnly)];
+      for (const [path, l] of work) if (l.anchorOnly) anchorWork.add(path);
+      // Only when one note and its anchor reads would still fit after it: below
+      // that the read would cost the build a note fetch (the stall class), and
+      // the notes are indexed unread and re-read later instead.
+      const oneNote = callerReserve + MANIFEST_WRITE_RESERVE + SHARD_WRITE_RESERVE + 1 + ANCHOR_READS;
+      if (work.length > 0 && !anchors.reader.loaded && ops.remaining > oneNote && ops.take(oneNote)) {
+        await anchors.reader.load(() => true);
+      }
+    }
+    const previous = anchors ? previousDocs(shard) : null;
+    const refreshedHere = [];
 
     let touched = false;
     for (const path of removals) {
@@ -554,7 +603,14 @@ export async function syncPass(
       const wave = [];
       for (const entry of work.slice(start, start + BACKFILL_CONCURRENCY)) {
         if (fetchedNotes >= backfillCap) break;
-        if (!ops.take(callerReserve + MANIFEST_WRITE_RESERVE + SHARD_WRITE_RESERVE)) break;
+        // Anchor-only work is paid for in full before its fetch (a re-read that
+        // cannot read the anchors would only mark the note again); and it
+        // waits for the graph manifest.
+        const prepay = entry[1].anchorOnly ? (anchors.reader.loaded ? (anchors.reader.usable ? ANCHOR_READS : 0) : -1) : 0;
+        if (prepay < 0) break;
+        if (!ops.take(callerReserve + MANIFEST_WRITE_RESERVE + SHARD_WRITE_RESERVE + prepay)) break;
+        let prepaid = 0;
+        while (prepaid < prepay && ops.take(callerReserve + MANIFEST_WRITE_RESERVE + SHARD_WRITE_RESERVE)) prepaid += 1;
         fetchedNotes += 1;
         wave.push(
           (async ([path, listed]) => {
@@ -595,7 +651,8 @@ export async function syncPass(
               other: capping first would be wrong, and excluding after the split
               would mean excluding in two places.
             */
-            const full = indexableText(await object.text());
+            const raw = await object.text();
+            const full = indexableText(raw);
             // Record the token the *next* listing will report, or the diff
             // never converges: where the listing carries a real etag that is
             // this read's etag, and where it does not, the object's real etag
@@ -605,7 +662,23 @@ export async function syncPass(
               listed.fromEtag && typeof object.etag === "string" && object.etag
                 ? object.etag
                 : listed.version;
-            return { path, uploaded: listed.uploaded, full, version };
+            const before = previous?.get(path);
+            let field = null;
+            let marked = version;
+            if (anchors) {
+              // Prepaid ops first, then whatever the pass can spare; anchors
+              // that cannot be read keep the previous field and mark the
+              // version, so a later pass re-reads them (`anchorOnly`).
+              // An encrypted note gets none: nothing reaches the index for it.
+              let left = prepaid;
+              const take = () => left-- > 0 || ops.take(callerReserve + MANIFEST_WRITE_RESERVE + SHARD_WRITE_RESERVE);
+              const found = isEncryptedNote(raw) ? null : await anchors.reader.anchorsFor(path, take);
+              field = found === undefined ? before?.anchors ?? null : found;
+              if (found === undefined) marked = version + ANCHORS_UNREAD;
+            }
+            // A refresh with no listing keeps the doc's upload time (recency).
+            const uploaded = listed.uploaded !== undefined ? listed.uploaded : before?.uploaded ?? null;
+            return { path, uploaded, full, version: marked, anchors: field };
           })(entry)
         );
       }
@@ -620,16 +693,22 @@ export async function syncPass(
           // channel-day note's own path is never a doc key in this shard.
           removeDocsForNote(shard, result.path);
           removedPaths.add(result.path);
+          refreshedHere.push(result.path);
           touched = true;
           continue;
         }
         touchedPaths.add(result.path);
+        refreshedHere.push(result.path);
         // Replace the note's sub-documents **exactly**: a message edited out
         // of a regenerated day (or a note that was a channel-day note and no
         // longer parses as one) must not leave a stale sub-document behind
         // under an anchor the fresh set does not name.
         removeDocsForNote(shard, result.path);
+        let first = true;
         for (const sub of writer.subDocuments(result.path, result.full)) {
+          // The anchor field rides on the note's first document only, never a message's.
+          const field = first && sub.anchor === null ? result.anchors : null;
+          first = false;
           addDoc(shard, sub.key, {
             etag: result.version,
             uploaded: result.uploaded,
@@ -638,6 +717,7 @@ export async function syncPass(
             anchor: sub.anchor,
             comms: sub.comms,
             tokenizer: writer.tokenizer, chunk: sub.chunk, partial: sub.partial,
+            ...(field && { anchors: field }),
           });
           // No `computeRanks`: the link graph is global and v2 never holds
           // every shard at once. Neutral for every doc, as CONTRACT.md pins.
@@ -704,6 +784,7 @@ export async function syncPass(
       manifest.filters[id] = buildTermFilter(shard.terms.keys());
       manifestChanged = true;
     }
+    if (persisted) for (const path of refreshedHere) refreshed.add(path);
     // A shard this pass loaded and left alone still gets a filter where it had
     // none: an index written before filters existed would otherwise be routed
     // by nothing until every one of its shards happened to be edited, and a
@@ -715,6 +796,17 @@ export async function syncPass(
     // What this shard did not land: the notes it never reached, plus — if the
     // shard itself was not stored — the ones it did.
     pending += work.length - applied + (persisted ? 0 : applied);
+  }
+
+  // Refreshes this pass did not land stay on the manifest for the next one,
+  // and anchor-only work it did not land is not `pending` (see above).
+  if (anchors) {
+    for (const path of anchorWork) if (!refreshed.has(path)) pending -= 1;
+    const left = refreshing.filter((path) => !refreshed.has(path)).slice(-ANCHOR_REFRESH_CAP);
+    if (JSON.stringify(left) !== JSON.stringify(manifest.anchorRefresh ?? [])) {
+      manifest.anchorRefresh = left;
+      manifestChanged = true;
+    }
   }
 
   // What this pass learned about how far behind the index is, recorded so a
@@ -853,6 +945,19 @@ export async function syncPass(
     spent: ops.spent,
     listing: listed, // what it diffed against: a listing, or a write's own entries; absent if it returned early
   };
+}
+
+/** The anchor-text state of one pass: every note it knows, and the reader. */
+function anchorPassFor(store, { visibilityOf, entries, claimedShard }) {
+  const paths = new Set([...entries.keys(), ...claimedShard.keys()]);
+  return { paths, reader: anchorReader(store, { visibilityOf, paths }) };
+}
+
+/** One document per note in `shard`, the one holding its anchor field where any does (`uploaded`, `anchors`). */
+function previousDocs(shard) {
+  const out = new Map();
+  for (const doc of shard.docs.values()) if (!out.has(doc.notePath) || doc.anchors) out.set(doc.notePath, doc);
+  return out;
 }
 
 /**

@@ -287,3 +287,13 @@ export const AUDIT_OPS = 2;
  */
 export const NEUTRAL_RANK = 1;
 
+/**
+ * Appended to a doc's recorded version when its anchors could not be read
+ * (budget, a store fault, no `visibilityOf` on a write's own pass): the diff
+ * then sees it as stale and a later pass re-reads only its anchors. A NUL
+ * never appears in an etag or a listing token. `censusFromManifest` strips it,
+ * so the graph and the D1 projection see the note's real version.
+ */
+export const ANCHORS_UNREAD = "\u0000anchors";
+export const unmarked = (version) =>
+  typeof version === "string" && version.endsWith(ANCHORS_UNREAD) ? version.slice(0, -ANCHORS_UNREAD.length) : version;

@@ -74,6 +74,35 @@ import { cjkPieces, trigrams } from "./text.js";
 const EMPTY_LEN = { title: 0, headings: 0, tags: 0, body: 0 };
 
 /**
+ * The anchor field (tf slot 4, v3 with anchors only, `anchors.js`): the text
+ * of links pointing at a note and their sources' titles. BM25F weight and
+ * length normalization, against body's 1.0 and 0.75: half a body word, so a
+ * note's own words outrank what others call it. Chosen, not tuned on the
+ * held-out set. A doc without the field has a four-slot tuple and scores as
+ * before.
+ */
+export const ANCHOR_FIELD_WEIGHT = 0.5;
+export const ANCHOR_FIELD_B = 0.5;
+
+/**
+ * Whether `doc`'s anchor field counts for this caller: only when every source
+ * that contributed to it passes `isVisible`. Admission at index time already
+ * requires each source to be at least as wide as the note; this holds after a
+ * visibility change no re-index has caught up with, so a hidden source's words
+ * never make a note findable (no store read, the sources ride on the doc).
+ */
+function anchorsCount(doc, isVisible) {
+  const sources = doc?.anchors?.sources;
+  return Array.isArray(sources) && sources.every((source) => isVisible(source));
+}
+
+/** A tuple without its anchor slot, or null when nothing else is left. */
+function withoutAnchors(tuple) {
+  const rest = tuple.slice(0, 4);
+  return rest.some((tf) => tf > 0) ? rest : null;
+}
+
+/**
  * Fuzzy expansion candidates one shard may retain for one query term.
  *
  * `FUZZY_MAX_CANDIDATES` (2) is what the scorer consumes globally; this is
@@ -161,6 +190,8 @@ export function collectShardCandidates(shardIndex, queryTerms, isVisible) {
   // match `note.md#msg-…`) or, worse, coincidentally match something else.
   const visiblePaths = new Set();
   const lenTotals = { title: 0, headings: 0, tags: 0, body: 0 };
+  // Docs whose anchor field this caller may not use (`anchorsCount`).
+  const anchorless = new Set();
   let visibleN = 0;
   for (const [path, doc] of docs) {
     const notePath = typeof doc?.notePath === "string" ? doc.notePath : path;
@@ -169,6 +200,10 @@ export function collectShardCandidates(shardIndex, queryTerms, isVisible) {
     visibleN++;
     const len = doc?.len;
     if (len) for (const field of FIELD_ORDER) lenTotals[field] += Number(len[field]) || 0;
+    if (doc?.anchors !== undefined) {
+      if (anchorsCount(doc, isVisible)) lenTotals.anchors = (lenTotals.anchors ?? 0) + (Number(len?.anchors) || 0);
+      else anchorless.add(path);
+    }
   }
 
   const dfByTerm = new Map();
@@ -179,9 +214,11 @@ export function collectShardCandidates(shardIndex, queryTerms, isVisible) {
   function noteMeta(path) {
     if (meta.has(path)) return;
     const doc = docs.get(path);
+    const len = { ...(doc?.len || EMPTY_LEN) };
+    if (anchorless.has(path)) delete len.anchors;
     meta.set(path, {
       uploaded: doc?.uploaded ?? null,
-      len: { ...(doc?.len || EMPTY_LEN) },
+      len,
       // Carried through to the final result so a caller can build the deep
       // link and cut the snippet from the right place without re-deriving
       // either from the doc key — see the `isVisible` comment above for why
@@ -237,7 +274,11 @@ export function collectShardCandidates(shardIndex, queryTerms, isVisible) {
 
     const visibleForTerm = new Map();
     for (const [path, tuple] of termPostings) {
-      if (visiblePaths.has(path)) visibleForTerm.set(path, tuple);
+      if (!visiblePaths.has(path)) continue;
+      // A hidden source's words are not this doc's for this caller: not in
+      // its tf, its df or its length (`anchorsCount`).
+      const kept = anchorless.has(path) && tuple.length > 4 ? withoutAnchors(tuple) : tuple;
+      if (kept) visibleForTerm.set(path, kept);
     }
     if (visibleForTerm.size === 0) continue; // df 0 in THIS shard's visible view
 
@@ -389,12 +430,14 @@ export function scoreCollected(perShardCollections, query, { now, tokenizer } = 
   const queryTerms = [...new Set([...terms, ...phrases.flat()])]; // first-occurrence order preserved
   if (queryTerms.length === 0) return [];
 
-  const lenSums = { title: 0, headings: 0, tags: 0, body: 0 };
+  const lenSums = { title: 0, headings: 0, tags: 0, body: 0, anchors: 0 };
   for (const c of collections) {
     for (const field of FIELD_ORDER) lenSums[field] += Number(c.lenTotals?.[field]) || 0;
+    lenSums.anchors += Number(c.lenTotals?.anchors) || 0;
   }
   const avglen = {};
   for (const field of FIELD_ORDER) avglen[field] = lenSums[field] / N;
+  avglen.anchors = lenSums.anchors / N;
 
   const meta = new Map();
   for (const c of collections) for (const [path, m] of c.meta) meta.set(path, m);
@@ -424,6 +467,13 @@ export function scoreCollected(perShardCollections, query, { now, tokenizer } = 
       const lenRatio = avg > 0 ? (Number(len?.[field]) || 0) / avg : 0;
       const norm = 1 - b + b * lenRatio;
       wtf += (FIELD_WEIGHT[field] * tf) / (norm > 0 ? norm : 1);
+    }
+    // The anchor slot, present only on a doc built with anchors.
+    const tf = Number(entry[4]) || 0;
+    if (tf > 0) {
+      const lenRatio = avglen.anchors > 0 ? (Number(len?.anchors) || 0) / avglen.anchors : 0;
+      const norm = 1 - ANCHOR_FIELD_B + ANCHOR_FIELD_B * lenRatio;
+      wtf += (ANCHOR_FIELD_WEIGHT * tf) / (norm > 0 ? norm : 1);
     }
     return wtf;
   }

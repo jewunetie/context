@@ -92,6 +92,9 @@ WRITE_ENRICH_SUBREQUEST_BUDGET = "80"
 # to it only once a full pass has built it. Staging sets SEARCH_TOKENIZER in `[env.staging.vars]`.
 # SEARCH_TOKENIZER = "2"        # "1" (today) or "2"
 # SEARCH_CHUNK_CHARS = "2000"   # "0" or unset (no chunking), "1000", "2000", "4000"
+# SEARCH_ANCHOR_TEXT = "1"      # exactly "1": a v3 index with the anchor-text field (link aliases and
+#                               # source titles from the link graph, src/search/anchors.js); anything else is off.
+#                               # Bench only so far: never set it in `[vars]` or `[env.staging.vars]` without a bench win.
 
 # Graph-assisted search ranking (Task 29, ruling OPEN-68). Unset everywhere, so
 # search_notes is unchanged; only the exact values "b2", "b3" or "b4" turn it

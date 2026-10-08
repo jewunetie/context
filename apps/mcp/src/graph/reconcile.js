@@ -145,7 +145,13 @@ async function removeIfGone(store, budget, path, ctx) {
   } catch {
     return "kept"; // a failed read is not a not-found
   }
-  return (await removeNote(store, path, { budget, gen: ctx.gen, mode: ctx.mode })).state;
+  return touch(ctx, await removeNote(store, path, { budget, gen: ctx.gen, mode: ctx.mode }));
+}
+
+/** The projection's state, after keeping the link targets it changed for the anchor refresh. */
+function touch(ctx, result) {
+  for (const t of result.touched ?? []) ctx.touched.push(t);
+  return result.state;
 }
 
 /** Re-project one census path from its own fresh body read. */
@@ -157,14 +163,14 @@ async function refresh(store, budget, path, version, ctx, read) {
   } catch {
     return "stale"; // unreadable this pass: left for the next sweep, never a stall
   }
-  if (!object) return (await removeNote(store, path, { budget, gen: ctx.gen, mode: ctx.mode })).state;
+  if (!object) return touch(ctx, await removeNote(store, path, { budget, gen: ctx.gen, mode: ctx.mode }));
   let body;
   try {
     body = await object.text();
   } catch {
     return "stale";
   }
-  return (await projectNote(store, path, body, version, { budget, gen: ctx.gen, mode: ctx.mode, now: ctx.now, read })).state;
+  return touch(ctx, await projectNote(store, path, body, version, { budget, gen: ctx.gen, mode: ctx.mode, now: ctx.now, read }));
 }
 
 /** Count a projection outcome; true when the item needs no revisit this sweep. */
@@ -226,16 +232,21 @@ async function sweep(store, budget, ctx, cursor, out) {
  */
 async function auditCurrentNode(store, budget, ctx, path, node, from) {
   let memberships;
+  let anchors;
+  let targets;
   try {
-    ({ memberships } = await membershipsFor(path, node.occurrences));
+    ({ memberships, anchors, targets } = await membershipsFor(path, node.occurrences, node.title));
   } catch {
     return -1; // hostile occurrences: nothing to assert
   }
   const sorted = [...memberships].sort();
   for (let i = from; i < sorted.length; i += 1) {
     const [family, hash] = sorted[i].split(":");
+    const target = targets.get(sorted[i]);
     const result = await setMembership(store, budget, {
       gen: ctx.gen, family, hash, source: path, referenceSetVersion: node.referenceSetVersion, present: true, mode: ctx.mode,
+      anchor: anchors.get(sorted[i]),
+      onWrite: target ? () => ctx.touched.push(target) : undefined,
     });
     if (result === "budget") return i;
   }
@@ -373,7 +384,7 @@ async function garbage(store, budget, manifest, cursor) {
  * census; `cutover` is true when it swapped to the building generation.
  */
 export async function reconcileGraph(store, budget, { census, censusComplete, censusListedAt, removedHints = [], isIndexable, now }) {
-  const out = { projected: 0, pending: 0, sweepComplete: false };
+  const out = { projected: 0, pending: 0, sweepComplete: false, touched: [] };
   const mode = graphMode(store);
   let { manifest, etag, absent } = await readGraphManifest(store, budget);
   if (!manifest && absent) manifest = await initGraphManifest(store, budget, { mode, now });
@@ -389,7 +400,7 @@ export async function reconcileGraph(store, budget, { census, censusComplete, ce
   if (!read) return out;
   const { cursor } = read;
   const before = JSON.stringify(cursor);
-  const ctx = { census, censusComplete, censusListedAt, isIndexable, gen, mode, now, verdicts: new Map() };
+  const ctx = { census, censusComplete, censusListedAt, isIndexable, gen, mode, now, verdicts: new Map(), touched: out.touched };
   const cursorOnlyIf = mode === "conditional" ? { onlyIf: read.etag ? { etagMatches: read.etag } : { absent: true } } : undefined;
   const reserve = wrapReserve(store, mode, cursorOnlyIf);
   const work = capped(budget, reserve);

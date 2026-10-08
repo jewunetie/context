@@ -336,6 +336,8 @@ export function serializeManifestV4(manifest) {
     format: manifest.format,
     shards: manifest.shards.map((entry) => (entry ? { key: entry.key, digest: entry.digest } : null)),
     built: manifest.built === true,
+    // Notes still owed an anchor-text refresh (anchors.js); absent when none.
+    ...(manifest.anchorRefresh?.length > 0 && { anchorRefresh: [...manifest.anchorRefresh] }),
   });
 }
 
@@ -373,7 +375,12 @@ export function parseManifestV4(text, byteCap = MANIFEST_PARSE_BYTE_CAP) {
     if (!entry.key.startsWith(V3_SHARD_PREFIX) || entry.key.includes("..")) return null;
     shards.push({ key: entry.key, digest: entry.digest });
   }
-  return { ...manifest, version: 4, format, shards, built: parsed.built === true };
+  // A malformed refresh list is dropped, not the manifest: it only names notes to re-index.
+  const anchorRefresh = Array.isArray(parsed.anchorRefresh) ? parsed.anchorRefresh.filter((p) => typeof p === "string") : [];
+  return {
+    ...manifest, version: 4, format, shards, built: parsed.built === true,
+    ...(format.anchors === true && anchorRefresh.length > 0 && { anchorRefresh }),
+  };
 }
 
 /**
@@ -435,6 +442,8 @@ export function serializeShard(shard) {
       ...(Number.isInteger(doc.chunk) ? { chunk: doc.chunk } : {}),
       // The last chunk of a note cut at the cap (v3 chunked only), when true.
       ...(doc.partial === true ? { partial: true } : {}),
+      // Anchor text and its sources (v3 with anchors only, anchors.js).
+      ...(doc.anchors ? { anchors: { text: doc.anchors.text, sources: [...doc.anchors.sources] } } : {}),
     },
   ]);
   const indexByPath = new Map(docs.map(([path], position) => [path, position]));
@@ -475,6 +484,13 @@ function readDocEntry(entry) {
   if (doc.shed !== undefined && typeof doc.shed !== "boolean") return null;
   if (doc.chunk !== undefined && !(Number.isInteger(doc.chunk) && doc.chunk >= 0)) return null;
   if (doc.partial !== undefined && doc.partial !== true) return null;
+  // The anchor field (v3 with anchors only): its length and its text with the
+  // sources the query checks, present together or not at all.
+  if ((doc.len.anchors !== undefined) !== (doc.anchors !== undefined)) return null;
+  if (doc.anchors !== undefined) {
+    if (!isFiniteNumber(doc.len.anchors) || !isPlainObject(doc.anchors) || typeof doc.anchors.text !== "string") return null;
+    if (!Array.isArray(doc.anchors.sources) || !doc.anchors.sources.every((s) => typeof s === "string")) return null;
+  }
   const { ok: commsOk, comms } = readComms(doc.comms);
   if (!commsOk) return null;
   return {
@@ -489,6 +505,7 @@ function readDocEntry(entry) {
         headings: doc.len.headings,
         tags: doc.len.tags,
         body: doc.len.body,
+        ...(doc.anchors !== undefined && { anchors: doc.len.anchors }),
       },
       rank: doc.rank,
       notePath: typeof doc.notePath === "string" ? doc.notePath : path,
@@ -502,6 +519,7 @@ function readDocEntry(entry) {
       // Survives a reload like `shed`, or a reloaded shard's stats would lose
       // `partialPaths` and differ from its manifest on every pass.
       ...(doc.partial === true ? { partial: true } : {}),
+      ...(doc.anchors !== undefined && { anchors: { text: doc.anchors.text, sources: [...doc.anchors.sources] } }),
     },
   };
 }
@@ -534,7 +552,8 @@ function readTermEntry(entry, paths) {
       if (typeof key !== "string") return null;
       path = key;
     }
-    if (!Array.isArray(tf) || tf.length !== 4 || !tf.every(isFiniteNumber)) return null;
+    // Four fields, or five where the doc carries anchor text (anchors.js).
+    if (!Array.isArray(tf) || (tf.length !== 4 && tf.length !== 5) || !tf.every(isFiniteNumber)) return null;
     postingMap.set(path, [...tf]);
   }
   return { term, postings: postingMap };

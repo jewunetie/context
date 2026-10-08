@@ -28,10 +28,10 @@ const sameEntry = (a, b) => a.source === b.source && a.referenceSetVersion === b
  * (bad `next` or cap hit) or "corrupt" (an unparseable page, kept as an empty
  * slot; writers must not write through it, it would drop its `next`).
  */
-async function walk(store, budget, { gen, family, hash }) {
+async function walk(store, budget, { gen, family, hash }, pages = MAX_POSTING_PAGES) {
   const slots = [];
   for (let n = 0; ; n += 1) {
-    if (n >= MAX_POSTING_PAGES) return { slots, status: "malformed" };
+    if (n >= pages) return { slots, status: "malformed" };
     if (!budget.take()) return { slots, status: "budget" };
     const key = postingPageKey(gen, family, hash, n);
     const got = await store.get(key);
@@ -60,10 +60,13 @@ async function walk(store, budget, { gen, family, hash }) {
  * "budget" (the budget cannot cover the read or every planned write; nothing
  * from this attempt is written) or "full" (the chain is at MAX_POSTING_PAGES
  * and the entry cannot be added; callers mark coverage partial).
+ * `anchor` (`{ texts, title }`, facts.js) rides on an added entry; it is part
+ * of `referenceSetVersion`, so a changed one is a new entry. `onWrite` runs
+ * once when this call changed the posting ("done" also means "already so").
  */
-export async function setMembership(store, budget, { gen, family, hash, source, referenceSetVersion, present, mode, exact = false }) {
+export async function setMembership(store, budget, { gen, family, hash, source, referenceSetVersion, present, mode, exact = false, anchor, onWrite }) {
   const conditional = mode === "conditional";
-  const entry = { source, referenceSetVersion };
+  const entry = { source, referenceSetVersion, ...(present && anchor && { texts: anchor.texts, title: anchor.title }) };
   const match = !present && exact ? (e) => sameEntry(e, entry) : (e) => e.source === source;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
     const { slots, status } = await walk(store, budget, { gen, family, hash });
@@ -119,7 +122,10 @@ export async function setMembership(store, budget, { gen, family, hash, source, 
         break;
       }
     }
-    if (!refused) return "done";
+    if (!refused) {
+      onWrite?.();
+      return "done";
+    }
     // Best effort writes are never refused; a refusal there is a store fault,
     // and a retry re-reads and re-merges just the same.
   }
@@ -131,9 +137,11 @@ export async function setMembership(store, budget, { gen, family, hash, source, 
  * anything is collected or validated (arch 2.3), so a hidden source changes
  * neither the result nor what `validate` is asked. `complete` is false when the
  * budget ran out, the chain was malformed or capped, or validation threw.
+ * Entries keep their anchor `texts` and `title` where the page has them.
+ * `pages` caps the walk below MAX_POSTING_PAGES (anchor reads take page 0).
  */
-export async function readPostings(store, budget, { gen, family, hash, canSee, validate }) {
-  const { slots, status } = await walk(store, budget, { gen, family, hash });
+export async function readPostings(store, budget, { gen, family, hash, canSee, validate, pages = MAX_POSTING_PAGES }) {
+  const { slots, status } = await walk(store, budget, { gen, family, hash }, pages);
   // A chain at the cap may have dropped entries (setMembership "full").
   let complete = status === "end" && slots.length < MAX_POSTING_PAGES;
   const entries = [];
@@ -144,7 +152,14 @@ export async function readPostings(store, budget, { gen, family, hash, canSee, v
   for (const e of latest.values()) {
     if (!(await canSee(e.source))) continue;
     try {
-      if (await validate(e)) entries.push({ source: e.source, referenceSetVersion: e.referenceSetVersion });
+      if (await validate(e)) {
+        entries.push({
+          source: e.source,
+          referenceSetVersion: e.referenceSetVersion,
+          ...(e.texts !== undefined && { texts: e.texts }),
+          ...(e.title !== undefined && { title: e.title }),
+        });
+      }
     } catch {
       complete = false;
     }

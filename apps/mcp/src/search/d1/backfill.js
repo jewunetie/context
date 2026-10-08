@@ -100,6 +100,7 @@
 import { deleteStatements, projectNote, upsertStatements } from "./project.js";
 import { indexableText } from "../../encryption.js";
 import { D1Error, failureDetailOf } from "./client.js";
+import { unmarked } from "../shards/constants.js";
 import {
   MANIFEST_PARSE_BYTE_CAP,
   loadIndexManifest,
@@ -185,7 +186,8 @@ export function censusFromManifest(manifest) {
   const census = new Map();
   if (!manifest) return census;
   for (const shard of manifest.docsByShard) {
-    for (const [path, version] of shard) census.set(path, version);
+    // Without anchor text's re-read mark (search/anchors.js), never in a v2 docmap.
+    for (const [path, version] of shard) census.set(path, unmarked(version));
   }
   return census;
 }

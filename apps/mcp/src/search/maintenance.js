@@ -30,7 +30,22 @@ import { listBoundedKeys, listImmediateLayout } from "../notes/storage.js";
 import { syncShardedIndex } from "./shards.js";
 import { GC_BUDGET_FLOOR, collectShardRevisions } from "./shards/gc.js";
 import { reconcileGraph } from "../graph/reconcile.js";
+import { refreshAnchorTargets } from "./anchors.js";
 import { graphView } from "../graph/mode.js";
+
+/** Ops the graph leaves, with anchor text on, for the refresh pass: v3 manifest and docmap reads, manifest write. */
+const ANCHOR_REFRESH_RESERVE = 3;
+
+/** A view of `budget` that always leaves `keep` ops for the caller. */
+const keepBack = (budget, keep) => ({
+  get remaining() {
+    return Math.max(0, budget.remaining - keep);
+  },
+  get spent() {
+    return budget.spent;
+  },
+  take: (reserve = 0) => budget.take(reserve + keep),
+});
 
 /**
  * The fallback scan's key listing.
@@ -228,7 +243,7 @@ async function maintainNow(store, budget, isIndexable, found, visibilityOf, opti
   const startedAt = Date.now();
   try {
     if (syncingIndex) {
-      synced = await syncShardedIndex(store, { budget, isIndexable, reserve, now: startedAt, ...options });
+      synced = await syncShardedIndex(store, { budget, isIndexable, reserve, now: startedAt, visibilityOf, ...options });
     }
   } catch {
     // A storage failure after the answer is already out changes nothing about
@@ -252,10 +267,15 @@ async function maintainNow(store, budget, isIndexable, found, visibilityOf, opti
   const inline = options.backfillOps !== undefined;
   const graphOff = store.writeEnrichBudget === 0;
   if (!inline && !graphOff && synced?.manifest && budget.remaining >= graphPassFloor(store)) {
+    // With anchor text on, the graph leaves enough for the refresh pass below
+    // to record what it cannot do on the v3 manifest (anchors.js).
+    const anchors = store.searchIndexFormat?.anchors === true;
+    const graphBudget = anchors ? keepBack(budget, ANCHOR_REFRESH_RESERVE) : budget;
+    let reconciled = null;
     try {
       const freshness = synced.manifest.freshness;
       // Its own logical view, billed to this budget alone (graphView).
-      await reconcileGraph(graphView(store, budget), budget, {
+      reconciled = await reconcileGraph(graphView(store, graphBudget), graphBudget, {
         census: censusFromManifest(synced.manifest),
         censusComplete: !synced.listingTruncated && Boolean(freshness?.listedAt) && !freshness?.truncated,
         // Only a census with nothing pending names a time: a note search
@@ -268,6 +288,7 @@ async function maintainNow(store, budget, isIndexable, found, visibilityOf, opti
     } catch {
       // Reconciliation repairs it on a later pass.
     }
+    if (anchors) await refreshAnchorTargets(store, reconciled?.touched, { visibilityOf, budget, isIndexable });
   }
   // Housekeeping last, after the graph: superseded revisions only cost storage,
   // so the graph (correctness) gets the budget first. It never changes the pass's

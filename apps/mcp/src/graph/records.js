@@ -70,7 +70,10 @@ export function parsePage(text, expectedKey) {
   const value = parseObject(text);
   if (!value || value.formatVersion !== GRAPH_FORMAT_VERSION || value.key !== expectedKey) return null;
   if (!Array.isArray(value.entries)) return null;
-  const entryOk = (e) => isObject(e) && typeof e.source === "string" && typeof e.referenceSetVersion === "string";
+  const entryOk = (e) => isObject(e) && typeof e.source === "string" && typeof e.referenceSetVersion === "string" &&
+    // Anchor fields (PARSER_VERSION 3), optional so older pages still parse.
+    (e.texts === undefined || (Array.isArray(e.texts) && e.texts.every((t) => typeof t === "string"))) &&
+    (e.title === undefined || typeof e.title === "string");
   if (!value.entries.every(entryOk)) return null;
   // `next` names the next page's number as a decimal string (OPEN-3).
   if (value.next !== undefined && !isGen(value.next)) return null;

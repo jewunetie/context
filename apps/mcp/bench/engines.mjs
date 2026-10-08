@@ -16,6 +16,8 @@
  *   is that function's switch; this calls the function it selects directly,
  *   so the D1 fast path and deferred maintenance are not in the measurement,
  *   as they are not for B0). Scope is "workspace", as in the fusion tests.
+ * - With a format carrying `anchors` (B6), the graph is built first, then the
+ *   v3 index reads anchor text from it; queries are lexical.
  * - `buildB5` is the Fast Search projection, unchanged.
  */
 
@@ -26,6 +28,7 @@ import { loadIndexManifest, syncShardedIndex } from "../src/search/shards.js";
 import { searchIndexedNotes } from "../src/search/visible.js";
 import { subDocumentsFor } from "../src/search/commsIndex.js";
 import { DEFAULT_FORMAT } from "../src/search/format.js";
+import { ANCHORS_UNREAD } from "../src/search/shards/constants.js";
 import { censusFromManifest } from "../src/search/d1/backfill.js";
 import { projectNote, upsertStatements } from "../src/search/d1/project.js";
 import { answerFromProjection } from "../src/search/d1/serve.js";
@@ -136,6 +139,14 @@ async function indexCosts(bucket, oversizedShards) {
   };
 }
 
+/** Notes in the served index whose anchor text is still to be read. */
+async function unreadAnchors(bucket) {
+  const manifest = await loadIndexManifest(bucket, createSearchBudget(1_000_000), 0);
+  let count = 0;
+  for (const shard of manifest?.docsByShard ?? []) for (const version of shard.values()) if (version.endsWith(ANCHORS_UNREAD)) count += 1;
+  return count;
+}
+
 /** Graph passes, each a sync pass then `reconcileGraph` on one budget, as `maintenance.js` runs them. */
 async function buildGraph(bucket, budget, maxPasses) {
   for (let passes = 1; passes <= maxPasses; passes += 1) {
@@ -165,6 +176,9 @@ async function buildGraph(bucket, budget, maxPasses) {
 export async function buildBucketEngine(notes, { latency, budget, format = null, graph = null }) {
   const bucket = createBucket(0);
   for (const note of notes) bucket.seed(note.path, note.text);
+  // Anchor text reads the graph at index time, so the graph is built first
+  // (over the v2 census), then the v3 index. Every note is visible.
+  const anchorPasses = format?.anchors ? await buildGraph(bucket, budget, 4_000) : null;
   if (format) bucket.searchIndexFormat = format;
   // Built without latency: the build is not what is being measured, and at
   // 10,000 notes it would be most of the run. A v3 arm builds v2 first and v3
@@ -173,12 +187,18 @@ export async function buildBucketEngine(notes, { latency, budget, format = null,
   let passes = 0;
   let last;
   for (; passes < maxPasses; passes += 1) {
-    last = await syncShardedIndex(bucket, { budget: createSearchBudget(budget) });
+    last = await syncShardedIndex(bucket, { budget: createSearchBudget(budget), visibilityOf: () => "team" });
     if (last.pending === 0 && !last.listingTruncated) break;
+  }
+  // Anchor reads a pass could not pay for are re-read later and are not
+  // `pending` (anchors.js): keep passing until none is left unread.
+  for (let more = 0; format?.anchors && more < maxPasses && (await unreadAnchors(bucket)) > 0; more += 1) {
+    last = await syncShardedIndex(bucket, { budget: createSearchBudget(budget), visibilityOf: () => "team" });
+    passes += 1;
   }
   const costs = await indexCosts(bucket, last.oversizedShards);
   if (format && costs.namespace !== "v3") throw new Error(`v3 was not served after ${passes + 1} passes`);
-  const graphPasses = graph ? await buildGraph(bucket, budget, 4_000) : null;
+  const graphPasses = graph ? await buildGraph(bucket, budget, 4_000) : anchorPasses;
   bucket.setLatency(latency);
   let graphIncomplete = 0;
   return {

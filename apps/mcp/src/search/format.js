@@ -12,6 +12,13 @@
  * no chunking, "1000", "2000", "4000"). Anything else is the default for that
  * field, never a throw: a bad var must not take down search (the
  * `searchBudgetFor` rule, `budget.js`).
+ *
+ * A third var, `SEARCH_ANCHOR_TEXT` (exactly "1"), adds `anchors: true`: each
+ * document gets the display text and source titles of the links pointing at
+ * it as a fifth, low-weight field (`anchors.js`, CONTRACT-v3.md "Anchor
+ * text"). It is part of the format, so flipping it builds a new v3 index and
+ * the field is never half present; absent, the format object has no
+ * `anchors` key at all, so every stored byte is what it was before.
  */
 
 import { segmenterSelfTest } from "./text.js";
@@ -42,7 +49,8 @@ export function indexFormatFor(source) {
   const tokenizer = varText(source?.SEARCH_TOKENIZER) === "2" ? 2 : 1;
   const target = Number(varText(source?.SEARCH_CHUNK_CHARS));
   const chunk = CHUNK_TARGETS.includes(target) ? chunkFor(target) : null;
-  return { tokenizer, chunk };
+  const anchors = typeof source?.SEARCH_ANCHOR_TEXT === "string" && source.SEARCH_ANCHOR_TEXT.trim() === "1";
+  return { tokenizer, chunk, ...(anchors && { anchors: true }) };
 }
 
 /**
@@ -56,6 +64,7 @@ export function indexFormatFor(source) {
 export function formatUsable(format) {
   if (typeof format !== "object" || format === null) return false;
   if (!TOKENIZERS.includes(format.tokenizer)) return false;
+  if (format.anchors !== undefined && format.anchors !== true) return false;
   if (format.tokenizer === 2 && !segmenterSelfTest()) return false;
   if (format.chunk === null) return true;
   const chunk = format.chunk;
@@ -67,7 +76,8 @@ export function formatUsable(format) {
 /** Two formats describe the same index. */
 export function formatsEqual(a, b) {
   if (!formatUsable(a) || !formatUsable(b)) return false;
-  return a.tokenizer === b.tokenizer && (a.chunk?.target ?? null) === (b.chunk?.target ?? null);
+  return a.tokenizer === b.tokenizer && (a.chunk?.target ?? null) === (b.chunk?.target ?? null) &&
+    (a.anchors === true) === (b.anchors === true);
 }
 
 /**
@@ -87,5 +97,9 @@ export function usesV3(format) {
  */
 export function readFormat(value) {
   if (!formatUsable(value)) return null;
-  return { tokenizer: value.tokenizer, chunk: value.chunk === null ? null : chunkFor(value.chunk.target) };
+  return {
+    tokenizer: value.tokenizer,
+    chunk: value.chunk === null ? null : chunkFor(value.chunk.target),
+    ...(value.anchors === true && { anchors: true }),
+  };
 }

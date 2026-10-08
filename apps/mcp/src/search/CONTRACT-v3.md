@@ -15,6 +15,7 @@ The switch is two deployment vars, unset in production (ruling OPEN-57):
 |---|---|---|
 | `SEARCH_TOKENIZER` | `"1"`, `"2"` | tokenizer 1 |
 | `SEARCH_CHUNK_CHARS` | `"0"` or absent (no chunking), `"1000"`, `"2000"`, `"4000"` | no chunking |
+| `SEARCH_ANCHOR_TEXT` | `"1"` (adds `anchors: true`, see "Anchor text") | no `anchors` key |
 
 `indexFormatFor(env)` reads them and never throws. A chunked format carries
 `max = 1.5 * target` (1,500, 3,000, 6,000; ruling OPEN-54) and `cap = 64,000`
@@ -272,3 +273,79 @@ can be refused for an object that is gone. A revision put that returns `null`
 is therefore believed (the same bytes are already stored) only after
 `store.exists(key)` confirms it; otherwise `putShard` returns `false`, the
 shard counts as not persisted and the manifest never names it.
+
+## Anchor text (`SEARCH_ANCHOR_TEXT`, off by default)
+
+`search/anchors.js`. With `anchors: true` in the format (a v3 index even at
+tokenizer 1, and a different format from the same one without it, so turning it
+on builds a new v3 index), each note's first document gets a fifth field: the
+display texts of the links pointing at it and their source notes' titles.
+
+**Recorded by the graph, always** (`graph/facts.js`, PARSER_VERSION 3, so graphs
+from older code rebuild). A wikilink's alias (`[[B|alias]]`) or an inline link's
+label (`[label](b.md)`) is stored as `text` on the occurrence; a link with
+neither (`[[B]]`, an embed, a URL) has none. The record stores `title` (the
+search title: first heading, else the file name). Each `incoming:` and `bare:`
+posting entry carries `texts` and `title`, and both are part of
+`referenceSetVersion`, so an alias or title edit rewrites the entries (a title
+edit rewrites every membership of the note). Encrypted notes have none.
+
+Caps:
+
+| Cap | Value | Where |
+|---|---|---|
+| characters per display text | 64 (`ANCHOR_TEXT_CHARS`) | graph record |
+| distinct texts per posting entry | 8 (`ANCHOR_TEXTS_PER_ENTRY`) | graph posting |
+| characters per title | 120 (`ANCHOR_TITLE_CHARS`) | graph record |
+| posting pages read per family per note | 1, page 0, at most 256 entries (`ANCHOR_POSTING_PAGES`) | index time |
+| sources per note | 32, in posting order (`ANCHOR_SOURCES_PER_TARGET`) | index time |
+| refresh list on the v3 manifest | 256 paths, oldest dropped (`ANCHOR_REFRESH_CAP`) | manifest |
+
+So one entry adds at most 8 x 64 + 120 characters to a posting page, and one
+document's field at most 32 x (8 x 64 + 120) characters.
+
+**Index time.** When the sync indexes note B it reads page 0 of
+`incoming:<hash of B's path>` and, when B's file name is held by no other note
+the pass knows, `bare:<hash of B's name>` (late binding, arch 7.4), from the
+graph's active generation (one graph manifest read per pass; a missing or newer
+graph gives no anchor text). Entries are not validated against node records;
+a source the pass does not know (deleted) is skipped. A source is admitted only
+when its visibility is at least as wide as B's: `narrowerVisibility(vis(A),
+vis(B)) === vis(B)` with the privacy engine's own rules, so team into private
+or a group, a group into private, equal into equal; never private into team or
+a group, never a group into team or another group. The field is stored on the
+document as `anchors: { text, sources }` with `len.anchors`, and its terms get
+a fifth tf slot. Documents without it keep four slots, so nothing changes for a
+format without anchors.
+
+**Query time.** No graph read. BM25F with weight `ANCHOR_FIELD_WEIGHT` 0.5 and
+`b` 0.5 (`shardQuery.js`), against body's 1.0 and 0.75. A caller who cannot
+see every source in `anchors.sources` gets the document without the field: its
+tf slot, its df contribution and its length are dropped for that caller. That
+is the guard after a visibility change no re-index has reached yet.
+
+**Budget.** The graph manifest is read only when one note and its two posting
+reads would still fit after it. A new or changed note is fetched as before; its
+anchor reads take what the pass can spare, and when they cannot be paid its
+version is recorded with `ANCHORS_UNREAD` appended. The diff then sees it as
+stale, and a later pass re-reads it as anchor-only work: after every other note
+in its shard, with its reads paid before the fetch, and never counted in
+`pending`, so it does not hold back `built` and the build progresses at
+`DEFERRED_SYNC_FLOOR` as it does without anchors (searchAnchorText.test.mjs).
+`censusFromManifest` strips the mark, so the graph and the D1 projection see
+the real version.
+
+**Freshness.** The graph reports which link targets' postings a projection
+changed (`touched`). After a write (`graph/afterWrite.js`) those notes are
+re-indexed by a targeted pass with ANCHOR_REFRESH_OPS (24) ops of its own;
+after a reconciliation pass (`search/maintenance.js`) on what the graph left,
+which keeps 3 ops back for it. A refresh a pass cannot finish stays on the v3
+manifest (`anchorRefresh`) and every later pass of any kind picks it up. The
+bound: an edit or delete of A through Context refreshes B behind the same
+write; an edit or delete outside Context refreshes B in the maintenance pass
+whose graph sweep reaches A, or a later pass if that one runs out. Past
+ANCHOR_REFRESH_CAP queued paths the oldest are dropped, and B keeps the old
+text until B is re-indexed for another reason (lean ceiling; a rotating anchor
+re-read is the upgrade). A write's own targeted pass has no `visibilityOf`, so
+the written note keeps its previous anchor field and is marked for a re-read.
+

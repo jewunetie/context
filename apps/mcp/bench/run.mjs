@@ -17,7 +17,9 @@
  * below; B1 is the v3 format at `--format tok1|tok2` (default tok1) and
  * `--chunk 0|1000|2000|4000` (default 2000), with `--graph off|b2|b3|b4`
  * (default off) as its graph variant; B2, B3 and B4 are B1's lexical format
- * with that graph variant. An arm may override the lexical flags for itself,
+ * with that graph variant. B6 is B1 at tok2 c1000 with anchor text
+ * (SEARCH_ANCHOR_TEXT): the graph is built first, then the v3 index reads it,
+ * and queries are lexical. An arm may override the lexical flags for itself,
  * `B1:c1000` or `B2:tok2:c4000`, so one run can hold the whole matrix. Chunk 0
  * with tok1 is the default format, built in the v3 namespace (`format.js`'s
  * bench hook) so B1 is always a v3 index. `--set judged|heldout|links|hotpot`
@@ -75,17 +77,19 @@ function parseArm(spec, defaults) {
   const [name, ...overrides] = spec.split(":");
   if (name === "B0") return { name, label: "B0 bucket search" };
   if (name === "B5") return { name, label: "B5 Fast Search" };
-  if (name !== "B1" && !GRAPH_ARMS[name]) throw new Error(`unknown engine ${spec}`);
-  let { tok, chunk } = defaults;
+  if (name !== "B1" && name !== "B6" && !GRAPH_ARMS[name]) throw new Error(`unknown engine ${spec}`);
+  // B6: B1 tok2 c1000 with anchor text (SEARCH_ANCHOR_TEXT, src/search/anchors.js), lexical query.
+  let { tok, chunk } = name === "B6" ? { tok: "tok2", chunk: "1000" } : defaults;
   for (const part of overrides) {
     if (/^tok[12]$/.test(part)) tok = part;
     else if (/^c(0|1000|2000|4000)$/.test(part)) chunk = part.slice(1);
     else throw new Error(`unknown override ${part} in ${spec}`);
   }
-  const graph = GRAPH_ARMS[name] ?? (defaults.graph === "off" ? null : defaults.graph);
+  const graph = GRAPH_ARMS[name] ?? (defaults.graph === "off" || name === "B6" ? null : defaults.graph);
   if (graph !== null && !["b2", "b3", "b4"].includes(graph)) throw new Error(`unknown graph variant ${graph}`);
-  const format = { ...indexFormatFor({ SEARCH_TOKENIZER: tok.slice(3), SEARCH_CHUNK_CHARS: chunk }), namespace: "v3" };
-  return { name, label: `${name} ${tok} c${chunk}${graph ? ` ${graph}` : ""}`, format, graph };
+  const anchors = name === "B6" ? { SEARCH_ANCHOR_TEXT: "1" } : {};
+  const format = { ...indexFormatFor({ SEARCH_TOKENIZER: tok.slice(3), SEARCH_CHUNK_CHARS: chunk, ...anchors }), namespace: "v3" };
+  return { name, label: `${name} ${tok} c${chunk}${graph ? ` ${graph}` : ""}${name === "B6" ? " anchors" : ""}`, format, graph };
 }
 
 /* -- scoring ------------------------------------------------------------- */

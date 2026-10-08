@@ -43,12 +43,14 @@ export async function readNode(store, budget, gen, path) {
  * truncated occurrences undercount; what is missed carries an old
  * referenceSetVersion that `validateEntry` rejects.
  */
-async function priorObligations(old, path) {
+async function priorObligations(old, path, targets) {
   const out = new Set();
   if (!old) return out;
   if (old.coverage !== "excluded") {
     try {
-      for (const m of (await membershipsFor(path, old.occurrences)).memberships) out.add(m);
+      const prior = await membershipsFor(path, old.occurrences, old.title);
+      for (const m of prior.memberships) out.add(m);
+      for (const [m, target] of prior.targets) if (!targets.has(m)) targets.set(m, target);
     } catch {
       // Hostile occurrences: nothing recoverable from them.
     }
@@ -115,7 +117,7 @@ const isResume = (old, record) =>
  * the unfinished obligations, conditional on the etag held. So every call with
  * more than its overhead retires at least one obligation for good.
  */
-async function settle(store, budget, { gen, mode, path, read, record, memberships, remove }) {
+async function settle(store, budget, { gen, mode, path, read, record, memberships, remove, anchors, targets, touched }) {
   const conditional = mode === "conditional";
   const onlyIf = (etag) => (conditional ? { onlyIf: etag ? { etagMatches: etag } : { absent: true } } : undefined);
   let ordered;
@@ -127,7 +129,7 @@ async function settle(store, budget, { gen, mode, path, read, record, membership
     // A partial stored record may be an earlier call's "full"; keep it partial.
     full = read.old.coverage === "partial";
   } else {
-    const union = await priorObligations(read.old, path);
+    const union = await priorObligations(read.old, path, targets);
     for (const m of memberships) union.add(m);
     // Additions first, so a trimmed record keeps the obligations whose loss
     // would hide a real backlink (a missed removal is rejected by validateEntry).
@@ -150,8 +152,12 @@ async function settle(store, budget, { gen, mode, path, read, record, membership
   let stopped = false;
   for (let i = 0; i < ordered.length; i += 1) {
     const { family, hash } = toRef(ordered[i]);
+    const target = targets.get(ordered[i]);
     const result = await setMembership(store, work, {
       gen, family, hash, source: path, referenceSetVersion: record.referenceSetVersion, present: memberships.has(ordered[i]), mode,
+      anchor: anchors.get(ordered[i]),
+      // A posting a link target reads its anchor text from changed: tell search (anchors.js).
+      onWrite: target ? () => touched.push(target) : undefined,
     });
     if (result === "budget") {
       left.push(...ordered.slice(i));
@@ -226,17 +232,28 @@ async function flagRebuild(store, budget) {
  * "pending" (a posting conflict or a refused write left work outstanding), "skipped" (the
  * stored record already observed `version` and has nothing outstanding) or
  * "stale" (the publish was refused: the caller re-reads the source rather
- * than retrying this body, arch 9.4). A refused clear is "pending": this
+ * than retrying this body, arch 9.4). `touched` names the link targets
+ * (`{ path }` or `{ name }`) whose `incoming:` or `bare:` posting this call
+ * changed, for the anchor-text refresh (search/anchors.js). A refused clear is "pending": this
  * call's keys are handed to the newer record (see handBack).
  */
 export async function projectNote(store, path, body, version, { budget, gen, mode, now, read: given }) {
   // Read the record before using body/version (arch 9.4 last paragraph). A
   // caller that already read it this call (the sweep) hands it in.
   const read = given ?? (await readNode(store, budget, gen, path));
-  if (!read) return BUDGET;
-  if (read.old && read.old.observedSourceVersion === version && noRepair(read.old)) return { state: "skipped" };
-  const { record, memberships } = await buildNodeRecord(path, body, version, { now });
-  return settle(store, budget, { gen, mode, path, read, record, memberships, remove: false });
+  if (!read) return { ...BUDGET, touched: [] };
+  if (read.old && read.old.observedSourceVersion === version && noRepair(read.old)) return { state: "skipped", touched: [] };
+  const { record, memberships, anchors, targets } = await buildNodeRecord(path, body, version, { now });
+  const touched = [];
+  const out = await settle(store, budget, { gen, mode, path, read, record, memberships, remove: false, anchors, targets, touched });
+  return { ...out, touched: uniqueTargets(touched) };
+}
+
+/** `touched` deduplicated: each `{ path }` or `{ name }` once, in first-seen order. */
+function uniqueTargets(touched) {
+  const seen = new Map();
+  for (const t of touched) seen.set(t.path !== undefined ? `p:${t.path}` : `n:${t.name}`, t);
+  return [...seen.values()];
 }
 
 /**
@@ -246,10 +263,10 @@ export async function projectNote(store, path, body, version, { budget, gen, mod
  */
 export async function removeNote(store, path, { budget, gen, mode }) {
   const read = await readNode(store, budget, gen, path);
-  if (!read) return BUDGET;
-  if (!read.exists) return { state: "skipped" };
+  if (!read) return { ...BUDGET, touched: [] };
+  if (!read.exists) return { state: "skipped", touched: [] };
   const tombstoned = read.old?.coverage === "excluded" && noRepair(read.old);
-  if (tombstoned && store.capabilities?.conditionalDelete !== true) return { state: "skipped" };
+  if (tombstoned && store.capabilities?.conditionalDelete !== true) return { state: "skipped", touched: [] };
   const record = {
     formatVersion: GRAPH_FORMAT_VERSION,
     path,
@@ -260,7 +277,11 @@ export async function removeNote(store, path, { budget, gen, mode }) {
     coverage: "excluded",
     reverseRepair: [],
   };
-  return settle(store, budget, { gen, mode, path, read, record, memberships: new Set(), remove: true });
+  const touched = [];
+  const out = await settle(store, budget, {
+    gen, mode, path, read, record, memberships: new Set(), remove: true, anchors: new Map(), targets: new Map(), touched,
+  });
+  return { ...out, touched: uniqueTargets(touched) };
 }
 
 /**

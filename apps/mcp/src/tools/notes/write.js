@@ -477,7 +477,10 @@ export async function toolWriteNote(store, scope, rules, overrides, args, option
         }, store.writeEnrichPool ?? createSearchBudget(enrich), options.now)
       : null;
   // The link graph's derivative of the committed body; never fails the write.
-  await projectNoteAfterWriteDeferred(store, { path, body, version: put.etag, budget: createSearchBudget(enrich) });
+  // `visibilityOf` admits anchor text into a v3 index that has it (search/anchors.js),
+  // with this note at the visibility this write gave it.
+  const anchorVisibility = (key) => (key === path ? desiredVisibility : effectiveVisibility(key, rules, overrides));
+  await projectNoteAfterWriteDeferred(store, { path, body, version: put.etag, budget: createSearchBudget(enrich), visibilityOf: anchorVisibility });
   // Whether this created the note, for the live map's "pops in" (`live/activityHint.js`).
   // The block rides in the text only, for every revision (fix round 1): a
   // client that prefers structuredContent would otherwise show its model the

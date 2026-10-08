@@ -11,6 +11,7 @@ import { projectNote } from "./project.js";
 import { isNewer } from "./rebuild.js";
 import { suggestLinks } from "./suggest.js";
 import { afterResponse } from "../search/writeProjection.js";
+import { ANCHOR_REFRESH_OPS, refreshAnchorTargets } from "../search/anchors.js";
 import { defaultIsIndexable } from "../search/maintain.js";
 
 // AGENT-LINKS 13.5: suggestion work, structural analysis included, ends this
@@ -19,9 +20,12 @@ export const SUGGEST_DEADLINE_MS = 250;
 /**
  * Project one written note. With budget 0 the manifest read is refused before any store op; with no manifest (reconciliation
  * creates it, Task 10), nothing else runs. A "pending" or "stale" result is
- * left to reconciliation. Never rejects.
+ * left to reconciliation. Then, for a v3 index with anchor text, the link
+ * targets whose postings changed are re-indexed on a budget of their own
+ * (`refreshBudget`, ANCHOR_REFRESH_OPS by default); `visibilityOf` is the
+ * privacy engine as of this write. Never rejects.
  */
-export async function projectNoteAfterWrite(shared, { path, body, version, budget }) {
+export async function projectNoteAfterWrite(shared, { path, body, version, budget, visibilityOf, refreshBudget = ANCHOR_REFRESH_OPS }) {
   try {
     // A logical-delete store's extra physical calls (a raw read before a
     // conditional write, marker probes) count against this budget, on a view
@@ -30,12 +34,13 @@ export async function projectNoteAfterWrite(shared, { path, body, version, budge
     const manifest = await loadGraphManifest(store, budget);
     // Newer code's generation: an older client never writes into it (arch 9.6).
     if (!manifest || isNewer(manifest)) return;
-    await projectNote(store, path, body, version, {
+    const { touched } = await projectNote(store, path, body, version, {
       budget,
       gen: manifest.generation,
       mode: graphMode(store),
       now: Date.now(),
     });
+    await refreshAnchorTargets(shared, touched, { visibilityOf, budget: refreshBudget, isIndexable: defaultIsIndexable });
   } catch {
     // A derivative's failure is one note late, not a failed write.
   }

@@ -16,7 +16,8 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 
-import { generateCorpus, generateHeldOut } from "../bench/fixtures.js";
+import { generateCorpus, generateHeldOut, generateLinks } from "../bench/fixtures.js";
+import { linkTargets, normalizeTitle, wikitextToMarkdown } from "../bench/wikitext.js";
 import { mean, ndcgAt, percentile, recallAt, reciprocalRank } from "../bench/metrics.js";
 
 test("recall at k", () => {
@@ -162,4 +163,72 @@ test("the held-out code class measures an acronym-led identifier (OPEN-50)", () 
   const acronym = queries.find((query) => query.kind === "code" && query.query === "server");
   assert.ok(acronym);
   assert.ok(notes.find((note) => note.path === acronym.relevant[0]).text.includes("HTTPServer"));
+});
+
+/* -- the link-heavy set and the HotpotQA converter ------------------------ */
+
+test("the link-heavy set is deterministic, leaves seed 1 alone and has its six classes", () => {
+  assert.deepEqual(generateLinks({ size: 600 }), generateLinks({ size: 600 }));
+  const { notes, queries } = generateLinks({ size: 1_000 });
+  assert.equal(notes.length, 1_000);
+  const paths = new Set(notes.map((note) => note.path));
+  assert.equal(paths.size, 1_000);
+  for (const query of queries) for (const path of query.relevant) assert.ok(paths.has(path), `${query.query} -> ${path}`);
+  assert.deepEqual([...new Set(queries.map((q) => q.kind))], ["cluster", "partial", "harm", "alias", "url", "hub"]);
+  const other = new Set([...queryWords(generateCorpus({ size: 1_000 }).queries), ...queryWords(generateHeldOut({ size: 1_000 }).queries)]);
+  assert.deepEqual([...queryWords(queries)].filter((word) => other.has(word)), []);
+});
+
+test("every link in the link-heavy set names exactly one note", () => {
+  const { notes } = generateLinks({ size: 1_000 });
+  const count = new Map();
+  for (const note of notes) {
+    const base = note.path.split("/").pop().replace(/\.md$/, "");
+    count.set(base, (count.get(base) ?? 0) + 1);
+  }
+  let links = 0;
+  for (const note of notes) {
+    for (const [, inner] of note.text.matchAll(/\[\[([^\]]+)\]\]/g)) {
+      const target = inner.split("|")[0];
+      if (!target.startsWith("ql-")) continue;
+      links += 1;
+      assert.equal(count.get(target), 1, `${note.path} -> ${target}`);
+    }
+  }
+  assert.ok(links > 200);
+});
+
+test("link-heavy classes have the shapes they claim", () => {
+  const { notes, queries } = generateLinks({ size: 1_000 });
+  const text = new Map(notes.map((note) => [note.path, note.text]));
+  const holding = (q) => notes.filter((note) => q.query.split(" ").some((word) => note.text.includes(word)));
+  for (const q of queries) {
+    if (q.kind === "cluster") {
+      assert.ok(q.relevant.length >= 5 && q.relevant.length <= 15);
+      assert.ok(q.relevant.filter((p) => text.get(p).includes(q.query)).length < q.relevant.length);
+    }
+    if (q.kind === "partial") assert.ok(holding(q).length >= 11 && holding(q).length <= 51);
+    if (q.kind === "harm") assert.equal(holding(q).length, 10);
+    if (q.kind === "alias") assert.ok(!text.get(q.relevant[0]).includes(q.query));
+    if (q.kind === "url") assert.ok(!text.get(q.relevant[1]).includes(q.query) && text.get(q.relevant[1]).includes("https://spec.example.com/"));
+  }
+  const hubIn = notes.filter((note) => note.text.includes("[[ql-bighub-0]]")).length;
+  assert.ok(hubIn > 50, `hub in-degree ${hubIn}`);
+});
+
+test("wikitext intros become notes whose links stay inside the slice", () => {
+  const wikitext = [
+    "{{Short description|x {{nested}} y}}<!-- hidden -->",
+    "{{Infobox person\n| name = [[Ignored]]\n}}",
+    "[[File:Face.jpg|thumb|A [[Caption link]]]]",
+    "'''Ed Wood''' was an [[United_States|American]] [[filmmaker]]s from [[Poughkeepsie, New York|]].<ref name=a>{{cite web|url=x}}</ref><ref name=b/>",
+    "See [https://example.com the site] and [[Category:Films]] [[wikt:word|word]].",
+  ].join("\n");
+  assert.deepEqual(linkTargets(wikitext), ["United States", "Filmmaker", "Poughkeepsie, New York"]);
+  const inSlice = new Map([["United States", "United States"], ["Poughkeepsie, New York", "Poughkeepsie, New York"]]);
+  const { body, total, kept } = wikitextToMarkdown(wikitext, (title) => inSlice.get(title) ?? null);
+  assert.equal(body, "Ed Wood was an [[United States|American]] filmmakers from [[Poughkeepsie, New York|Poughkeepsie]].\n\nSee the site and word.");
+  assert.equal(total, 3);
+  assert.equal(kept, 2);
+  assert.equal(normalizeTitle("ed_wood#Life"), "Ed wood");
 });

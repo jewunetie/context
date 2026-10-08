@@ -20,8 +20,11 @@
  * with that graph variant. An arm may override the lexical flags for itself,
  * `B1:c1000` or `B2:tok2:c4000`, so one run can hold the whole matrix. Chunk 0
  * with tok1 is the default format, built in the v3 namespace (`format.js`'s
- * bench hook) so B1 is always a v3 index. `--set judged|heldout` picks seed 1
- * (BASELINE.md) or the held-out set (`generateHeldOut`, ruling OPEN-64).
+ * bench hook) so B1 is always a v3 index. `--set judged|heldout|links|hotpot`
+ * picks seed 1 (BASELINE.md), the held-out set (`generateHeldOut`, ruling
+ * OPEN-64), the synthetic link-heavy set (`generateLinks`) or the HotpotQA
+ * slice `bench/hotpot.mjs --build` wrote to its cache (`--sizes` is ignored
+ * for it). Recall and nDCG are printed per query class.
  * Engines are built in `engines.mjs`.
  *
  * Per arm the run also prints the index costs: build passes (and graph
@@ -54,7 +57,8 @@ import { join } from "node:path";
 
 import { indexFormatFor } from "../src/search/format.js";
 import { buildB5, buildBucketEngine } from "./engines.mjs";
-import { generateCorpus, generateHeldOut } from "./fixtures.js";
+import { generateCorpus, generateHeldOut, generateLinks } from "./fixtures.js";
+import { loadHotpot } from "./hotpot.mjs";
 import { mean, ndcgAt, percentile, recallAt, reciprocalRank } from "./metrics.js";
 
 function arg(name, fallback) {
@@ -138,12 +142,14 @@ function printTable(size, results) {
     console.log(`| ${name} | ${f2(s.recall)} | ${f2(s.ndcg)} | ${f2(s.mrr)} | ${ms(s.cold)} | ${ms(s.warm)} | ${f2(s.subrequests)} |`);
   }
   const kinds = [...new Set(results[0][1].map((row) => row.kind))];
-  console.log(`\nRecall@10 by query class:\n`);
-  console.log(`| Class | ${results.map(([name]) => name).join(" | ")} |`);
-  console.log(`|---|${results.map(() => "---").join("|")}|`);
-  for (const kind of kinds) {
-    const cells = results.map(([, rows]) => f2(mean(rows.filter((row) => row.kind === kind).map((row) => row.recall))));
-    console.log(`| ${kind} | ${cells.join(" | ")} |`);
+  for (const [field, title] of [["recall", "Recall@10"], ["ndcg", "nDCG@10"]]) {
+    console.log(`\n${title} by query class:\n`);
+    console.log(`| Class | ${results.map(([name]) => name).join(" | ")} |`);
+    console.log(`|---|${results.map(() => "---").join("|")}|`);
+    for (const kind of kinds) {
+      const cells = results.map(([, rows]) => f2(mean(rows.filter((row) => row.kind === kind).map((row) => row[field]))));
+      console.log(`| ${kind} | ${cells.join(" | ")} |`);
+    }
   }
 }
 
@@ -207,7 +213,7 @@ const censusDir = arg("census", null);
 const set = arg("set", "judged");
 const defaults = { tok: arg("format", "tok1"), chunk: String(arg("chunk", "2000")), graph: arg("graph", "off") };
 const arms = String(arg("engines", "B0,B5")).split(",").map((spec) => parseArm(spec, defaults));
-if (!["judged", "heldout"].includes(set)) throw new Error(`unknown set ${set}`);
+if (!["judged", "heldout", "links", "hotpot"].includes(set)) throw new Error(`unknown set ${set}`);
 if (!/^tok[12]$/.test(defaults.tok)) throw new Error(`unknown format ${defaults.tok}`);
 
 if (censusDir) {
@@ -216,8 +222,10 @@ if (censusDir) {
   })()));
 } else {
   console.log(`Store latency ${latency} ms per operation (B0), ${d1Latency} ms per request (B5), budget ${budget}. Set: ${set}.`);
-  for (const size of sizes) {
-    const { notes, queries } = (set === "heldout" ? generateHeldOut : generateCorpus)({ size });
+  const generate = { judged: generateCorpus, heldout: generateHeldOut, links: generateLinks, hotpot: loadHotpot }[set];
+  // The HotpotQA slice has one size, set when it was built (bench/hotpot.mjs).
+  for (const size of set === "hotpot" ? [loadHotpot().notes.length] : sizes) {
+    const { notes, queries } = generate({ size });
     const results = [];
     const built = [];
     for (const arm of arms) {

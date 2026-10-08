@@ -266,6 +266,89 @@ function linkShaped(next, tag) {
   return planted;
 }
 
+/**
+ * The link-heavy set (`--set links`): classes where links decide the answer,
+ * or must not. Every basename is `ql-...`, unique, so a bare link names one
+ * note; the tag `ql` is shared with neither seed 1 (`qz`) nor the held-out set.
+ */
+function linkHeavy(next) {
+  const planted = [];
+  const plant = (notes, query, relevant, kind) => planted.push({ notes, query: { query, relevant, kind } });
+  const note = (path, title, body) => ({ path, text: `# ${title}\n\n${body} ${filler(next, 80)}\n` });
+
+  // cluster: an index note and 9 members linking each other; 3 of 10 hold the term, all are relevant.
+  for (let i = 0; i < 4; i += 1) {
+    const names = Array.from({ length: 10 }, (_, j) => `ql-cluster-${i}-${j}`);
+    const notes = names.map((name, j) => {
+      const links = j === 0 ? names.slice(1) : [names[0], names[j === 9 ? 1 : j + 1]];
+      const term = j < 3 ? `The qlcluster${i} effort. ` : "";
+      return note(`1-projects/${name}.md`, `Cluster ${i}.${j}`, `${term}${links.map((n) => `[[${n}]]`).join(" ")}.`);
+    });
+    plant(notes, `qlcluster${i}`, notes.map((n) => n.path), "cluster");
+  }
+
+  // partial: one note holds both words, 30 decoys hold one of them.
+  for (let i = 0; i < 4; i += 1) {
+    const both = `2-areas/ql-partial-${i}.md`;
+    const decoys = Array.from({ length: 30 }, (_, j) =>
+      note(`2-areas/ql-partial-${i}-d${j}.md`, `Partial decoy ${i}.${j}`, `only qlpart${j % 2 ? "b" : "a"}${i}.`));
+    plant([note(both, `Partial ${i}`, `qlparta${i} meets qlpartb${i}.`), ...decoys], `qlparta${i} qlpartb${i}`, [both], "partial");
+  }
+
+  // harm: ten notes hold the term (lexical top 10 is exactly right); each links three that do not.
+  for (let i = 0; i < 4; i += 1) {
+    const notes = [];
+    const relevant = [];
+    for (let j = 0; j < 10; j += 1) {
+      const away = [0, 1, 2].map((k) => `ql-harm-${i}-${j}-n${k}`);
+      relevant.push(`3-resources/ql-harm-${i}-${j}.md`);
+      notes.push(note(relevant[j], `Harm ${i}.${j}`, `About qlharm${i}. ${away.map((n) => `[[${n}]]`).join(" ")}.`));
+      for (const name of away) notes.push(note(`3-resources/${name}.md`, `Unrelated ${name}`, "Unrelated."));
+    }
+    plant(notes, `qlharm${i}`, relevant, "harm");
+  }
+
+  // alias: A links B under a codename only A's link text carries; the query is the codename.
+  for (let i = 0; i < 4; i += 1) {
+    const b = `2-areas/ql-alias-target-${i}.md`;
+    plant(
+      [note(`1-projects/ql-alias-${i}.md`, `Alias ${i}`, `Kickoff for [[ql-alias-target-${i}|qlcodename${i}]].`), note(b, `Alias target ${i}`, "The plan itself.")],
+      `qlcodename${i}`,
+      [b],
+      "alias"
+    );
+  }
+
+  // url: two notes cite one URL; only the first holds the term.
+  for (let i = 0; i < 4; i += 1) {
+    const url = `https://spec.example.com/ql-${i}`;
+    const a = `3-resources/ql-url-${i}-a.md`;
+    const b = `3-resources/ql-url-${i}-b.md`;
+    plant([note(a, `URL ${i} A`, `qlurl${i} spec: ${url}`), note(b, `URL ${i} B`, `Read ${url} first.`)], `qlurl${i}`, [a, b], "url");
+  }
+
+  // hub: three notes hold the term and link a fourth and a hub with 120 other links in.
+  const hubs = ["ql-bighub-0", "ql-bighub-1"];
+  const spokes = Array.from({ length: 120 }, (_, j) => note(`0-inbox/ql-spoke-${j}.md`, `Spoke ${j}`, `See [[${hubs[j % 2]}]].`));
+  const hubNotes = hubs.map((name) => note(`3-resources/${name}.md`, `Big hub ${name}`, "Everything."));
+  for (let i = 0; i < 4; i += 1) {
+    const fourth = `2-areas/ql-hub-${i}-shared.md`;
+    const holders = [0, 1, 2].map((j) => `2-areas/ql-hub-${i}-${j}.md`);
+    const notes = holders.map((path, j) =>
+      note(path, `Hub ${i}.${j}`, `qlhub${i} work. [[ql-hub-${i}-shared]] [[${hubs[i % 2]}]].`));
+    notes.push(note(fourth, `Hub ${i} shared`, "Shared design."));
+    if (i === 0) notes.push(...hubNotes, ...spokes);
+    plant(notes, `qlhub${i}`, [...holders, fourth], "hub");
+  }
+  return planted;
+}
+
+/** The link-heavy set (`--set links`); needs 500 notes or more. @param {{ size: number, seed?: number }} options */
+export function generateLinks({ size, seed = 3 }) {
+  const next = rng(seed);
+  return assemble(next, linkHeavy(next), size);
+}
+
 /** @param {{ size: number, seed?: number }} options */
 export function generateCorpus({ size, seed = 1 }) {
   const next = rng(seed);

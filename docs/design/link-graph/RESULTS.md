@@ -461,3 +461,43 @@ B0 index built in 19 passes. 41 judged queries.
 
 Script census, 10000 fixture notes: 10000 files; Latin 10000, Han 4, Hiragana 2, Katakana 2
 
+
+## Link-aware sets and anchor text (added after the Task 38 rule check)
+
+These runs followed the Task 38 decision. They add two evaluation sets and two features: bare URLs as link occurrences (parser version 2) and anchor-text indexing (`SEARCH_ANCHOR_TEXT=1`, arm B6 = B1 tok2 c1000 plus anchors, parser version 3). Scripts: `bench/hotpot.mjs`, `bench/wikitext.js`, `generateLinks` in `bench/fixtures.js`. Wikipedia data is fetched at bench time into `~/.cache/context-bench` and never committed (CC BY-SA 4.0).
+
+### The sets
+
+- **links** (`--set links --sizes 1000`): 24 synthetic queries in six classes of four: cluster (10 linked notes, 3 hold the term), partial (30 one-word decoys), harm (10 lexical matches each linking 3 irrelevant notes), alias (`[[B|codename]]` queried by codename), url (two notes cite one URL, one holds the term), hub (a hub of 60 spokes linked from the relevant notes).
+- **hotpot** (`--set hotpot`): 4,904 Wikipedia intro pages, 300 HotpotQA questions that are answerable but not already solved by plain search. Only 17 percent of links survive the slice (3.25 kept links per note), so link structure is sparse. Bucket search chose both the difficulty classes and the kept queries, so its own score on this set is biased low by construction. Compare the other arms with each other.
+
+### Results
+
+Recall@10 at 1,000 notes (hotpot at 4,904):
+
+| Arm | links | held-out | hotpot | Subrequests per query (links / hotpot) |
+|---|---|---|---|---|
+| B0 bucket search | 0.59 | 0.66 | 0.86 | 8.33 / 28.00 |
+| B1 tok2 c2000 | 0.59 | 0.92 | 0.86 | 8.38 / 28.00 |
+| B6 tok2 c1000 plus anchors | 0.76 | 0.92 | 0.90 | 8.67 / 28.00 |
+| B2 to B4 graph at query time (tok1) | 0.92 to 1.00 (1.00 for B3 with bare URLs) | 0.78 | 0.87 | 25.67 / 58.71 |
+| B5 Fast Search | 0.59 | 0.60 | 0.00 | 2.00 / 2.00 |
+
+By class on links: anchor text lifts alias from 0.00 to 1.00 and leaves cluster (0.30), url (0.50) and hub (0.75) unchanged. Graph arms lift cluster, alias and hub to 1.00, and B3 lifts url to 1.00 once bare URLs are link occurrences. No arm showed harm on the harm class.
+
+On hotpot, B6 lifts the partial class from 0.78 to 0.84 and the hard class from 0.00 to 0.17. Graph arms add 0.01 recall at 2.1 times the subrequests, and 259 of 300 queries exceed the free-tier ceiling of 50.
+
+Bucket search chose the hotpot classes, so the easy class is 1.00 for every arm except Fast Search by construction. Fast Search scores 0.00 on hotpot because its full-text match requires every query word to appear in one page, so whole-sentence questions match nothing. That is how it works today, not a harness defect.
+
+### What this says
+
+- Anchor text is the cheapest link signal measured: no query-time graph reads, no change in subrequests per query, one extra build pass, and gains on the two sets with real link structure. It does not replace the graph where relevant notes lack the query words and link only to each other (cluster) or through a hub.
+- The query-time graph pays off only on densely linked corpora and costs 2 to 3 times the subrequests. On sparse real links it is not worth it. The Task 38 rule outcome stands: graph arms stay off by default.
+- Held-out and judged sets show no regression from anchor text.
+
+### Limits
+
+- The links set is synthetic and written by the same people who wrote the features, so it favors them. It shows that the mechanisms work, not how much real workspaces gain.
+- Hotpot uses 2017 questions over current Wikipedia text, with 17 percent of links kept.
+- Latency columns are wall clock under shared CPU load and are not comparable across runs.
+- No run used a real bucket, real R2 or S3, or a real workspace. The workspace census remains unrun.

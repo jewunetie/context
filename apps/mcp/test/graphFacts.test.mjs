@@ -127,6 +127,17 @@ test("urls/: http and https externals via urlKey; excluded keys contribute nothi
   assert.equal(r.record.occurrences.length, 4);
 });
 
+test("urls/: bare URLs and autolinks post like inline URLs; a secret fragment and code are excluded", async () => {
+  const body = "See https://example.com/a. and <https://example.com/b>, https://example.com/cb#access_token=x `https://example.com/code`";
+  const r = await build("a.md", body);
+  const keys = r.record.externalReferences.map((e) => e.key);
+  assert.deepEqual(keys, ["https://example.com/a", "https://example.com/b"]);
+  for (const key of keys) assert.ok(r.memberships.has(`urls:${await urlHash(key)}`));
+  assert.equal([...r.memberships].filter((m) => m.startsWith("urls:")).length, 2);
+  assert.deepEqual(r.record.occurrences.map((o) => o.kind), ["url", "url", "url"]);
+  assert.deepEqual(parseNode(serializeNode(r.record), "a.md"), r.record);
+});
+
 test("over-cap record is partial, fits the cap, keeps document order, memberships stay full", async () => {
   const count = 6000;
   const body = Array.from({ length: count }, (_, i) => `[[./n${i}]]`).join(" ");

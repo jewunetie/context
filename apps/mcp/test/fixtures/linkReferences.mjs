@@ -53,6 +53,13 @@ const unterminated = "[[health]]\n```\n[[plan]]\n[x](./plan.md)\n";
 const definition = "[ref]: ./plan.md\n\n[[health]]";
 const externalDefinition = "[ref]: https://example.com/x";
 const externals = "[a](https://example.com/x) [b](mailto:me@example.com) [c](//cdn.example.com/x)";
+const bareUrl = "See https://example.com/a?q=1 for more.";
+const autolink = "See <https://example.com/b> and <mailto:me@example.com>.";
+const trailing = "Read https://example.com/c. Then (https://example.com/d), or https://example.com/e?!";
+const parens = "Wiki https://en.wikipedia.org/wiki/Foo_(bar) and (see https://example.com/f)";
+const urlInCode = "`https://example.com/x` and\n```\nhttps://example.com/y\n```\n";
+const secretFragment = "Token https://example.com/cb#access_token=abc here";
+const notBare = "[a](https://example.com/x) [[https://example.com/w]] xhttps://example.com/z <https://>";
 const escaping = "[[../../../outside]] and [x](../../../../outside.md)";
 const anchorOnly = "[x](#goals) and [[#goals]]";
 const bare2 = "[[overview]]";
@@ -67,6 +74,65 @@ const dotDotInline = "[x](..)";
 const wikiBase = { kind: "wiki", style: "bare" };
 
 export const referenceCases = [
+  {
+    name: "a bare URL in prose is a url occurrence",
+    text: bareUrl,
+    fromPath: from,
+    catalog,
+    expected: [occ(bareUrl, "https://example.com/a?q=1", { kind: "url", style: null, resolution: { state: "external" } })],
+  },
+  {
+    name: "an http(s) autolink is a url occurrence spanning inside the brackets",
+    text: autolink,
+    fromPath: from,
+    catalog,
+    expected: [occ(autolink, "https://example.com/b", { kind: "url", style: null, resolution: { state: "external" } })],
+  },
+  {
+    name: "trailing punctuation and an unbalanced closing paren are trimmed",
+    text: trailing,
+    fromPath: from,
+    catalog,
+    expected: [
+      occ(trailing, "https://example.com/c", { kind: "url", style: null, resolution: { state: "external" } }),
+      occ(trailing, "https://example.com/d", { kind: "url", style: null, resolution: { state: "external" } }),
+      occ(trailing, "https://example.com/e", { kind: "url", style: null, resolution: { state: "external" } }),
+    ],
+  },
+  {
+    name: "a balanced paren stays in the URL",
+    text: parens,
+    fromPath: from,
+    catalog,
+    expected: [
+      occ(parens, "https://en.wikipedia.org/wiki/Foo_(bar)", { kind: "url", style: null, resolution: { state: "external" } }),
+      occ(parens, "https://example.com/f", { kind: "url", style: null, resolution: { state: "external" } }),
+    ],
+  },
+  {
+    name: "a bare URL inside code is ignored",
+    text: urlInCode,
+    fromPath: from,
+    catalog,
+    expected: [],
+  },
+  {
+    name: "a URL with a secret fragment is still an occurrence (urlKey excludes it from postings)",
+    text: secretFragment,
+    fromPath: from,
+    catalog,
+    expected: [occ(secretFragment, "https://example.com/cb#access_token=abc", { kind: "url", style: null, resolution: { state: "external" } })],
+  },
+  {
+    name: "a URL that is already a link target, glued to a word, or has no host is not a bare URL",
+    text: notBare,
+    fromPath: from,
+    catalog,
+    expected: [
+      occ(notBare, "https://example.com/x", { kind: "inline", style: null, resolution: { state: "external" } }),
+      occ(notBare, "https://example.com/w", { kind: "wiki", style: null, resolution: { state: "external" } }),
+    ],
+  },
   {
     name: "wiki link",
     text: wiki,

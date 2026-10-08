@@ -9,7 +9,7 @@ import { exceedsUtf8Bytes } from "../search/maintain.js";
 import { nameHash, pathHash, urlHash } from "./keys.js";
 import { URL_KEY_VERSION, urlKey } from "./urlKey.js";
 
-export const PARSER_VERSION = 1;
+export const PARSER_VERSION = 2; // 2: bare URLs and autolinks are url occurrences
 export const RESOLVER_VERSION = 1;
 
 export const baseName = (path) => path.slice(path.lastIndexOf("/") + 1).replace(/\.md$/, "");

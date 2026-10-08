@@ -78,13 +78,14 @@ export function directoryDistance(a, b) {
  * then headings, then body words by frequency (ties by first occurrence).
  * For `link_suggestions` only the given sections: their headings, then their
  * text. Link and URL targets are blanked first: they are addresses, not
- * prose, and the graph already counts them. Raw tokens are emitted (the query
- * parser stems once), deduplicated on the stem.
+ * prose, and the graph already counts them. Bare URLs (`kind: "url"`) stay in,
+ * as they did before the reader reported them. Raw tokens are emitted (the
+ * query parser stems once), deduplicated on the stem.
  */
 export function seedQuery(seed, intent) {
   const prose = (text) => {
     let out = String(text ?? "");
-    for (const { start, end } of extractReferences(out)) out = out.slice(0, start) + " ".repeat(end - start) + out.slice(end);
+    for (const { kind, start, end } of extractReferences(out)) if (kind !== "url") out = out.slice(0, start) + " ".repeat(end - start) + out.slice(end);
     return out;
   };
   let title = "";

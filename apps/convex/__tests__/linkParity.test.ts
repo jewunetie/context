@@ -93,6 +93,11 @@ const CORPUS = [
   "[ref]: <../a note.md> \"title\"\n[^1]: a footnote, see ./sibling.md",
   "```\n[ref]: ./sibling.md\n```\n`[x]: ./other.md`",
   "[ref]: https://example.com/x#frag",
+  "bare https://example.com/a and autolink <https://example.com/b>, then [[./sibling]]",
+  "trailing https://example.com/c. (https://example.com/d) https://example.com/e?!",
+  "parens https://en.wikipedia.org/wiki/Foo_(bar) and (see https://example.com/f))",
+  "code `https://example.com/x` and\n```\nhttps://example.com/y\n```\nhttps://example.com/z",
+  "secret https://example.com/cb#access_token=abc and [x](https://example.com/x) xhttps://no <https://>",
 ];
 
 const NAMES = [

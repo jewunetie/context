@@ -58,13 +58,14 @@ export interface Link {
 }
 
 /**
- * One reference as a reader sees it. `definition` is `[id]: target`, reported
- * by `extractReferences` only; `parseLinks` and `rewriteLinks` never see it.
+ * One reference as a reader sees it. `definition` is `[id]: target` and `url`
+ * a bare `https://…` URL or `<https://…>` autolink, both reported by
+ * `extractReferences` only; `parseLinks` and `rewriteLinks` never see them.
  * `fragment` is the anchor with its `#` (empty for an external target); `style`
  * is the written shape of the file part, `null` when there is no file to shape.
  */
 export interface LinkOccurrence extends Omit<Link, "kind"> {
-  kind: "wiki" | "inline" | "definition";
+  kind: "wiki" | "inline" | "definition" | "url";
   fragment: string;
   style: LinkStyle | null;
 }
@@ -497,6 +498,8 @@ export function extractReferences(text: string): LinkOccurrence[] {
     found.push({ kind: "definition", embed: false, target, start, end: start + target.length });
   }
 
+  found.push(...bareUrls(text, skip, found));
+
   return found
     .sort((a, b) => a.start - b.start)
     .map((link) => {
@@ -509,6 +512,50 @@ export function extractReferences(text: string): LinkOccurrence[] {
         style: external || file === "" ? null : styleOf(decodeFor(link, file)),
       };
     });
+}
+
+/* Bare URLs and autolinks: see the gateway's copy for the GFM-derived rules. */
+const BARE_URL = /https?:\/\/[^\s<>]+/gi;
+const AUTOLINK = /<(https?:\/\/[^\s<>]+)>/gi;
+
+/** `url` occurrences outside code and outside every span already in `links`. */
+function bareUrls(
+  text: string,
+  skip: [number, number][],
+  links: { start: number; end: number }[],
+): Omit<LinkOccurrence, "fragment" | "style">[] {
+  const spans = links.map((l): [number, number] => [l.start, l.end]).sort((a, b) => a[0] - b[0]);
+  const out: Omit<LinkOccurrence, "fragment" | "style">[] = [];
+  const inCode = within(skip);
+  const taken = within(spans);
+  for (const match of text.matchAll(AUTOLINK)) {
+    const start = match.index + 1;
+    if (inCode(match.index) || taken(start)) continue;
+    out.push({ kind: "url", embed: false, target: match[1], start, end: start + match[1].length });
+  }
+  const bareInCode = within(skip);
+  const bareTaken = within(spans);
+  for (const match of text.matchAll(BARE_URL)) {
+    const before = text[match.index - 1];
+    if (before !== undefined && !/[\s*_~(]/.test(before)) continue;
+    if (bareInCode(match.index) || bareTaken(match.index)) continue;
+    const raw = match[0];
+    let open = 0;
+    for (const c of raw) open += c === "(" ? 1 : c === ")" ? -1 : 0;
+    let end = raw.length;
+    for (;;) {
+      const last = raw[end - 1];
+      if (".,;:!?*_~".includes(last)) end -= 1;
+      else if (last === ")" && open < 0) {
+        end -= 1;
+        open += 1;
+      } else break;
+    }
+    const target = raw.slice(0, end);
+    if (!/^https?:\/\/[^/?#]/i.test(target)) continue;
+    out.push({ kind: "url", embed: false, target, start: match.index, end: match.index + end });
+  }
+  return out;
 }
 
 /** Wikilinks are written as-is; inline links and definitions are URL-encoded. */

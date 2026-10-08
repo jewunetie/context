@@ -65,7 +65,10 @@ import { memoryBucket } from "./store/fixtures.mjs";
 import { moveJobKey } from "../src/moves/jobs.js";
 import { toolSearchNotes } from "../src/tools/search.js";
 
-const OFF_DIGEST = "f9334545cd74c7fce5b06dd0b1dad6498b2e0085c1572728cb7ed494d0f2a96c";
+// Re-pinned for PARSER_VERSION 2 (bare URLs): a dump of { log, answers } under
+// versions 1 and 2 differs only in the graph records' parserVersion and the
+// referenceSetVersion derived from it; the fixture has no bare URLs.
+const OFF_DIGEST = "77e295f5efcfcf7b063aad278bef64a37beb5a611397c31d15044b34fa93e608";
 const NOW = Date.parse("2026-01-01T00:00:00Z");
 const gen = "1";
 const RULES = [{ prefix: "w", vis: "team" }];

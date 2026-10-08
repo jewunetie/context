@@ -24,6 +24,10 @@
  *   - `[label](folder/note.md)` — CommonMark inline links, which is what
  *     everything else emits.
  *
+ * Bare `https://…` URLs in prose and `<https://…>` autolinks are reported by
+ * `extractReferences` only, as `kind: "url"`, so the graph can post them as
+ * shared URLs; nothing rewrites them, because a move never changes a URL.
+ *
  * Reference definitions (`[id]: target`) are deliberately not handled by
  * `parseLinks` or the rewrite; only `extractReferences` reports them. They are
  * absent from these buckets, and a rewriter that half-understands a form is
@@ -468,6 +472,8 @@ export function extractReferences(text) {
     found.push({ kind: "definition", embed: false, target, start, end: start + target.length });
   }
 
+  found.push(...bareUrls(text, skip, found));
+
   return found
     .sort((a, b) => a.start - b.start)
     .map((link) => {
@@ -480,6 +486,51 @@ export function extractReferences(text) {
         style: external || file === "" ? null : styleOf(decodeFor(link, file)),
       };
     });
+}
+
+/*
+  Bare http(s) URLs and `<http(s)://…>` autolinks, after GFM's extended
+  autolink rules: a bare URL starts the text or follows whitespace, `*`, `_`,
+  `~` or `(`; trailing `.,;:!?*_~` and any unbalanced `)` are not part of it.
+  Reported as `kind: "url"` for a reader only; `parseLinks` and `rewriteLinks`
+  never see them, so a move cannot alter one.
+*/
+const BARE_URL = /https?:\/\/[^\s<>]+/gi;
+const AUTOLINK = /<(https?:\/\/[^\s<>]+)>/gi;
+
+/** `url` occurrences outside code and outside every span already in `links`. */
+function bareUrls(text, skip, links) {
+  const spans = links.map((l) => [l.start, l.end]).sort((a, b) => a[0] - b[0]);
+  const out = [];
+  const inCode = within(skip);
+  const taken = within(spans);
+  for (const match of text.matchAll(AUTOLINK)) {
+    const start = match.index + 1;
+    if (inCode(match.index) || taken(start)) continue;
+    out.push({ kind: "url", embed: false, target: match[1], start, end: start + match[1].length });
+  }
+  const bareInCode = within(skip);
+  const bareTaken = within(spans);
+  for (const match of text.matchAll(BARE_URL)) {
+    const before = text[match.index - 1];
+    if (before !== undefined && !/[\s*_~(]/.test(before)) continue;
+    if (bareInCode(match.index) || bareTaken(match.index)) continue;
+    const raw = match[0];
+    // Unclosed parens, counted once so trimming stays linear in the URL.
+    let open = 0;
+    for (const c of raw) open += c === "(" ? 1 : c === ")" ? -1 : 0;
+    let end = raw.length;
+    for (;;) {
+      const last = raw[end - 1];
+      if (".,;:!?*_~".includes(last)) end -= 1;
+      else if (last === ")" && open < 0) { end -= 1; open += 1; }
+      else break;
+    }
+    const target = raw.slice(0, end);
+    if (!/^https?:\/\/[^/?#]/i.test(target)) continue;
+    out.push({ kind: "url", embed: false, target, start: match.index, end: match.index + end });
+  }
+  return out;
 }
 
 /** Wikilinks are written as-is; inline links and definitions are URL-encoded. */

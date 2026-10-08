@@ -27,7 +27,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { extractReferences, indexByName, parseLinks, resolveReference } from "../src/links.js";
+import { extractReferences, indexByName, parseLinks, resolveReference, rewriteLinks } from "../src/links.js";
 import { referenceCases } from "./fixtures/linkReferences.mjs";
 
 function toCatalog(catalog) {
@@ -66,6 +66,18 @@ test("an angle-bracketed definition target spans the inside of the brackets", ()
   const text = "[ref]: <./a b.md>";
   const [definition] = extractReferences(text);
   assert.equal(text.slice(definition.start, definition.end), "./a b.md");
+});
+
+test("parseLinks and rewriteLinks leave bare URLs and autolinks alone", () => {
+  const text = "https://example.com/plan.md <https://example.com/x> [[./plan]]";
+  assert.deepEqual(parseLinks(text).map((l) => l.kind), ["wiki"]);
+  const out = rewriteLinks(text, {
+    fromPath: "a/n.md",
+    toPath: "b/n.md",
+    renames: new Map([["a/plan.md", "c/plan.md"]]),
+    byName: indexByName(["a/plan.md", "a/n.md"]),
+  });
+  assert.deepEqual(out, { text: "https://example.com/plan.md <https://example.com/x> [[../c/plan]]", changed: 1 });
 });
 
 test("parseLinks still ignores definitions", () => {

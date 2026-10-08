@@ -216,6 +216,7 @@ function reduceLinkMarkup(text, masked) {
 const INLINE_TAIL = />?\s*(?:"[^"\n]*"|'[^'\n]*')?\)/y;
 
 function linkSpan(text, masked, ref) {
+  if (ref.kind === "url") return null; // a bare URL is already its visible text
   if (ref.kind === "definition") {
     const from = text.indexOf("[", text.lastIndexOf("\n", ref.start - 1) + 1);
     const lineEnd = text.indexOf("\n", ref.end);

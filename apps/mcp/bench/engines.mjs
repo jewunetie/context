@@ -9,7 +9,7 @@
  *   index is built through the real dual pass until v3 is served, and the
  *   build refuses to return an arm whose served index is not v3 (the reader
  *   falls back to v2 silently, which would make the arm read as B0).
- * - With `graph` ("b2", "b3", "b4") the graph is built with Phase 2's
+ * - With `graph` ("b2", "b3", "b4", "ppr") the graph is built with Phase 2's
  *   `reconcileGraph`, called as `search/maintenance.js` calls it, until its
  *   health is ready, and each query goes through `retrieveCandidates` as
  *   `search/visibleNotes.js` sends a boosted search (`store.searchGraphBoost`
@@ -171,7 +171,7 @@ async function buildGraph(bucket, budget, maxPasses) {
  * B0 (no `format`), or a v3 arm with an optional graph variant.
  *
  * @param {{ path: string, text: string }[]} notes
- * @param {{ latency: number, budget: number, format?: object | null, graph?: "b2" | "b3" | "b4" | null }} options
+ * @param {{ latency: number, budget: number, format?: object | null, graph?: "b2" | "b3" | "b4" | "ppr" | null }} options
  */
 export async function buildBucketEngine(notes, { latency, budget, format = null, graph = null }) {
   const bucket = createBucket(0);
@@ -224,7 +224,9 @@ export async function buildBucketEngine(notes, { latency, budget, format = null,
         ? await retrieveCandidates(bucket, { seed: { query }, intent: "search", variant: graph, scope: "workspace", search: options })
         : await searchIndexedNotes(bucket, options);
       if (answer.graphIncomplete) graphIncomplete += 1;
-      return { paths: (answer.hits ?? []).map((hit) => hit.key), subrequests: spend.spent };
+      const hits = (answer.hits ?? []).slice(0, 10);
+      // Graph-only notes (no lexical match) the graph put in the top 10.
+      return { paths: (answer.hits ?? []).map((hit) => hit.key), linked: hits.filter((hit) => hit.linked).map((hit) => hit.key), subrequests: spend.spent };
     },
   };
 }

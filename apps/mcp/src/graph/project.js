@@ -288,15 +288,21 @@ export async function removeNote(store, path, { budget, gen, mode }) {
  * `validate` for `readPostings` (arch 9.3): an entry counts only when its
  * source's node record parses for that path, is not `excluded`, and names the
  * same referenceSetVersion. A budget refusal throws, which `readPostings`
- * reports as incomplete rather than as a rejected entry.
+ * reports as incomplete rather than as a rejected entry. `records`, when
+ * given, is a Map of source to parsed record (or null) that validation reads
+ * from and fills, so a caller that wants the records pays for each once.
  */
-export function validateEntry(store, budget, gen) {
+export function validateEntry(store, budget, gen, records = undefined) {
   return async (entry) => {
-    const key = nodeKey(gen, await pathHash(entry.source));
-    if (!budget.take()) throw new Error("graph budget exhausted");
-    const got = await store.get(key);
-    if (!got) return false;
-    const node = parseNode(await recordText(got), entry.source);
+    let node;
+    if (records?.has(entry.source)) node = records.get(entry.source);
+    else {
+      const key = nodeKey(gen, await pathHash(entry.source));
+      if (!budget.take()) throw new Error("graph budget exhausted");
+      const got = await store.get(key);
+      node = got ? parseNode(await recordText(got), entry.source) : null;
+      records?.set(entry.source, node);
+    }
     return node !== null && node.coverage !== "excluded" && node.referenceSetVersion === entry.referenceSetVersion;
   };
 }

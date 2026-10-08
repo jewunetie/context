@@ -1,7 +1,7 @@
 /**
  * SEARCH_GRAPH_BOOST wiring (Task 29 fix round 1, OPEN-68): route.js resolves
  * the deployment var onto `store.searchGraphBoost` for the session's own store
- * and for every cross-context store, and anything but "b2", "b3" or "b4" is
+ * and for every cross-context store, and anything but "b2", "b3", "b4" or "ppr" is
  * off. Driven through the Worker. The graph's kill switch
  * (WRITE_ENRICH_SUBREQUEST_BUDGET "0") is set throughout, so a boosted search
  * always withholds the graph and says so: the label is present exactly when
@@ -96,9 +96,9 @@ async function searchWith(value, context) {
   }
 }
 
-test("own context: SEARCH_GRAPH_BOOST b2, b3 and b4 reach the session store", async () => {
+test("own context: SEARCH_GRAPH_BOOST b2, b3, b4 and ppr reach the session store", async () => {
   assert.match(await searchWith(undefined), /^1 matching note\n\n2-areas\/kestrel\.md/, "positive control: an indexed hit");
-  for (const value of ["b2", "b3", "b4"]) assert.match(await searchWith(value), LABEL, value);
+  for (const value of ["b2", "b3", "b4", "ppr"]) assert.match(await searchWith(value), LABEL, value);
 });
 
 test("cross-context: the boost reaches a store opened with context", async () => {
@@ -107,7 +107,7 @@ test("cross-context: the boost reaches a store opened with context", async () =>
 });
 
 test("invalid values mean off, on both stores", async () => {
-  for (const value of [undefined, "off", "B2", " b2", "b5", "", "true"]) {
+  for (const value of [undefined, "off", "B2", " b2", "b5", "", "true", "PPR", "ppr "]) {
     assert.doesNotMatch(await searchWith(value), LABEL, String(value));
     assert.doesNotMatch(await searchWith(value, "@boostteam"), LABEL, String(value));
   }

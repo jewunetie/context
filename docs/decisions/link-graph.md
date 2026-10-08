@@ -429,6 +429,15 @@ hidden, large, moving or recent.
   the withheld label, at every budget"; `graphRetrieve.test.mjs`, "privacy
   invariance: hidden notes change nothing but the withheld graph bit, at
   tight and generous budgets".
+  The search variant `ppr` (`SEARCH_GRAPH_BOOST`, `src/graph/ppr.js`) adds
+  no residual of its own: its random walk reads only visible postings and
+  catalog-resolved links, counts out-degree, hubs and the node cap over
+  visible data, orders by score then path, and is withheld whole (lexical
+  results plus the label) whenever any read, posting chain or the read cap
+  does not finish. Tests: `searchGraphPpr.test.mjs`, "walk privacy: hidden
+  notes leave every score identical, float for float", "ppr privacy: hidden
+  notes leave a team caller's answer equal at every budget, tight and
+  generous" and its multi-shard twin.
 - **Text hits all or none.** Search's cost depends on how many index shards
   are occupied, which grows with hidden notes, so a strict caller gets text
   hits only when the budget covers every occupied shard; a strict caller can

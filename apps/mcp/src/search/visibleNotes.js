@@ -34,7 +34,7 @@ export async function searchVisibleNotes(store, scope, rules, overrides, query, 
   const budget = createSearchBudget(store.searchSubrequestBudget ?? SEARCH_SUBREQUEST_BUDGET);
   // Graph-assisted ranking (Task 29, OPEN-68): `SEARCH_GRAPH_BOOST` resolved
   // onto the store per request (route.js); absent, "off" or anything but the
-  // exact strings "b2", "b3", "b4" is off, and off this function is
+  // exact strings "b2", "b3", "b4", "ppr" is off, and off this function is
   // byte-identical to before it existed.
   const boost = graphBoost(store.searchGraphBoost);
   // Logical-delete stores may need a raw read before a conditional write, or

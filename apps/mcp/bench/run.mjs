@@ -19,7 +19,10 @@
  * (default off) as its graph variant; B2, B3 and B4 are B1's lexical format
  * with that graph variant. B6 is B1 at tok2 c1000 with anchor text
  * (SEARCH_ANCHOR_TEXT): the graph is built first, then the v3 index reads it,
- * and queries are lexical. An arm may override the lexical flags for itself,
+ * and queries are lexical. B7 is B6 plus the "ppr" graph variant (personalized
+ * PageRank, src/graph/ppr.js). The costs table counts graph-only notes (no
+ * lexical match) in the top 10 of the graph arms: all, judged relevant, and
+ * the number of queries with any. An arm may override the lexical flags for itself,
  * `B1:c1000` or `B2:tok2:c4000`, so one run can hold the whole matrix. Chunk 0
  * with tok1 is the default format, built in the v3 namespace (`format.js`'s
  * bench hook) so B1 is always a v3 index. `--set judged|heldout|links|hotpot`
@@ -70,7 +73,7 @@ function arg(name, fallback) {
 
 /* -- arms ---------------------------------------------------------------- */
 
-const GRAPH_ARMS = { B2: "b2", B3: "b3", B4: "b4" };
+const GRAPH_ARMS = { B2: "b2", B3: "b3", B4: "b4", B7: "ppr" };
 
 /** `B1:tok2:c1000` and the flag defaults to `{ name, label, format, graph }`. */
 function parseArm(spec, defaults) {
@@ -79,17 +82,19 @@ function parseArm(spec, defaults) {
   if (name === "B5") return { name, label: "B5 Fast Search" };
   if (name !== "B1" && name !== "B6" && !GRAPH_ARMS[name]) throw new Error(`unknown engine ${spec}`);
   // B6: B1 tok2 c1000 with anchor text (SEARCH_ANCHOR_TEXT, src/search/anchors.js), lexical query.
-  let { tok, chunk } = name === "B6" ? { tok: "tok2", chunk: "1000" } : defaults;
+  // B7: B6 plus the personalized PageRank graph variant (graph built as for B2).
+  const anchored = name === "B6" || name === "B7";
+  let { tok, chunk } = anchored ? { tok: "tok2", chunk: "1000" } : defaults;
   for (const part of overrides) {
     if (/^tok[12]$/.test(part)) tok = part;
     else if (/^c(0|1000|2000|4000)$/.test(part)) chunk = part.slice(1);
     else throw new Error(`unknown override ${part} in ${spec}`);
   }
   const graph = GRAPH_ARMS[name] ?? (defaults.graph === "off" || name === "B6" ? null : defaults.graph);
-  if (graph !== null && !["b2", "b3", "b4"].includes(graph)) throw new Error(`unknown graph variant ${graph}`);
-  const anchors = name === "B6" ? { SEARCH_ANCHOR_TEXT: "1" } : {};
+  if (graph !== null && !["b2", "b3", "b4", "ppr"].includes(graph)) throw new Error(`unknown graph variant ${graph}`);
+  const anchors = anchored ? { SEARCH_ANCHOR_TEXT: "1" } : {};
   const format = { ...indexFormatFor({ SEARCH_TOKENIZER: tok.slice(3), SEARCH_CHUNK_CHARS: chunk, ...anchors }), namespace: "v3" };
-  return { name, label: `${name} ${tok} c${chunk}${graph ? ` ${graph}` : ""}${name === "B6" ? " anchors" : ""}`, format, graph };
+  return { name, label: `${name} ${tok} c${chunk}${graph ? ` ${graph}` : ""}${anchored ? " anchors" : ""}`, format, graph };
 }
 
 /* -- scoring ------------------------------------------------------------- */
@@ -112,6 +117,8 @@ async function score(engine, queries) {
           ndcg: ndcgAt(ranked, query.relevant, K),
           rr: reciprocalRank(ranked, query.relevant),
           subrequests: answer.subrequests,
+          linked: (answer.linked ?? []).length,
+          linkedRelevant: (answer.linked ?? []).filter((path) => new Set(query.relevant).has(path.split("#")[0])).length,
           cold: ms,
         };
       } else {
@@ -135,6 +142,7 @@ function summarize(rows) {
 }
 
 const f2 = (value) => value.toFixed(2);
+const sum = (values) => values.reduce((total, value) => total + value, 0);
 const ms = (values) => values.map((value) => Math.round(value)).join(" / ");
 
 function printTable(size, results) {
@@ -146,7 +154,7 @@ function printTable(size, results) {
     console.log(`| ${name} | ${f2(s.recall)} | ${f2(s.ndcg)} | ${f2(s.mrr)} | ${ms(s.cold)} | ${ms(s.warm)} | ${f2(s.subrequests)} |`);
   }
   const kinds = [...new Set(results[0][1].map((row) => row.kind))];
-  for (const [field, title] of [["recall", "Recall@10"], ["ndcg", "nDCG@10"]]) {
+  for (const [field, title] of [["recall", "Recall@10"], ["ndcg", "nDCG@10"], ["rr", "MRR"]]) {
     console.log(`\n${title} by query class:\n`);
     console.log(`| Class | ${results.map(([name]) => name).join(" | ")} |`);
     console.log(`|---|${results.map(() => "---").join("|")}|`);
@@ -159,21 +167,23 @@ function printTable(size, results) {
 
 function printCosts(built, results) {
   console.log(`\nIndex costs per arm:\n`);
-  console.log("| Arm | Build passes | Graph passes | Shards | Index bytes | Shed notes | Oversized shards | Partial notes | Docs | Doc chars p50 / p95 / max | Subrequests mean / max | Over 50 | Over 600 | Graph withheld |");
-  console.log("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+  console.log("| Arm | Build passes | Graph passes | Shards | Index bytes | Shed notes | Oversized shards | Partial notes | Docs | Doc chars p50 / p95 / max | Subrequests mean / max | Over 50 | Over 600 | Graph withheld | Graph-only in top 10 (total / relevant / queries) |");
+  console.log("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
   built.forEach(([arm, engine], i) => {
     const subrequests = results[i][1].map((row) => row.subrequests);
     const over = (ceiling) => subrequests.filter((n) => n > ceiling).length;
     const sub = `${f2(mean(subrequests))} / ${Math.max(...subrequests)}`;
+    const rows = results[i][1];
+    const linked = arm.graph ? `${sum(rows.map((row) => row.linked))} / ${sum(rows.map((row) => row.linkedRelevant))} / ${rows.filter((row) => row.linked > 0).length}` : "-";
     if (!engine.costs) {
-      console.log(`| ${arm.label} | - | - | - | - | - | - | - | - | - | ${sub} | ${over(50)} | ${over(600)} | - |`);
+      console.log(`| ${arm.label} | - | - | - | - | - | - | - | - | - | ${sub} | ${over(50)} | ${over(600)} | - | - |`);
       return;
     }
     const { shards, bytes, shed, partial, oversizedShards } = engine.costs;
     const { docs, p50, p95, max } = engine.chunks;
     const graph = engine.graphPasses ?? "-";
     const withheld = engine.graphPasses ? engine.graphIncomplete : "-";
-    console.log(`| ${arm.label} | ${engine.passes} | ${graph} | ${shards} | ${bytes.toLocaleString("en-US")} | ${shed} | ${oversizedShards} | ${partial} | ${docs} | ${p50} / ${p95} / ${max} | ${sub} | ${over(50)} | ${over(600)} | ${withheld} |`);
+    console.log(`| ${arm.label} | ${engine.passes} | ${graph} | ${shards} | ${bytes.toLocaleString("en-US")} | ${shed} | ${oversizedShards} | ${partial} | ${docs} | ${p50} / ${p95} / ${max} | ${sub} | ${over(50)} | ${over(600)} | ${withheld} | ${linked} |`);
   });
 }
 

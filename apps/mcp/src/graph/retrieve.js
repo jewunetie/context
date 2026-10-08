@@ -28,6 +28,7 @@ import { activeMoveJobsOrNull, noteUnderPrefix } from "../moves/jobs.js";
 import { graphHealth } from "./manifest.js";
 import { graphView } from "./mode.js";
 import { graphNeighbors } from "./neighbors.js";
+import { PPR_PINNED, PPR_SEEDS, PPR_WEIGHT, fusePpr, pprWalk } from "./ppr.js";
 import { readNode } from "./project.js";
 
 // Given the manifest, a search reads each occupied shard at most once and
@@ -55,6 +56,8 @@ export const SEARCH_VARIANTS = {
   b2: ["linked_from_here", "links_here", "shares_target"],
   b3: ["linked_from_here", "links_here", "shares_target", "shares_url"],
   b4: ["linked_from_here", "links_here", "shares_target", "shares_url", "nearby"],
+  // Personalized PageRank over the seeds' two-hop neighbourhood (ppr.js); no families.
+  ppr: ["ppr"],
 };
 /** The variant `value` names, or null (off): only these exact strings, never a coerced array. */
 export const graphBoost = (value) => (typeof value === "string" && Object.hasOwn(SEARCH_VARIANTS, value) ? value : null);
@@ -319,7 +322,8 @@ async function searchWithGraph(store, { query, variant, scope, search }) {
   const found = await searchIndexedNotes(store, { ...search, query });
   if (!found.indexed) return found;
   const lexical = found.hits.map((h) => h.key);
-  const seeds = [...new Set(lexical.slice(0, SEARCH_SEEDS).map(notePathOf))];
+  const ppr = graphBoost(variant) === "ppr";
+  const seeds = [...new Set(lexical.slice(0, ppr ? PPR_SEEDS : SEARCH_SEEDS).map(notePathOf))];
   const families = SEARCH_VARIANTS[graphBoost(variant)] ?? [];
   if (!seeds.length || !families.length) return { ...found, graphIncomplete: false };
   const withheld = { ...found, graphIncomplete: true };
@@ -327,16 +331,21 @@ async function searchWithGraph(store, { query, variant, scope, search }) {
   if (store.writeEnrichBudget === 0) return withheld;
   // Never throws: after the answer above, any failure is a withheld graph.
   try {
+    if (ppr) return await fuseWithPpr(store, found, withheld, { lexical, seeds, search });
     return await fuseWithGraph(store, found, withheld, { lexical, seeds, families, scope, search });
   } catch {
     return withheld;
   }
 }
 
-async function fuseWithGraph(store, found, withheld, { lexical, seeds, families, scope, search }) {
-  const { budget, isVisible, prefix = "" } = search;
+/**
+ * What every graph-assisted search needs before it reads the graph: the move
+ * jobs (any active job withholds the graph), the caller's visible docmap
+ * paths and catalog, and the pinned graph generation. Null is "withheld".
+ */
+async function openGraph(store, { budget, isVisible }) {
   const jobs = await activeMoveJobsOrNull(store);
-  if (jobs === null || jobs.length) return withheld;
+  if (jobs === null || jobs.length) return null;
   const see = (key) => {
     try {
       return isVisible(key) === true;
@@ -351,11 +360,11 @@ async function fuseWithGraph(store, found, withheld, { lexical, seeds, families,
   try {
     const manifest = await loadIndexManifest(view, budget, 0);
     const docmap = manifest && (await loadDocmapPaths(view, budget, 0, manifest));
-    if (!docmap) return withheld;
+    if (!docmap) return null;
     for (const p of docmap.paths) if (see(p)) shown.add(p);
     partial = indexIsBehind(docmap.freshness);
   } catch {
-    return withheld;
+    return null;
   }
   const catalog = { byName: indexByName([...shown]), paths: shown, partial };
 
@@ -367,7 +376,14 @@ async function fuseWithGraph(store, found, withheld, { lexical, seeds, families,
   } catch {
     // An unreadable manifest is an unavailable graph.
   }
-  if (!gen) return withheld;
+  return gen ? { see, view, shown, catalog, gen, health } : null;
+}
+
+async function fuseWithGraph(store, found, withheld, { lexical, seeds, families, scope, search }) {
+  const { budget, prefix = "" } = search;
+  const open = await openGraph(store, search);
+  if (!open) return withheld;
+  const { see, view, shown, catalog, gen, health } = open;
   const neighbours = [];
   for (const path of seeds) {
     let node = null;
@@ -399,9 +415,34 @@ async function fuseWithGraph(store, found, withheld, { lexical, seeds, families,
   lists.nearby = pool.filter((key) => distance(key) <= NEARBY_DISTANCE).sort((a, b) => distance(a) - distance(b) || (a < b ? -1 : a > b ? 1 : 0));
 
   const fused = fuseRanks(lexical, families.map((f) => lists[f]), { pinned: SEARCH_PINNED, k: RRF_K, weight: GRAPH_WEIGHT });
+  return fusedAnswer(found, fused);
+}
+
+/** search's answer with `hits` in the fused order. A graph-only hit is named by its file (no note body is read for it) and marked, so search_notes can say why it is there. */
+function fusedAnswer(found, fused) {
   const hitOf = new Map(found.hits.map((h) => [h.key, h]));
-  // A graph-only hit is named by its file (no note body is read for it) and
-  // marked, so search_notes can say why it is there.
   const hits = fused.slice(0, Math.max(SEARCH_RESULT_LIMIT, found.hits.length)).map((key) => hitOf.get(key) ?? { key, title: noteTitle(key, ""), snippets: [], linked: true });
   return { ...found, hits, graphIncomplete: false };
+}
+
+/**
+ * The "ppr" variant (ppr.js): a personalized PageRank walk from the top
+ * PPR_SEEDS lexical hits (weight 1 / rank) over the notes within two links of
+ * them, fused with the lexical order by score, so a note many seeds reach can
+ * rank among the lexical hits. Withheld, as the other variants are, whenever
+ * the graph, the move state or the walk is unavailable.
+ */
+async function fuseWithPpr(store, found, withheld, { lexical, seeds, search }) {
+  const { budget, prefix = "" } = search;
+  const open = await openGraph(store, search);
+  if (!open) return withheld;
+  const { see, shown, catalog, gen } = open;
+  const scores = await pprWalk(store, budget, { gen, seeds: seeds.map((path, i) => ({ path, weight: 1 / (i + 1) })), catalog, see });
+  if (!scores) return withheld;
+  // A note already in the lexical list is scored under its own hit's key.
+  const keyOf = new Map();
+  for (const key of lexical) if (!keyOf.has(notePathOf(key))) keyOf.set(notePathOf(key), key);
+  const byKey = new Map();
+  for (const [path, score] of scores) if (shown.has(path) && (!prefix || path.startsWith(prefix)) && see(path)) byKey.set(keyOf.get(path) ?? path, score);
+  return fusedAnswer(found, fusePpr(lexical, byKey, { pinned: PPR_PINNED, weight: PPR_WEIGHT }));
 }

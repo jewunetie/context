@@ -501,3 +501,118 @@ Bucket search chose the hotpot classes, so the easy class is 1.00 for every arm 
 - Hotpot uses 2017 questions over current Wikipedia text, with 17 percent of links kept.
 - Latency columns are wall clock under shared CPU load and are not comparable across runs.
 - No run used a real bucket, real R2 or S3, or a real workspace. The workspace census remains unrun.
+
+
+## Personalized PageRank at query time (arm B7)
+
+`SEARCH_GRAPH_BOOST=ppr` is a fourth graph variant beside b2, b3 and b4, off by default (`src/graph/ppr.js`, `src/graph/retrieve.js`). The top 10 lexical hits seed a random walk with restart (probability 0.15, 20 power iterations, weights 1 over lexical rank). The walk covers the notes within two links of the seeds, in both link directions, at most 60 notes. A link weighs 1 over the visible out-degree of the note it leaves, a note reached along several paths collects from each, and a note with more than 50 visible citers is a node but is not expanded. The fused order scores each note as 1 over its lexical rank plus 0.5 times its PageRank over the largest PageRank, so a note with no lexical match can reach the top 10. Raw BM25 scores are not exposed by search, so the lexical side is reciprocal rank. B7 is B6 (tok2 c1000 plus anchors) with this variant; the graph is built as for B2.
+
+### Choosing the weight and the pins
+
+Swept on the links set, then checked on held-out (1,000 notes, B7 only):
+
+| Weight | Pinned | links recall / nDCG | links harm class recall | held-out recall / nDCG |
+|---|---|---|---|---|
+| 0.25 | 0 or 3 | 0.92 / 0.87 | 1.00 | 0.96 / 0.93 |
+| 0.5 | 0 or 3 | 0.92 / 0.87 | 1.00 | 0.96 / 0.93 |
+| 0.75 | 0 | 0.88 / 0.85 | 0.80 | not run |
+| 1 | 0 | 0.87 / 0.84 | 0.70 | 0.96 / 0.93 |
+| 1 | 3 | 0.87 / 0.84 | 0.70 | 0.96 / 0.93 |
+| 2 | 0 | 0.87 / 0.83 | 0.70 | 0.96 / 0.93 |
+
+Pinning the top 3 lexical hits changed nothing at a weight that does no harm, and did not prevent harm at a weight that does (the displaced exact matches sit at ranks 4 to 10). The shipped values are weight 0.5 and no pins. 0.5 is the largest weight measured without harm and 0.75 already costs the harm class 0.20, so the margin is small and the choice rests on one synthetic class.
+
+### Results
+
+Links set (24 queries, 1,000 notes). Cells in the class table are recall / nDCG / MRR. B2 is shown twice because the earlier B2 arm used tok1 c2000; the second row uses the same lexical format as B6 and B7.
+
+| Arm | Recall@10 | nDCG@10 | MRR | Subrequests per query |
+| --- | --- | --- | --- | --- |
+| B1 tok2 c2000 | 0.59 | 0.65 | 0.83 | 8.38 |
+| B6 tok2 c1000 anchors | 0.76 | 0.76 | 0.92 | 8.67 |
+| B2 tok1 c2000 b2 | 0.92 | 0.87 | 0.92 | 25.67 |
+| B2 tok2 c1000 b2 | 0.92 | 0.87 | 0.92 | 25.71 |
+| B7 tok2 c1000 ppr anchors | 0.92 | 0.87 | 0.92 | 35.50 |
+
+| Class | B1 tok2 c2000 | B6 tok2 c1000 anchors | B2 tok1 c2000 b2 | B2 tok2 c1000 b2 | B7 tok2 c1000 ppr anchors |
+|---|---|---|---|---|---|
+| cluster | 0.30 / 0.47 / 1.00 | 0.30 / 0.47 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 |
+| partial | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 |
+| harm | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 |
+| alias | 0.00 / 0.00 / 0.00 | 1.00 / 0.63 / 0.50 | 1.00 / 0.63 / 0.50 | 1.00 / 0.63 / 0.50 | 1.00 / 0.63 / 0.50 |
+| url | 0.50 / 0.61 / 1.00 | 0.50 / 0.61 / 1.00 | 0.50 / 0.61 / 1.00 | 0.50 / 0.61 / 1.00 | 0.50 / 0.61 / 1.00 |
+| hub | 0.75 / 0.83 / 1.00 | 0.75 / 0.83 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 |
+
+| Arm | Subrequests mean / max | Over 50 | Walks withheld | Graph-only in top 10 (total / relevant / queries) |
+|---|---|---|---|---|
+| B1 tok2 c2000 | 8.38 / 15 | 0 | - | - |
+| B6 tok2 c1000 anchors | 8.67 / 15 | 0 | 0 | - |
+| B2 tok1 c2000 b2 | 25.67 / 45 | 0 | 0 | 40 / 36 / 12 |
+| B2 tok2 c1000 b2 | 25.71 / 45 | 0 | 0 | 40 / 36 / 12 |
+| B7 tok2 c1000 ppr anchors | 35.50 / 78 | 4 | 0 | 36 / 32 / 8 |
+
+Held-out set (48 queries, 1,000 notes):
+
+| Arm | Recall@10 | nDCG@10 | MRR | Subrequests per query |
+| --- | --- | --- | --- | --- |
+| B1 tok2 c2000 | 0.92 | 0.89 | 0.92 | 4.17 |
+| B6 tok2 c1000 anchors | 0.92 | 0.89 | 0.92 | 4.17 |
+| B2 tok1 c2000 b2 | 0.78 | 0.77 | 0.81 | 11.90 |
+| B2 tok2 c1000 b2 | 0.96 | 0.93 | 0.92 | 11.75 |
+| B7 tok2 c1000 ppr anchors | 0.96 | 0.93 | 0.92 | 11.92 |
+
+| Class | B1 tok2 c2000 | B6 tok2 c1000 anchors | B2 tok1 c2000 b2 | B2 tok2 c1000 b2 | B7 tok2 c1000 ppr anchors |
+|---|---|---|---|---|---|
+| exact | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 |
+| title | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 |
+| deep | 0.67 / 0.67 / 0.67 | 0.67 / 0.67 / 0.67 | 0.67 / 0.67 / 0.67 | 0.67 / 0.67 / 0.67 | 0.67 / 0.67 / 0.67 |
+| multi | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 |
+| morph | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 0.56 / 0.66 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 |
+| cjk | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 0.00 / 0.00 / 0.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 |
+| code | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 0.75 / 0.75 / 0.75 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 |
+| message | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 |
+| linked | 0.50 / 0.61 / 1.00 | 0.50 / 0.61 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 |
+| crosschunk | 1.00 / 0.50 / 0.33 | 1.00 / 0.50 / 0.33 | 1.00 / 0.50 / 0.33 | 1.00 / 0.50 / 0.33 | 1.00 / 0.50 / 0.33 |
+
+| Arm | Subrequests mean / max | Over 50 | Walks withheld | Graph-only in top 10 (total / relevant / queries) |
+|---|---|---|---|---|
+| B1 tok2 c2000 | 4.17 / 7 | 0 | - | - |
+| B6 tok2 c1000 anchors | 4.17 / 7 | 0 | 0 | - |
+| B2 tok1 c2000 b2 | 11.90 / 19 | 0 | 0 | 4 / 4 / 4 |
+| B2 tok2 c1000 b2 | 11.75 / 19 | 0 | 0 | 4 / 4 / 4 |
+| B7 tok2 c1000 ppr anchors | 11.92 / 19 | 0 | 0 | 4 / 4 / 4 |
+
+The B2 tok1 row loses morph, cjk and code on held-out because of the tok1 tokenizer, not the graph: the tok2 row of B2 does not.
+
+HotpotQA slice (300 queries, 4,904 notes; B6 and B7 only, run once for the tables and once more for MRR by class, with identical numbers):
+
+| Arm | Recall@10 | nDCG@10 | MRR | Subrequests per query |
+| --- | --- | --- | --- | --- |
+| B6 tok2 c1000 anchors | 0.90 | 0.82 | 0.89 | 28.00 |
+| B7 tok2 c1000 ppr anchors | 0.92 | 0.82 | 0.89 | 167.40 |
+
+| Class | B6 tok2 c1000 anchors | B7 tok2 c1000 ppr anchors |
+|---|---|---|
+| easy | 1.00 / 0.94 / 0.94 | 1.00 / 0.93 / 0.94 |
+| partial | 0.84 / 0.74 / 0.87 | 0.87 / 0.75 / 0.87 |
+| hard | 0.17 / 0.10 / 0.06 | 0.17 / 0.11 / 0.08 |
+
+| Arm | Subrequests mean / max | Over 50 | Walks withheld | Graph-only in top 10 (total / relevant / queries) |
+|---|---|---|---|---|
+| B6 tok2 c1000 anchors | 28.00 / 28 | 0 | 0 | - |
+| B7 tok2 c1000 ppr anchors | 167.40 / 231 | 300 | 24 | 486 / 12 / 264 |
+
+### What this says
+
+- On the links and held-out sets, B7 reaches the same recall, nDCG and MRR as B2 at the same lexical format. It beats B6 on the cluster class (1.00 against 0.30 recall) and the hub class (1.00 against 0.75). It spends 35.5 subrequests per query on links against 25.7 for B2 and 8.7 for B6 (78 at most), and 4 of 24 queries pass 50. It cannot lift the url class: it does not walk shared URLs.
+- On hotpot, B7 lifts recall from 0.90 to 0.92 over B6 (partial 0.84 to 0.87), with no change in nDCG or MRR. It costs 167 subrequests per query against 28 (231 at most), every query passes 50, and 24 of 300 walks hit the read cap and were withheld. Warm latency doubles under the bench's 20 ms store.
+- 486 graph-only notes entered the top 10 on hotpot across 264 queries; 12 were judged relevant. The other 474 replaced lexical tail hits that were also mostly not relevant, which is why nDCG did not move. On links the counts are 36 graph-only, 32 relevant, 8 queries; B2 had 40, 36, 12. On held-out 4, 4, 4 for both.
+- The one-hop boost (B2) added 0.01 recall over its lexical baseline on hotpot; PageRank added 0.02 over B6. Neither run controls for the other's lexical format on hotpot, so that comparison is indicative only.
+- The benchmark sets do not contain the case PageRank is built for: a full lexical list with several relevant notes that many seeds link to and that hold none of the query words. `searchGraphPpr.test.mjs` builds that case (ten kestrel notes, four citing one note without the word) and ppr puts the note in the top 10 where b3 cannot. No measured set shows the gain.
+
+### Limits
+
+- Lexical fusion uses reciprocal rank, not raw scores. A score-based fusion needs scores returned from search, which would change search's output shape.
+- The walk follows links only. Shared URLs (b3) and folder proximity (b4) are not edges; a shared target (b2) is reached as two hops through it.
+- At the default search budget of 40 the walk never finishes and the answer is the lexical one, labelled. A deployment needs a budget of several hundred to use it.
+- Weight tuning used one synthetic class. Treat 0.5 as provisional.

@@ -47,7 +47,7 @@ export function emptyStats() {
  * and cannot tell anybody their note is not written down.
  */
 export function emptyFreshness() {
-  return { listedAt: null, pending: 0, truncated: false };
+  return { listedAt: null, pending: 0, truncated: false, listCursor: null };
 }
 
 /**
@@ -118,7 +118,7 @@ export function shedNotePathsOf(manifest) {
  *   docsByShard: Map<string, string>[],
  *   stats: {docCount: number, lenTotals: object, shed: number, shedPaths: string[]}[],
  *   filters: (string|null)[],
- *   freshness: {listedAt: string|null, pending: number, truncated: boolean}}}
+ *   freshness: {listedAt: string|null, pending: number, truncated: boolean, listCursor: string|null}}}
  */
 export function emptyManifest(shardCount) {
   const count = Number.isInteger(shardCount)

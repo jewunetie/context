@@ -311,7 +311,7 @@ export async function syncShardedIndex(
   // all, and re-sharding is deleting the manifest.
   const listed = targeted
     ? writtenEntries(only, isIndexable, manifest)
-    : await listNoteObjects(store, ops, callerReserve, isIndexable);
+    : await listNoteObjects(store, ops, callerReserve, isIndexable, manifest?.freshness?.listCursor ?? null);
   const { entries, regionComplete, truncated } = listed;
 
   let manifestChanged = false;
@@ -809,12 +809,14 @@ export async function syncShardedIndex(
     listedAt: new Date(nowMsOf(now)).toISOString(),
     pending,
     truncated,
+    listCursor: targeted ? manifest.freshness.listCursor ?? null : listed.nextCursor,
   };
   if (
     !targeted &&
     manifest.freshness.listedAt !== freshness.listedAt ||
     manifest.freshness.pending !== freshness.pending ||
-    manifest.freshness.truncated !== freshness.truncated
+    manifest.freshness.truncated !== freshness.truncated ||
+    (manifest.freshness.listCursor ?? null) !== freshness.listCursor
   ) {
     manifest.freshness = freshness;
     manifestChanged = true;

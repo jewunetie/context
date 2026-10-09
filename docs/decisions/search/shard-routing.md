@@ -141,7 +141,18 @@ may:
   bucket Obsidian also writes to converged when nobody looked.
 - **It does not build an index** (no manifest: the full pass does) and **never
   rebuilds a shard it cannot read**, since only a listing knows the versions of
-  the other notes in it.
+  the other notes in it. "Cannot read" includes a missing docmap: the manifest's
+  per-shard `docCount` decides whether a shard object exists, so a write's pass
+  with the docmap absent loads the stored shard instead of publishing one that
+  holds only the written note (`searchDocmapAbsent.test.mjs`).
+
+A full pass whose budget cannot list every top-level folder does not list the
+same first folders forever. The listing leaves a quarter of the budget (at
+least three ops) for the pass's work, and the manifest's `freshness.listCursor`
+records the first folder it did not finish, where the next pass resumes and
+wraps. `truncated` stays true until a single pass lists everything, which is
+honest: such a context is always "catching up" at that budget, but it now
+builds and converges (`searchListingCursor.test.mjs`).
 
 Edits made outside Context (Obsidian, rclone) still wait for the reconcile
 clock above. Reversing this puts the minute-plus lag back for every saved note;

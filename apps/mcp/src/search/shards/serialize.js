@@ -93,6 +93,8 @@ export function serializeManifest(manifest) {
       listedAt: manifest.freshness.listedAt,
       pending: manifest.freshness.pending,
       truncated: manifest.freshness.truncated,
+      // Sparse: absent is "start the folder walk at the first folder".
+      ...(typeof manifest.freshness.listCursor === "string" ? { listCursor: manifest.freshness.listCursor } : {}),
     },
     // One `{ key, digest }` per shard id, or null for nothing stored.
     shards: Array.from({ length: manifest.shardCount }, (_, id) => {
@@ -275,10 +277,12 @@ function manifestFromParsed(parsed) {
     if (typeof stored.listedAt !== "string" && stored.listedAt !== null) return null;
     if (!isFiniteNumber(stored.pending) || stored.pending < 0) return null;
     if (typeof stored.truncated !== "boolean") return null;
+    if (stored.listCursor !== undefined && typeof stored.listCursor !== "string" && stored.listCursor !== null) return null;
     freshness = {
       listedAt: stored.listedAt,
       pending: Math.floor(stored.pending),
       truncated: stored.truncated,
+      listCursor: stored.listCursor ?? null,
     };
   }
 

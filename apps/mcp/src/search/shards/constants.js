@@ -174,8 +174,16 @@ export const MANIFEST_WRITE_RESERVE = 2;
 // Creating an index object may need a marker check before the provider write.
 // Reserve both operations so the pass can commit what it has indexed.
 export const SHARD_WRITE_RESERVE = 2;
-/** Nor let the listing consume everything a backfill would have used. */
-export const FETCH_FLOOR = 2;
+/**
+ * Nor let the listing consume everything a backfill would have used: the least
+ * it leaves for the pass's work, after the manifest's own writes. Three is one
+ * note read plus its shard write, because every fetch holds back
+ * `MANIFEST_WRITE_RESERVE + SHARD_WRITE_RESERVE`. At the old two, a listing that
+ * spent down to its reserve left the first fetch one op short, so a bucket with
+ * more folders than the budget never built an index. A quarter of the budget is
+ * kept as well (`listNoteObjects`), so a larger budget makes real progress too.
+ */
+export const FETCH_FLOOR = 3;
 /** Fetched in parallel, indexed in list order once a wave lands — see the wave loop. */
 export const BACKFILL_CONCURRENCY = 12;
 /**

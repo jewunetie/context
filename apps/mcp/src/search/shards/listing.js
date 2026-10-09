@@ -70,10 +70,11 @@ async function listPaged(store, { prefix, delimiter }, budget, reserve, onObject
  * "." sorts before every digit and letter, so it spends its whole budget inside
  * the history and reports zero notes for the biggest contexts there are.
  */
-export async function listNoteObjects(store, budget, reserve, isIndexable) {
+export async function listNoteObjects(store, budget, reserve, isIndexable, cursor = null) {
   const entries = new Map();
   const folders = new Set();
-  const listingReserve = reserve + MANIFEST_WRITE_RESERVE + FETCH_FLOOR;
+  const listingReserve =
+    reserve + MANIFEST_WRITE_RESERVE + Math.max(FETCH_FLOOR, Math.floor(budget.remaining / 4));
 
   const record = (object) => {
     if (!isIndexable(object.key)) return;
@@ -109,7 +110,16 @@ export async function listNoteObjects(store, budget, reserve, isIndexable) {
     (childPrefix) => folders.add(childPrefix)
   );
 
-  const realFolders = [...folders].filter((prefix) => !prefix.startsWith(".")).sort();
+  /*
+    The folder walk resumes where the last one stopped. Sorted from the top
+    every time, a budget smaller than the folder count listed the same first
+    folders on every pass and never reached the rest. `cursor` is the first
+    folder the previous pass did not finish; the walk starts there and wraps.
+  */
+  const sortedFolders = [...folders].filter((prefix) => !prefix.startsWith(".")).sort();
+  const resumeAt = cursor === null ? -1 : sortedFolders.findIndex((prefix) => prefix >= cursor);
+  const realFolders =
+    resumeAt <= 0 ? sortedFolders : [...sortedFolders.slice(resumeAt), ...sortedFolders.slice(0, resumeAt)];
   // One folder's pages are sequential — the next page is addressed by the last
   // one's cursor — and the folders are independent of each other, so they run
   // in waves. That is wall clock the budget cannot see: the ops are identical,
@@ -138,6 +148,7 @@ export async function listNoteObjects(store, budget, reserve, isIndexable) {
 
   const truncated =
     !rootComplete || realFolders.some((prefix) => folderComplete.get(prefix) !== true);
-  return { entries, regionComplete, truncated };
+  const unfinished = realFolders.find((prefix) => folderComplete.get(prefix) !== true);
+  return { entries, regionComplete, truncated, nextCursor: rootComplete ? unfinished ?? null : cursor };
 }
 

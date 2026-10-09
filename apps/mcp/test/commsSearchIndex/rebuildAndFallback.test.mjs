@@ -9,7 +9,8 @@
 
 import { createSearchBudget } from "../../src/search/maintain.js";
 import { unmarked } from "../../src/search/anchors.js";
-import { parseManifest, syncShardedIndex } from "../../src/search/shards.js";
+import { REVISION_RETENTION_MS, collectShardRevisions } from "../../src/search/shards/gc.js";
+import { parseManifest, parseShard, syncShardedIndex } from "../../src/search/shards.js";
 import { searchIndexedNotes } from "../../src/search/visible.js";
 import { messageAnchor } from "../../../../packages/communications/src/anchors.js";
 import { renderChannelDayNote } from "../../../../packages/communications/src/note.js";
@@ -213,7 +214,18 @@ export async function runCommsNoMessageFallbackChecks(check) {
     // The live shards are the revisions the manifest names; a superseded
     // revision waits for collection (shards/gc.js) beside it.
     !parseManifest(bucket.objects.get(".context/search/index/manifest.json").body).shards.some(
-      (entry) => entry && bucket.objects.get(entry.key).body.includes("plaintext-canary-beta")
+      (entry) => entry && parseShard(bucket.objects.get(entry.key).body).terms.has("canari")
+    )
+  );
+  // A superseded revision still holds the plaintext until the collector removes
+  // it (shards/gc.js); once it has, no stored shard object does.
+  const current = parseManifest(bucket.objects.get(".context/search/index/manifest.json").body);
+  await collectShardRevisions(bucket, createSearchBudget(100), { manifest: current, now: Date.now() - 2 * REVISION_RETENTION_MS });
+  await collectShardRevisions(bucket, createSearchBudget(100), { manifest: current, now: Date.now() + 2 * REVISION_RETENTION_MS });
+  check(
+    "...and, once the superseded revisions are collected, from every stored shard object",
+    ![...bucket.objects.entries()].some(
+      ([key, stored]) => key.startsWith(".context/search/index/shards/") && parseShard(stored.body).terms.has("canari")
     )
   );
   const idle = await syncShardedIndex(bucket, { budget: createSearchBudget(2000) });

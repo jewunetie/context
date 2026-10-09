@@ -10,6 +10,7 @@ import { type Visibility, canSee } from "../privacy";
 import { type Clearance } from "../clearance";
 import { forwardPath, readForwarding } from "../../../../mcp/src/forwarding.js";
 import { loadMoveJobsOrNull, movedSourcesFor } from "../../../../mcp/src/moves/jobs.js";
+import { objectExists } from "../../../../mcp/src/storageLayout.js";
 import {
   eligible as collaborationEligible,
   readDocument as readCollaborationDocument,
@@ -114,7 +115,19 @@ async function readVisibleFile(
   clearance: Clearance,
 ): Promise<FileContents> {
   const visible = (key: string) => canSee(key, clearance.scope, state.rules, state.overrides, clearance.names);
-  if (!visible(path)) throw notFound();
+  const jobs = await moves();
+  if (!visible(path)) {
+    /*
+      A HIDDEN PATH COSTS WHAT AN ABSENT ONE COSTS: the move state, then one
+      storage call about the path, and only then the refusal. Refusing before
+      touching the bucket made the hidden path cheaper, so a team caller could
+      tell a note held back from one that is not there by the clock. The call
+      is a metadata probe, never a read: a hidden note's bytes are not fetched
+      for a caller who may not read them.
+    */
+    await objectExists(store, path, { metadataOnly: true });
+    throw notFound();
+  }
 
   /*
     THE SAME MOVE OVERLAY read_note APPLIES. A note caught mid-move answers at
@@ -124,7 +137,6 @@ async function readVisibleFile(
     move state fails closed, as `notFound()`. The decision itself is the
     gateway's `movedSourcesFor`, so the two surfaces cannot drift.
   */
-  const jobs = await moves();
   const sources = jobs === null ? null : movedSourcesFor(jobs, path);
   if (sources === null) throw notFound();
   let object: Awaited<ReturnType<FileStore["get"]>> = null;

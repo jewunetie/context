@@ -57,6 +57,13 @@ export async function getVisibleMovedNote(store, scope, rules, overrides, path, 
   // Fail closed: an unreadable move state answers like a note that cannot be
   // read, and says nothing about why.
   if (jobs === null) return { object: null, physicalPath: path };
+  // A path the caller cannot see is looked up exactly as a path that is not
+  // there: one probe, whatever the moves say. Following a move into a hidden
+  // destination costs a second probe (the source), which a team caller could
+  // read as "something is moving here". The caller refuses the result anyway.
+  if (!canSee(path, scope, rules, overrides)) {
+    return { object: await fetchOne(store, path), physicalPath: path };
+  }
   const sources = movedSourcesFor(jobs, path);
   if (sources === null) return { object: null, physicalPath: path };
   for (const source of sources) {

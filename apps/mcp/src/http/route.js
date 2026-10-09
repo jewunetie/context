@@ -52,7 +52,6 @@ import {
 import { localIngestionStore } from "../ingestion/inbox.js";
 import { publishMeetingNote, resolveMeetingNotePath } from "../meetings/notes.js";
 import { searchBudgetFor, writeEnrichBudgetFor } from "../search/budget.js";
-import { graphBoost } from "../graph/retrieve.js";
 import { indexFormatFor } from "../search/format.js";
 import { createSearchBudget } from "../search/maintain.js";
 import { transcriptionForwarder } from "../ingestion/transcription.js";
@@ -259,7 +258,6 @@ export async function route(request, env, ctx) {
       // with the request, so a reused isolate carries nothing across tenants.
       store.searchSubrequestBudget = searchBudgetFor(env);
       store.searchIndexFormat = indexFormatFor(env); // the index format switch, CONTRACT-v3.md
-      store.searchGraphBoost = graphBoost(env.SEARCH_GRAPH_BOOST) ?? "off"; // graph-assisted search (Task 29)
       store.writeEnrichBudget = writeEnrichBudgetFor(env);
       // One ceiling on link suggestions for the whole invocation: a batch of
       // writes shares it, not one budget per write. Graph updates keep their
@@ -476,7 +474,6 @@ export async function route(request, env, ctx) {
         const targetStore = await storeForSession(target, env, controlPlane);
         targetStore.searchSubrequestBudget = searchBudgetFor(env);
         targetStore.searchIndexFormat = indexFormatFor(env);
-        targetStore.searchGraphBoost = store.searchGraphBoost;
         targetStore.writeEnrichBudget = writeEnrichBudgetFor(env);
         targetStore.writeEnrichPool = store.writeEnrichPool;
         attachGatewayJobQueue(targetStore, target, controlPlane, env);

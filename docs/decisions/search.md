@@ -103,10 +103,19 @@ Moved to [With no connection, search reads the copy on the device, and says so](
 The index in `.context/search/index/` has no switches. Ordinary notes are
 indexed as 1,000-character chunks up to 64,000 characters, with one tokenizer
 and a low-weight field of the link text that points at the note. Shards are
-content-addressed revisions named by a manifest of `INDEX_FORMAT_VERSION` 5;
+content-addressed revisions named by a manifest of `INDEX_FORMAT_VERSION` 6;
 any other version is read as absent and rebuilt. Until the first pass commits,
 search answers from the bounded literal scan and builds the index behind the
 response. Details: `apps/mcp/src/search/CONTRACT-REVISIONS.md`. Where the
 sections above and in `./search/` speak of the opening 2,048 characters or of
 `.context/search/v2/`, this entry supersedes them for the gateway index.
+
+Porter2 is rules only, so `apps/mcp/src/search/irregular.js` adds a small hand-written table
+around it: an irregular verb or plural form ("ran", "children") is replaced by its base before
+the stemmer, and a UK spelling's stem ("colour") by the US stem after it, so every inflection
+follows. Index and query share the code path. The tables are not verified against an external
+source; a form that is itself another common word ("saw", "found", "left", "lay", "bear",
+"wound", "rose", "bound") is deliberately left out, listed with its reason in `AMBIGUOUS` and
+pinned by `test/irregular.test.mjs`. Changing a table changes terms, so bump
+`INDEX_FORMAT_VERSION` with it.
 

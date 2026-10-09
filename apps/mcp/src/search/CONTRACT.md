@@ -202,7 +202,7 @@ conflict (the `.context/search/v2/` paths below are no longer used).
 ## Objects
 
 - `.context/search/index/manifest.json`, **the query surface**, and the pass's single
-  commit point. Carries `{version: 5, shardCount, generatedAt, stats, filters,
+  commit point. Carries `{version: 6, shardCount, generatedAt, stats, filters,
   freshness, shards}` where `stats` is an array of per-shard `{docCount, lenTotals:
   {title, headings, tags, body}}`, `filters` is an array of `shardCount` base64
   Bloom filters over each shard's own vocabulary (or `null`, which every reader

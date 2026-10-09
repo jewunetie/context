@@ -4,7 +4,7 @@
  * `src/search/shards/io.js`, CONTRACT.md "Revisioned shards").
  *
  * There is one index and one format. A manifest is served when it parses as
- * `INDEX_FORMAT_VERSION`; any other version (the previous index format was 4)
+ * `INDEX_FORMAT_VERSION`; any other version (the previous index format was 5)
  * is read as absent and the index is rebuilt from the notes.
  *
  * ## Sabotage record
@@ -79,8 +79,8 @@ function bucketWithIndex({ text = manifestText() } = {}) {
 
 // The constants
 
-test("the format constants: version 5 and 1,000-character chunks capped at 64,000", () => {
-  assert.equal(INDEX_FORMAT_VERSION, 5);
+test("the format constants: version 6 and 1,000-character chunks capped at 64,000", () => {
+  assert.equal(INDEX_FORMAT_VERSION, 6);
   assert.deepEqual({ ...CHUNK }, { target: 1000, max: 1500, cap: 64_000 });
   assert.equal(MANIFEST_KEY, ".context/search/index/manifest.json");
   assert.equal(DOCMAP_KEY, ".context/search/index/docmap.json");
@@ -105,6 +105,7 @@ test("manifest: another version, malformed or foreign shapes are refused", () =>
   // The previous index format was 4; a stored manifest of it is stale and rebuilt.
   assert.equal(parseManifest(JSON.stringify({ ...valid, version: 4, format: { tokenizer: 2, chunk: null }, built: true })), null);
   assert.equal(parseManifest(JSON.stringify({ ...valid, version: INDEX_FORMAT_VERSION + 1 })), null);
+  assert.equal(parseManifest(JSON.stringify({ ...valid, version: INDEX_FORMAT_VERSION - 1 })), null, "the previous version rebuilds");
   assert.equal(parseManifest(JSON.stringify({ ...valid, version: 3 })), null);
   assert.equal(parseManifest(JSON.stringify({ ...valid, shards: [valid.shards[0]] })), null, "one entry for two shards");
   assert.equal(parseManifest(manifestText({ shards: [{ key: 7, digest: "d" }, null] })), null);

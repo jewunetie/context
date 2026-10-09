@@ -7,10 +7,13 @@
  *
  * The tokenizer (`termsOf`) is Porter2 on Latin-script words, identifier
  * splitting, accent folding for Latin, `Intl.Segmenter` words and CJK
- * two-character pieces. There is one tokenizer and no switch.
+ * two-character pieces. There is one tokenizer and no switch. An irregular form
+ * ("ran", "children") or a UK spelling ("colour") is mapped to one canonical
+ * term by `irregular.js` around the stemmer, on the index and query side alike.
  */
 
 import { porter2 } from "./porter2.js";
+import { stemmed } from "./irregular.js";
 
 /**
  * The terms both the indexer and the query parser store (see `tokenizeWords`
@@ -91,7 +94,7 @@ function splitWord(word) {
 function termsOfPiece(piece) {
   const folded = foldLatin(piece.toLowerCase());
   if (folded.length < 2) return [];
-  return [/^[a-z']+$/.test(folded) ? porter2(folded) : folded];
+  return [/^[a-z']+$/.test(folded) ? stemmed(folded) : folded];
 }
 
 /**

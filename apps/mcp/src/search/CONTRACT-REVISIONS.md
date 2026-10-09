@@ -11,10 +11,10 @@ words, identifier splitting, Latin accent folding, `Intl.Segmenter` words and
 CJK two-character pieces), chunked ordinary notes (`CHUNK`: target 1,000
 characters, at most 1,500, 64,000 per note; the smallest size that met the
 decision rule, ruling OPEN-66) and the anchor-text field. None of them has a
-deployment var, a flag or a second behavior. `INDEX_FORMAT_VERSION` (5) is the
+deployment var, a flag or a second behavior. `INDEX_FORMAT_VERSION` (6) is the
 manifest's `version`. A stored manifest of any other version is read as absent
 and the index is rebuilt, so bump it whenever the tokenizer, the chunk shape
-or the stored layout changes. Version 4 was the previous index format.
+or the stored layout changes. Version 5 was the previous index format.
 
 If the runtime's `Intl.Segmenter` fails its self-test (`segmenterSelfTest`),
 nothing is served and nothing is written: `loadIndexManifest` answers `null`
@@ -25,7 +25,7 @@ tokenizer to fall back to.
 
 Everything is under `.context/search/index/`:
 
-- `manifest.json`, **version 5**: `shardCount`, `generatedAt`, per-shard
+- `manifest.json`, **version 6**: `shardCount`, `generatedAt`, per-shard
   `stats`, routing `filters`, `freshness`, `shards` (one `{ key, digest }` per
   shard id, or `null` for nothing stored) and, when non-empty, `anchorRefresh`.
   It is the single commit point. A `null` key over a shard whose stats count

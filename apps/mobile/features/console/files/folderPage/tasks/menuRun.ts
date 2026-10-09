@@ -1,5 +1,5 @@
 /**
- * What each row of a task's right-click menu does (`taskMenu.ts` says what
+ * What each row of a task's right-click menu does (`taskMenuItems.ts` says what
  * is offered). Every write is a plan run through `TaskControls.perform`, so
  * it is drawn at once, said in a toast and offered back with Undo; the words
  * it is said in are the owner's ("“Sign the lease” is Urgent now").
@@ -9,7 +9,7 @@ import type { FolderItem } from "../model";
 import { priorityOf, tagsOf, ownersOf, type Estimate } from "../taskProps";
 import { ownerLabel, type OwnerChoice } from "../items";
 import { planMoveToProject, planSet, statusPlan, taskRefOf, wordsValue, type ProjectRef } from "./taskEdits";
-import type { TaskMenuAction } from "./taskMenu";
+import type { TaskMenuAction } from "./taskMenuItems";
 import { planNest, planUnnest, type Planned } from "./taskWrites";
 import { dueLabel, duePreset, priorityLabel, toggleWord, type Priority } from "./taskWords";
 import type { IndexedItem, TaskControls } from "./useTaskActions";

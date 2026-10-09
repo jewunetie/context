@@ -1,6 +1,6 @@
 /**
  * A task's menu as a phone draws it (PhoneMenu artboard, 2026-09-28): the
- * right-click menu's own list (`taskMenu.ts`), redrawn for a thumb — never a
+ * right-click menu's own list (`taskMenuItems.ts`), redrawn for a thumb — never a
  * second list. Pure.
  *
  * - **Priority becomes a row of chips** at the top of the sheet (Urgent, High,

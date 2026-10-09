@@ -3,7 +3,7 @@ import { ScrollView, View } from "react-native";
 import { ScreenViewport, type useSurfacePadding } from "../../../app/Screen";
 import { PageSlide } from "../../../design/components/PageSlide";
 import { useThemedStyles } from "../../../design/theme";
-import { slideDirection } from "../../home/phoneBack";
+import { slideDirection } from "../../home/phoneBackTarget";
 import type { classifyCommsPath } from "../../communications/paths";
 import type { entryAt } from "../../files/tree";
 import { makeStyles } from "./styles";

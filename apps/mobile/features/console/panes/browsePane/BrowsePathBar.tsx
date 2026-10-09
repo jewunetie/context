@@ -14,7 +14,7 @@ import type { entryAt } from "../../files/tree";
  * and the owner's review of the phone Home took it out (2026-10-01): *"I dont
  * think we need to show the file path at the top of notes anymore"*. Each thing
  * it did went somewhere it belongs. The way up is the ‹ back button at the top
- * left (`home/phoneBack.ts`), which names the folder above; the workspace's
+ * left (`home/phoneBackTarget.ts`), which names the folder above; the workspace's
  * mark is the account button on Home (`SwitcherMenu`'s phone trigger); the
  * page names itself, a note in its title and a folder in its head.
  *

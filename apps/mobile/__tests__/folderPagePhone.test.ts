@@ -14,7 +14,7 @@
  * and the Show chips scroll sideways rather than wrapping. The properties with
  * teeth:
  *
- * - the sheet is the right-click menu's own list (`taskMenu.ts`), redrawn —
+ * - the sheet is the right-click menu's own list (`taskMenuItems.ts`), redrawn —
  *   never a second list that can drift from it;
  * - every write keeps the toast with its Undo;
  * - every control is at least a 44pt target;
@@ -34,7 +34,7 @@ import { FolderView } from "../features/console/files/FolderView";
 import type { FolderPageHost } from "../features/console/files/folderPage/FolderPage";
 import { statusMenu, type StatusList } from "../features/console/files/folderPage/statuses";
 import { phoneSheet, swipeActions } from "../features/console/files/folderPage/tasks/phoneSheet";
-import { taskMenuItems, type TaskMenuContext } from "../features/console/files/folderPage/tasks/taskMenu";
+import { taskMenuItems, type TaskMenuContext } from "../features/console/files/folderPage/tasks/taskMenuItems";
 import type { TaskHost } from "../features/console/files/folderPage/tasks/taskHost";
 import { forgetViews } from "../features/console/files/folderPage/viewMemory";
 import type { ListNote } from "../features/console/files/listBlock/model";

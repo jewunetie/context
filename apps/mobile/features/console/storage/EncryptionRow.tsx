@@ -14,7 +14,7 @@ import { Text } from "../../design/components/Text";
 import { useColors, useThemedStyles, type Colors } from "../../design/theme";
 import { layout, radii, space } from "../../design/tokens";
 import type { ConsoleStorage } from "../types";
-import { encryptionRowCopy } from "./encryptionRow";
+import { encryptionRowCopy } from "./encryptionRowCopy";
 
 export function EncryptionRow({ storage }: { storage: ConsoleStorage }) {
   const styles = useThemedStyles(makeStyles);

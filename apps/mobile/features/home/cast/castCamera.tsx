@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { CastPhoneLayout, CastShown } from "@context/shared";
-import type { CastChatEvent } from "./castChat";
+import type { CastChatEvent } from "./castChatState";
 import type { CastWorkspace } from "./castRun";
 
 /*

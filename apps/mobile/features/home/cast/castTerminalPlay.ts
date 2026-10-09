@@ -8,7 +8,7 @@
  */
 
 import type { CastTerminalStep } from "@context/shared";
-import type { CastChatEvent } from "./castChat";
+import type { CastChatEvent } from "./castChatState";
 import type { CastMoment, CastPace } from "./castRun";
 
 export interface TerminalPlayer {

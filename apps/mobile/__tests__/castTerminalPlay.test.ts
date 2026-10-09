@@ -2,7 +2,7 @@ import { describe, expect, test } from "@jest/globals";
 import { splitWebsiteCast } from "@context/shared";
 import { createSharedDoc, seedSharedDoc } from "../features/console/presence/sharedDoc";
 import { createCastClock } from "../features/home/cast/castClock";
-import { chatReducer, type ChatMessage, type ChatState } from "../features/home/cast/castChat";
+import { chatReducer, type ChatMessage, type ChatState } from "../features/home/cast/castChatState";
 import { phoneShowsAfter } from "../features/home/cast/castCamera";
 import { castColors, playCast, type CastMoment } from "../features/home/cast/castRun";
 import { presenceColors } from "../features/design/tokens";

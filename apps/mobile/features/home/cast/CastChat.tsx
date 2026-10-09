@@ -3,7 +3,7 @@ import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, V
 import { Icon } from "../../design/components/Icon";
 import { useColors, useTheme } from "../../design/theme";
 import { castChatLooks, pointerType, radii, space, type CastChatLookColors } from "../../design/tokens";
-import type { ChatMessage, ChatTool, ChatWindow } from "./castChat";
+import type { ChatMessage, ChatTool, ChatWindow } from "./castChatState";
 import { SYSTEM_FONT, terminalLook, terminalOf } from "./castLook";
 import { CastTerminal, type ChatTab } from "./CastTerminal";
 import type { CastChatView } from "./useHomeCast";

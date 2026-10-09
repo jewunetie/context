@@ -4,7 +4,7 @@ import {
   ENCRYPTED_TITLE,
   OWN_BUCKET_BODY,
   encryptionRowCopy,
-} from "../features/console/storage/encryptionRow";
+} from "../features/console/storage/encryptionRowCopy";
 import { consoleStorageFrom } from "../features/console/liveConsole/derive";
 import type { StorageBinding } from "../features/console/liveConsole/summaries";
 

@@ -70,7 +70,7 @@ import { crumbsFor, type Crumb } from "./crumbs";
  *
  * It drew `pathOnly` — the folders and the leaf, behind the workspace's pill —
  * until the owner's review of the phone Home (2026-10-01) took the path off the
- * top of notes. The way up there is the ‹ back button (`home/phoneBack.ts`).
+ * top of notes. The way up there is the ‹ back button (`home/phoneBackTarget.ts`).
  */
 
 export function Breadcrumb({

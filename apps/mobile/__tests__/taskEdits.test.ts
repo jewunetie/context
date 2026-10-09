@@ -13,7 +13,7 @@ import { describe, expect, test } from "@jest/globals";
 import type { FolderItem } from "../features/console/files/folderPage/model";
 import { countTasks, planMoveToProject, planSet, runManyPlanned, taskRefOf, wordsValue } from "../features/console/files/folderPage/tasks/taskEdits";
 import { dropZone, rowDrop, statusDrop } from "../features/console/files/folderPage/tasks/taskDrop";
-import { taskMenuAction, taskMenuItems, type TaskMenuContext } from "../features/console/files/folderPage/tasks/taskMenu";
+import { taskMenuAction, taskMenuItems, type TaskMenuContext } from "../features/console/files/folderPage/tasks/taskMenuItems";
 import {
   NO_PENDING,
   noteFromText,

@@ -4,7 +4,7 @@ import { Icon } from "../../design/components/Icon";
 import { Text } from "../../design/components/Text";
 import { layout, radii, space } from "../../design/tokens";
 import { useColors, useThemedStyles, type Colors, type Shadows } from "../../design/theme";
-import type { PhoneBackTarget } from "./phoneBack";
+import type { PhoneBackTarget } from "./phoneBackTarget";
 
 /**
  * The phone's top-left on any page below Home: ‹ and where it goes.

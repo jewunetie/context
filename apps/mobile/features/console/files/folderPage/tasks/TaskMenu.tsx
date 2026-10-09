@@ -1,7 +1,7 @@
 /**
  * A task row's menu, and the one small step some of its rows lead to: an
  * owner picked, a new tag typed, a day typed. What is offered, and what each
- * row does, is `useTaskMenu` (over `taskMenu.ts` and `menuRun.ts`).
+ * row does, is `useTaskMenu` (over `taskMenuItems.ts` and `menuRun.ts`).
  *
  * One menu, two presentations, chosen by `Menu` itself: a popover at the
  * pointer, and on a phone a sheet from the bottom whose Priority page is a

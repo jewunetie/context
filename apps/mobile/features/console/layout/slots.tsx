@@ -11,7 +11,7 @@ import { saveChip } from "../files/status";
 import { SyncPill } from "../files/SyncSheet";
 import type { useTabs } from "../files/useTabs";
 import { PhoneBack } from "../home/PhoneBack";
-import { phoneBackTarget } from "../home/phoneBack";
+import { phoneBackTarget } from "../home/phoneBackTarget";
 import { SwitcherMenu } from "../SwitcherMenu";
 import type { ConsoleData } from "../types";
 import type { ConsoleRouter } from "./types";
@@ -58,7 +58,7 @@ export function consoleSyncSlot({
 
 /**
  * The phone's top-left: the workspace's own button on Home, and ‹ back on
- * every page below it (owner, 2026-10-01). See `home/phoneBack.ts`.
+ * every page below it (owner, 2026-10-01). See `home/phoneBackTarget.ts`.
  *
  * A signed-out visitor keeps Sign in beside the back button: it is the one call
  * to action the top bar carries, and the homepage opens on a page, not on Home.

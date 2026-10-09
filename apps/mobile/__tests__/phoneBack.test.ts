@@ -1,5 +1,5 @@
 import { describe, expect, test } from "@jest/globals";
-import { HOME_LABEL, phoneBackTarget, slideDirection } from "../features/console/home/phoneBack";
+import { HOME_LABEL, phoneBackTarget, slideDirection } from "../features/console/home/phoneBackTarget";
 
 /**
  * Where the phone's ‹ goes and which way a page slides (owner's review,

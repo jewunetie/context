@@ -47,11 +47,6 @@
  * RED: the suite failed to load before `relatedAnswer.ts` existed; with the
  * parser and panel written, both reachability tests failed until
  * `BrowseDocument` handed the panel to the note.
- *
- * The phone test mounts the whole console, which on a case-insensitive disk
- * (macOS default) resolves `home/PhoneBack` to `phoneBack.ts` and fails for
- * every phone mount in `noteChrome/`, before and after this change. It passes
- * on a case-sensitive volume, as CI's is.
  */
 
 import { afterEach, beforeEach, describe, expect, jest, test } from "@jest/globals";

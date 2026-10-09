@@ -1,5 +1,5 @@
 /**
- * A task row's menu, once: what it offers a row (`taskMenu.ts`) and what
+ * A task row's menu, once: what it offers a row (`taskMenuItems.ts`) and what
  * picking an id does (`menuRun.ts`), for every surface that reaches it — the
  * right-click popover, the phone's ⋯ and press-and-hold sheet, and a swipe
  * left. None of them keeps a list of its own; each asks this.
@@ -20,7 +20,7 @@ import { runMenuAction, writtenPriority, type MenuAsk } from "./menuRun";
 import type { SheetValues } from "./phoneSheet";
 import type { ProjectRef } from "./taskEdits";
 import type { TaskHost } from "./taskHost";
-import { taskMenuAction, taskMenuItems } from "./taskMenu";
+import { taskMenuAction, taskMenuItems } from "./taskMenuItems";
 import { dueLabel } from "./taskWords";
 import type { TaskControls } from "./useTaskActions";
 import { isParked } from "./backlogFolder";

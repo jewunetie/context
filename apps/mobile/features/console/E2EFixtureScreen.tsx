@@ -5,7 +5,7 @@ import { SwitcherMenu } from "./SwitcherMenu";
 import { BrowsePane } from "./panes/BrowsePane";
 import { ConsoleNavProvider, type ConsoleNav } from "./ConsoleNavContext";
 import { PhoneBack } from "./home/PhoneBack";
-import { phoneBackTarget } from "./home/phoneBack";
+import { phoneBackTarget } from "./home/phoneBackTarget";
 import type { CheckoutOutcome } from "@context/shared";
 import { SettingsOverlay } from "./settings/SettingsOverlay";
 import {

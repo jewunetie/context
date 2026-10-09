@@ -9,7 +9,7 @@ import { previewPagePath } from "../castPreview";
 import type { HomePage } from "../homeSite";
 import { castActorNamed, castMemberId, paceNamed, playCast, type CastWorkspace } from "./castRun";
 import { NO_COMMENTS, commentsAfter, type CastComments } from "./castComments";
-import { chatReducer, type ChatState } from "./castChat";
+import { chatReducer, type ChatState } from "./castChatState";
 import { phoneShowsAfter, phoneShowsCut } from "./castCamera";
 import { castPresence } from "./castSite";
 import type { StudioStage } from "./useStudioStage";

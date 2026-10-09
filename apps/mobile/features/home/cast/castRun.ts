@@ -32,7 +32,7 @@ import type { PresenceMember } from "../../console/presence/protocol";
 import { agentName } from "../../console/presence/agentName";
 import { presenceColors } from "../../design/tokens";
 import { toBase64, type SharedDoc } from "../../console/presence/sharedDoc";
-import { chatTool, type CastChatEvent } from "./castChat";
+import { chatTool, type CastChatEvent } from "./castChatState";
 import { terminalSteps } from "./castTerminalPlay";
 
 /** The origin of every transaction the cast makes; anything else is the visitor. */

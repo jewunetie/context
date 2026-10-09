@@ -3,7 +3,7 @@ import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-n
 import { Icon } from "../../design/components/Icon";
 import { useTheme } from "../../design/theme";
 import { fonts, pointerType, radii, space, type CastTerminalLookColors } from "../../design/tokens";
-import type { ChatMessage, ChatTool, ChatWindow } from "./castChat";
+import type { ChatMessage, ChatTool, ChatWindow } from "./castChatState";
 import { SYSTEM_FONT, diffCount, diffSide, outputTone } from "./castLook";
 
 /** One of a scene's assistants, as a tab across the top of the one window a phone shows. */

@@ -49,7 +49,7 @@
 import { isMessageAnchor } from "../../../../packages/communications/src/anchors.js";
 import { FENCE_MARKER } from "../../../../packages/communications/src/note.js";
 import { isChannelDayNotePath } from "../../../../packages/communications/src/paths.js";
-import { isDrawingPath } from "../../../../packages/drawings/src/excalidraw.js";
+import { isDrawingPath, parseDrawing } from "../../../../packages/drawings/src/excalidraw.js";
 import comments from "../../../../packages/shared/src/comments.cjs";
 import { NOTE_INDEX_CHAR_CAP } from "./maintain.js";
 import { chunkNote } from "./chunk.js";
@@ -283,13 +283,16 @@ export function subDocumentsFor(path, full) {
  * - **Comments are stripped before chunking** (`comments.cjs`, as
  *   `extractFields` does for a whole note), so a comment block cut by a chunk
  *   boundary is still removed whole; the cap counts the note's own words.
- * - **A drawing is one document**, its first `cap` characters: `extractFields`
- *   reads a drawing's words out of the parsed file, which a fragment is not.
+ * - **A drawing is one document**: its text up to `cap` characters, or past
+ *   that its parsed labels and links (`drawingDigest`), because
+ *   `extractFields` reads a drawing's words out of the parsed file, which a
+ *   fragment cut mid-payload is not.
  */
 function chunkDocuments(path, text, chunk) {
   if (isDrawingPath(path)) {
-    const content = text.slice(0, chunk.cap);
-    return [{ key: path, notePath: path, anchor: null, content, comms: null, ...(text.length > chunk.cap ? { partial: true } : {}) }];
+    if (text.length <= chunk.cap) return [{ key: path, notePath: path, anchor: null, content: text, comms: null }];
+    const { content, partial } = drawingDigest(path, text, chunk.cap);
+    return [{ key: path, notePath: path, anchor: null, content, comms: null, ...(partial ? { partial: true } : {}) }];
   }
   const words = comments.stripComments(text.replace(/\r\n/g, "\n"));
   const { chunks, partial } = chunkNote(path, words, chunk);
@@ -305,6 +308,33 @@ function chunkDocuments(path, text, chunk) {
     comms: null,
     ...(partial && index === chunks.length - 1 ? { partial: true } : {}),
   }));
+}
+
+/**
+ * A drawing longer than `cap`, rewritten as a short drawing `extractFields`
+ * reads the same way: its frontmatter, every label (the Markdown half and the
+ * payload's elements) as ONE line behind a "- " so no label can read as a
+ * heading or the `%%` marker, and its link targets as `id: target` lines. The
+ * parse is the one `read_note` already does, bounded by the drawing module's
+ * own payload and element limits.
+ *
+ * `partial` is true when something was still lost: the digest itself is cut at
+ * `cap`, the element limit applied, or the payload could not be read.
+ */
+function drawingDigest(path, text, cap) {
+  const drawing = parseDrawing(text, path);
+  const oneLine = (value) => String(value).replace(/\s+/g, " ").trim();
+  const labels = new Set(drawing.textElements.map((element) => oneLine(element.text)));
+  const links = [...drawing.elementLinks.values(), ...drawing.embeddedFiles.values()].map(String);
+  for (const element of drawing.elements ?? []) {
+    if (typeof element.text === "string") labels.add(oneLine(element.text));
+    if (typeof element.link === "string") links.push(element.link);
+  }
+  labels.delete("");
+  const frontmatter = /^---\n[\s\S]*?\n---[ \t]*\n/.exec(text)?.[0] ?? "";
+  const digest = `${frontmatter.slice(0, 2_000)}## Text Elements\n- ${[...labels].join(" ")}\n\n## Element Links\n${links.map((link, i) => `l${i}: ${oneLine(link)}`).join("\n")}\n`;
+  const lost = drawing.truncated || !["missing", null].includes(drawing.unreadable);
+  return { content: digest.slice(0, cap), partial: digest.length > cap || lost };
 }
 
 /**

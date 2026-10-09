@@ -138,8 +138,11 @@ becomes documents.
 - **Comments and drawings.** Comment blocks (`comments.cjs`) are stripped
   before chunking, so a block cut by a chunk boundary is never indexed in part;
   the cap counts the note's own words. A drawing (`*.excalidraw.md`) is not
-  chunked: it stays one whole-note document holding its first `cap`
-  characters (with `partial` when cut), because `extractFields` reads a
+  chunked: it stays one whole-note document, its text when that fits in `cap`.
+  A longer drawing is parsed and indexed as a short digest (frontmatter, every
+  label, link targets; `drawingDigest` in `commsIndex.js`) instead of being cut
+  mid-payload, with `partial` only when the element limit, an unreadable
+  payload or the digest's own cut lost something. `extractFields` reads a
   drawing's words from the parsed file, which a fragment is not.
 - **Titles.** Chunk 0's content is its text. A later chunk's content is the
   note's first heading, as one `# <title>` line, followed by the chunk text, so

@@ -7,6 +7,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { compressToBase64 } from "../../../packages/drawings/src/lzstring.js";
+import { subDocumentsFor } from "../src/search/commsIndex.js";
 import { extractFields } from "../src/search/indexer.js";
 import { createSearchBudget } from "../src/search/maintain.js";
 import { syncShardedIndex } from "../src/search/shards.js";
@@ -115,4 +117,55 @@ test("B3: pathological headings finish within a fixed bound", () => {
     const ms = performance.now() - start;
     assert.ok(ms < 250, `${ms.toFixed(0)} ms for ${text.slice(0, 12).replace(/\s/g, "_")}`);
   }
+});
+
+// -- B4: drawings past the 64,000-character cap ---------------------------------
+
+/** A drawing whose labels live only in the payload, `count` elements long. */
+function bigDrawing({ count, compressed, marked = { 1900: "zebrafinch" } }) {
+  const elements = [];
+  let state = 12345;
+  const noise = () => Array.from({ length: 60 }, () => ((state = (state * 1103515245 + 12345) % 2147483648) >> 8).toString(36)).join("");
+  for (let i = 0; i < count; i += 1) {
+    elements.push({ noise: noise(), id: `el${i}`, type: "text", x: i, y: i, text: marked[i] ?? `ordinary label ${i}`, strokeColor: "#1e1e1e", seed: 12345 + i, link: marked[i] ? "[[notes/target]]" : null });
+  }
+  const json = JSON.stringify({ type: "excalidraw", elements }, null, 2);
+  const fence = compressed ? "compressed-json" : "json";
+  const payload = compressed ? compressToBase64(json) : json;
+  return `---\nexcalidraw-plugin: parsed\ntags: [diagram]\n---\n# Excalidraw Data\n\n## Text Elements\nfirst label ^abc\n\n## Drawing\n\`\`\`${fence}\n${payload}\n\`\`\`\n`;
+}
+
+for (const compressed of [false, true]) {
+  test(`B4: a ${compressed ? "compressed" : "plain"} drawing over the cap still indexes the labels past it`, async () => {
+    const path = "d/big.excalidraw.md";
+    const drawing = bigDrawing({ count: 2000, compressed });
+    assert.ok(drawing.length > 64_000, `${drawing.length} characters`);
+    const docs = subDocumentsFor(path, drawing);
+    assert.equal(docs.length, 1);
+    assert.ok(docs[0].content.length <= 64_000);
+    const fields = extractFields(path, docs[0].content);
+    assert.ok(fields.body.includes("zebrafinch") && fields.body.includes("ordinary label 1999"), "labels past the cut");
+    assert.ok(fields.body.includes("first label"), "the Markdown half labels stay");
+    assert.deepEqual(fields.tags, ["diagram"]);
+    assert.equal(fields.title, "big");
+    assert.deepEqual(fields.links, ["d/notes/target.md"]);
+    assert.equal(docs[0].partial, undefined, "everything was read, so recall is not reduced");
+    const bucket = bucketWith({ [path]: drawing, "n/other.md": "# Other\n\nnothing relevant here\n" });
+    await build(bucket);
+    assert.deepEqual(await ranked(bucket, "zebrafinch"), [path]);
+  });
+}
+
+test("B4: a drawing past the element limit is still indexed, and reported as partial", () => {
+  const drawing = bigDrawing({ count: 5100, compressed: false, marked: { 10: "earlyfinch", 5050: "latefinch" } });
+  const [doc] = subDocumentsFor("d/huge.excalidraw.md", drawing);
+  const body = extractFields("d/huge.excalidraw.md", doc.content).body;
+  assert.ok(body.includes("earlyfinch") && !body.includes("latefinch"));
+  assert.equal(doc.partial, true);
+});
+
+test("B4: a label that looks like a heading or the payload marker does not end the label list", () => {
+  const drawing = bigDrawing({ count: 2000, compressed: false, marked: { 5: "# Not a heading", 6: "%%", 1900: "zebrafinch" } });
+  const [doc] = subDocumentsFor("d/odd.excalidraw.md", drawing);
+  assert.ok(extractFields("d/odd.excalidraw.md", doc.content).body.includes("zebrafinch"));
 });

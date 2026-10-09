@@ -331,11 +331,14 @@ test("a drawing stays one whole-note document, indexed up to the cap", async () 
   const bucket = bucketWith({ [path]: drawing });
   await build(bucket);
   assert.ok((await storedTerms(bucket)).has("secretlabel119"), "a label far past 2,048 characters is indexed");
-  // Past the cap, the one document is cut there and reported as partial.
+  // Past the cap, the one document is the drawing's parsed labels and links
+  // (see `drawingDigest`), not a cut that lands mid-payload; every label was
+  // read, so recall is not reduced and the document is not partial.
   const huge = subDocumentsFor(path, drawing + " ".repeat(64_000));
   assert.equal(huge.length, 1);
-  assert.equal(huge[0].content.length, 64_000);
-  assert.equal(huge[0].partial, true);
+  assert.ok(huge[0].content.length <= 64_000);
+  assert.equal(huge[0].partial, undefined);
+  assert.ok(indexedTermsOf(path, huge).has("secretlabel119"), "a label far past 2,048 characters is still indexed");
 });
 
 test("comments are stripped before chunking: no comment word is indexed at any chunk boundary", () => {

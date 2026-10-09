@@ -310,6 +310,9 @@ function chunkDocuments(path, text, chunk) {
   }));
 }
 
+/** Most characters of a drawing `drawingDigest` hands the parser. */
+const DRAWING_PARSE_CAP = 4_200_000;
+
 /**
  * A drawing longer than `cap`, rewritten as a short drawing `extractFields`
  * reads the same way: its frontmatter, every label (the Markdown half and the
@@ -322,18 +325,33 @@ function chunkDocuments(path, text, chunk) {
  * `cap`, the element limit applied, or the payload could not be read.
  */
 function drawingDigest(path, text, cap) {
-  const drawing = parseDrawing(text, path);
-  const oneLine = (value) => String(value).replace(/\s+/g, " ").trim();
-  const labels = new Set(drawing.textElements.map((element) => oneLine(element.text)));
-  const links = [...drawing.elementLinks.values(), ...drawing.embeddedFiles.values()].map(String);
+  // Bounded work: parse at most DRAWING_PARSE_CAP characters (a longer payload
+  // reads as unreadable, the Markdown-half labels stay), and stop collecting
+  // once the digest would pass `cap`.
+  const drawing = parseDrawing(text.slice(0, DRAWING_PARSE_CAP), path);
+  let cut = text.length > DRAWING_PARSE_CAP;
+  let used = 0;
+  const labels = new Set();
+  const links = [];
+  const oneLine = (value) => String(value).slice(0, cap + 1).replace(/\s+/g, " ").trim();
+  const collect = (value, into) => {
+    if (used > cap) { cut = true; return; }
+    const line = oneLine(value);
+    if (line.length > cap) cut = true;
+    if (!line) return;
+    if (into === labels ? labels.has(line) : false) return;
+    if (into === labels) labels.add(line); else links.push(line);
+    used += line.length + 6;
+  };
+  for (const element of drawing.textElements) collect(element.text, labels);
+  for (const target of [...drawing.elementLinks.values(), ...drawing.embeddedFiles.values()]) collect(target, links);
   for (const element of drawing.elements ?? []) {
-    if (typeof element.text === "string") labels.add(oneLine(element.text));
-    if (typeof element.link === "string") links.push(element.link);
+    if (typeof element.text === "string") collect(element.text, labels);
+    if (typeof element.link === "string") collect(element.link, links);
   }
-  labels.delete("");
-  const frontmatter = /^---\n[\s\S]*?\n---[ \t]*\n/.exec(text)?.[0] ?? "";
-  const digest = `${frontmatter.slice(0, 2_000)}## Text Elements\n- ${[...labels].join(" ")}\n\n## Element Links\n${links.map((link, i) => `l${i}: ${oneLine(link)}`).join("\n")}\n`;
-  const lost = drawing.truncated || !["missing", null].includes(drawing.unreadable);
+  const frontmatter = /^---\n[\s\S]*?\n---[ \t]*\n/.exec(text.slice(0, 4_000))?.[0] ?? "";
+  const digest = `${frontmatter.slice(0, 2_000)}## Text Elements\n- ${[...labels].join(" ")}\n\n## Element Links\n${links.map((link, i) => `l${i}: ${link}`).join("\n")}\n`;
+  const lost = cut || drawing.truncated || !["missing", null].includes(drawing.unreadable);
   return { content: digest.slice(0, cap), partial: digest.length > cap || lost };
 }
 

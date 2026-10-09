@@ -41,6 +41,10 @@ export { porter2 };
 const CJK_RUN = /[\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}\u30FC]{2,}/gu;
 const CAMEL = /\p{Ll}\p{N}*\p{Lu}/u;
 const CASE_SPLIT = /(?<=\p{Ll})(?=\p{Lu})|(?<=\p{Lu})(?=\p{Lu}\p{Ll})/u;
+// A number then a unit ("16GB", "3.5mm", "1,000kg"), split so "16 GB" meets it.
+// An ordinal suffix ("1st", "3rd") is not a unit.
+const NUMBER_UNIT = /^(\d+(?:[.,]\d+)*)(\p{L}+)$/u;
+const ORDINAL = /^(?:st|nd|rd|th)$/i;
 const DIGIT_SPLIT = /(?<=\p{L})(?=\p{N})|(?<=\p{N})(?=\p{L})/u;
 
 let segmenter = { ctor: null, instance: null, selfTest: false };
@@ -89,6 +93,8 @@ function foldLatin(piece) {
  * "e.g" and "__init__" add nothing.
  */
 function splitWord(word) {
+  const unit = NUMBER_UNIT.exec(word);
+  if (unit && !ORDINAL.test(unit[2])) return { wholes: [word.toLowerCase()], parts: [unit[1], unit[2]] };
   if (!/[_.]/.test(word) && !CAMEL.test(word)) return { wholes: [], parts: [word] };
   const parts = word.split(/[_.]/).flatMap((part) => {
     const byCase = part.split(CASE_SPLIT);
@@ -107,7 +113,7 @@ function termsOfPiece(piece) {
 }
 
 /**
- * The tokenizer (PLAN P9, rulings OPEN-48 to OPEN-52): NFKC and U+2019
+ * The tokenizer (PLAN P9, rulings OPEN-48 to OPEN-52): NFKC and U+2018, U+2019, U+02BC
  * to an ASCII apostrophe; `Intl.Segmenter` words (or `[\p{L}\p{N}_.']+` runs
  * when it is absent); identifier split on the original case; each piece
  * lowercased, Latin accents folded, length >= 2, Porter2 for Latin-script
@@ -117,7 +123,7 @@ function termsOfPiece(piece) {
  */
 function tokenizeWords(text, { pieces }) {
   if (typeof text !== "string" || !text) return [];
-  const normal = text.normalize("NFKC").replace(/\u2019/g, "'");
+  const normal = text.normalize("NFKC").replace(/[\u2018\u2019\u02BC]/g, "'");
   const { instance } = wordSegmenter();
   // lean: the Segmenter-less fallback is a stopgap with two known defects. It
   // has no combining marks (`\p{M}`), so Devanagari and Thai split at vowel

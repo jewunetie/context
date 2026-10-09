@@ -169,3 +169,71 @@ test("B4: a label that looks like a heading or the payload marker does not end t
   const [doc] = subDocumentsFor("d/odd.excalidraw.md", drawing);
   assert.ok(extractFields("d/odd.excalidraw.md", doc.content).body.includes("zebrafinch"));
 });
+
+// -- B5: further tokenizer gaps -------------------------------------------------
+
+test("B5: other apostrophe marks (U+2018, U+02BC) read as the ASCII apostrophe", async () => {
+  for (const mark of ["'", "’", "‘", "ʼ"]) assert.deepEqual(termsOf(`owner${mark}s`), ["owner"], JSON.stringify(mark));
+  const bucket = bucketWith({ "n/a.md": "# Notes\n\nThe owner\u02BCs manual is here.\n" });
+  await build(bucket);
+  assert.deepEqual(await ranked(bucket, "owner's"), ["n/a.md"]);
+});
+
+test("B5: a number with a unit is found by the same words written apart", async () => {
+  const bucket = bucketWith({
+    "n/stuck.md": "# Laptop\n\nThe machine has 16GB RAM and a 512GB disk, weighs 1,5kg.\n",
+    "n/apart.md": "# Phone\n\nIt ships with 8 GB of memory.\n",
+    "n/ordinal.md": "# Race\n\nShe came 1st and he came 2nd in the 3rd heat.\n",
+  });
+  await build(bucket);
+  const sixteen = await ranked(bucket, "16 GB");
+  assert.deepEqual(sixteen, ["n/stuck.md", "n/apart.md"], "the 16 and the gb both match the first");
+  assert.ok((await ranked(bucket, "8GB")).includes("n/apart.md"));
+  assert.ok((await ranked(bucket, "512 gb")).includes("n/stuck.md"));
+  assert.deepEqual(termsOf("3.5mm"), ["3.5mm", "3.5", "mm"]);
+  assert.deepEqual(termsOf("10-20GB"), ["10", "20gb", "20", "gb"]);
+  // Ordinals are not split into a stray "st" or "rd" term.
+  assert.deepEqual(termsOf("1st 2nd 3rd 4th"), ["1st", "2nd", "3rd", "4th"]);
+  // A letter-first name stays whole, as ruling OPEN-50 has it.
+  assert.deepEqual(termsOf("Base64 ES2022"), ["base64", "es2022"]);
+});
+
+test("B5: checked and left alone", () => {
+  // Possessives, plural acronyms, hyphenated compounds, e-mail and URLs already resolve to the shared terms.
+  assert.deepEqual(termsOf("APIs"), termsOf("API"));
+  assert.deepEqual(termsOf("owners’"), termsOf("owner"));
+  assert.deepEqual(termsOf("state-of-the-art"), ["state", "of", "the", "art"]);
+  const mail = termsOf("jane.doe@example.com");
+  for (const term of termsOf("jane doe example com")) assert.ok(mail.includes(term), term);
+  assert.ok(termsOf("see https://example.com/a?x=1 ok").includes("example.com"));
+  assert.deepEqual(termsOf("end, (really)! \"quoted\""), ["end", "realli", "quot"]);
+});
+
+// -- B4 bounds: the digest does bounded work and never passes the cap -----------
+
+test("B4: very large drawings finish within a fixed bound and stay within the cap", () => {
+  const frame = (payload, labels = "first ^abc") => `---\nexcalidraw-plugin: parsed\n---\n# Excalidraw Data\n\n## Text Elements\n${labels}\n\n## Drawing\n\`\`\`json\n${payload}\n\`\`\`\n`;
+  const elements = (count, size) => JSON.stringify({ type: "excalidraw", elements: Array.from({ length: count }, (_, i) => ({ id: `e${i}`, type: "text", text: `label${i} ${"w".repeat(size)}`, link: `[[t${i}]]` })) });
+  const cases = {
+    "several MB over the element limit": frame(elements(5000, 700)),
+    "tens of thousands of elements": frame(elements(40_000, 4)),
+    "a 3.5 MB compressed payload": frame(Array.from({ length: 3_500_000 }, (_, i) => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"[(i * 2654435761 >>> 7) % 64]).join("")).replace("```json", "```compressed-json"),
+    "one label of 3 MB": frame(JSON.stringify({ elements: [{ type: "text", text: "x".repeat(3_000_000) }] })),
+    "5 MB of Markdown-half labels": frame("{}", Array.from({ length: 100_000 }, (_, i) => `label ${i} ${"y".repeat(40)} ^i${i}`).join("\n\n")),
+    "5 MB without a closing fence": `---\ntags: [a]\n${"-".repeat(10)}\n${"z".repeat(5_000_000)}`,
+    "unterminated frontmatter": `---\n${"a\n".repeat(2_500_000)}`,
+  };
+  for (const [name, drawing] of Object.entries(cases)) {
+    assert.ok(drawing.length > 1_000_000, name);
+    const start = performance.now();
+    const docs = subDocumentsFor("d/big.excalidraw.md", drawing);
+    const ms = performance.now() - start;
+    assert.ok(ms < 2000, `${name}: ${ms.toFixed(0)} ms`);
+    assert.equal(docs.length, 1);
+    assert.ok(docs[0].content.length <= 64_000, `${name}: ${docs[0].content.length} characters`);
+    assert.equal(docs[0].partial, true, `${name} drops something`);
+    const start2 = performance.now();
+    extractFields("d/big.excalidraw.md", docs[0].content);
+    assert.ok(performance.now() - start2 < 500, name);
+  }
+});

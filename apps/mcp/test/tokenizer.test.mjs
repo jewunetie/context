@@ -43,7 +43,7 @@ import { porter2, segmenterSelfTest, termsOf } from "../src/search/text.js";
 // generateCorpus({ size: 100 }). Any change to the tokenizer's output changes
 // it, which is the point: an index built with other terms is never served
 // (bump INDEX_FORMAT_VERSION in the same change).
-const CORPUS_DIGEST = "a66eaaaf3ac73a236deb4e8aa11d46c2e3cf352051b9fb8a534200b8fed49ad6";
+const CORPUS_DIGEST = "ffc552ad306002e5a7c23b35c373d5d03bc863ebe4f850e07316e72df8dae91a";
 
 const digest = (s) => createHash("sha256").update(s).digest("hex");
 

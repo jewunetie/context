@@ -123,3 +123,8 @@ A snake_case or dotted identifier is indexed whole, joined without separators an
 ("foo_bar_baz", "foobarbaz", "foo", "bar", "baz"), as camelCase already was, so a query in any of
 those conventions finds it. Kebab names are split into words by the segmenter and are not joined.
 
+A number glued to a unit ("16GB", "3.5mm") also yields the number and the unit, so "16 GB" meets it
+(ordinals like "1st" are left whole). U+2018 and U+02BC read as the ASCII apostrophe, like U+2019.
+A drawing over the 64,000-character cap is indexed as a digest of its parsed labels and links, with
+bounded parsing (4.2 million characters) and collection, instead of a cut mid-payload.
+

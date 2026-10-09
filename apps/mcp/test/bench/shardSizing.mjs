@@ -201,7 +201,8 @@ async function measure({ days, perDay, plainNotes = 200, budget = 600, maxPasses
     }
   }
 
-  const shardKeys = [...bucket.objects.keys()].filter((key) => key.startsWith(`${SEARCH_PREFIX}v2/shard-`));
+  // The live shards are the revisions the manifest names.
+  const shardKeys = JSON.parse(bucket.objects.get(`${SEARCH_PREFIX}index/manifest.json`).body).shards.filter(Boolean).map((entry) => entry.key);
   const eachShard = shardKeys.map((key) => encoder.encode(bucket.objects.get(key).body).length);
   const shardBytes = eachShard.reduce((total, bytes) => total + bytes, 0);
   // The number the 2MB cap is actually about: a total spread over 64 shards
@@ -212,8 +213,8 @@ async function measure({ days, perDay, plainNotes = 200, budget = 600, maxPasses
   // spend half of `MANIFEST_PARSE_BYTE_CAP`.
   const sizeOf = (key) =>
     bucket.objects.has(key) ? encoder.encode(bucket.objects.get(key).body).length : 0;
-  const manifestBytes = sizeOf(`${SEARCH_PREFIX}v2/manifest.json`);
-  const docmapBytes = sizeOf(`${SEARCH_PREFIX}v2/docmap.json`);
+  const manifestBytes = sizeOf(`${SEARCH_PREFIX}index/manifest.json`);
+  const docmapBytes = sizeOf(`${SEARCH_PREFIX}index/docmap.json`);
 
   const run = async (query) => {
     const started = Date.now();

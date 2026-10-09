@@ -81,14 +81,23 @@ function foldLatin(piece) {
   return piece.normalize("NFD").replace(/(\p{Script=Latin})\p{Mn}+/gu, "$1").normalize("NFC");
 }
 
-/** OPEN-50: the whole identifier (lowercased, unstemmed), then its parts. */
+/**
+ * OPEN-50: the whole identifier (lowercased, unstemmed), then its parts. A
+ * snake_case or dotted identifier also yields its joined form ("foo_bar_baz"
+ * and "foobarbaz"), so a query typed in either convention, camelCase included,
+ * finds it. Joined only when two parts have two or more characters, so
+ * "e.g" and "__init__" add nothing.
+ */
 function splitWord(word) {
-  if (!/[_.]/.test(word) && !CAMEL.test(word)) return { whole: null, parts: [word] };
+  if (!/[_.]/.test(word) && !CAMEL.test(word)) return { wholes: [], parts: [word] };
   const parts = word.split(/[_.]/).flatMap((part) => {
     const byCase = part.split(CASE_SPLIT);
     return CAMEL.test(part) ? byCase.flatMap((p) => p.split(DIGIT_SPLIT)) : byCase;
   });
-  return { whole: word.toLowerCase(), parts };
+  const whole = word.toLowerCase();
+  const joined = whole.replace(/[_.]/g, "");
+  const wholes = joined !== whole && /\p{L}/u.test(joined) && parts.filter((p) => p.length >= 2).length >= 2 ? [whole, joined] : [whole];
+  return { wholes, parts };
 }
 
 function termsOfPiece(piece) {
@@ -124,8 +133,8 @@ function tokenizeWords(text, { pieces }) {
 
   const located = [];
   for (const { at, word } of words) {
-    const { whole, parts } = splitWord(word);
-    if (whole && whole.length >= 2) located.push([at, whole]);
+    const { wholes, parts } = splitWord(word);
+    for (const whole of wholes) if (whole.length >= 2) located.push([at, whole]);
     for (const part of parts) for (const term of termsOfPiece(part)) located.push([at, term]);
   }
   if (pieces) for (const [at, piece] of locatedPieces(normal)) located.push([at, piece]);

@@ -17,7 +17,7 @@ import { createSearchBudget } from "../src/search/maintain.js";
 import { generateLinks } from "./fixtures/searchCorpus.js";
 import { memoryBucket } from "./store/fixtures.mjs";
 
-const INDEX_DIGEST = "9eeef43ac06cbc1cc71c5346393a59e62326351361c8f8ad75620b71b7ad5268";
+const INDEX_DIGEST = "fec7113aabd2c37b731dabd131f8da20a2b3ecb51a167c1bfeb86fa992e4b8fb";
 const NOW = Date.parse("2026-01-01T00:00:00Z");
 const UPLOADED = new Date("2025-12-01T00:00:00Z");
 

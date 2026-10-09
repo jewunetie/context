@@ -119,3 +119,7 @@ source; a form that is itself another common word ("saw", "found", "left", "lay"
 pinned by `test/irregular.test.mjs`. Changing a table changes terms, so bump
 `INDEX_FORMAT_VERSION` with it.
 
+A snake_case or dotted identifier is indexed whole, joined without separators and in parts
+("foo_bar_baz", "foobarbaz", "foo", "bar", "baz"), as camelCase already was, so a query in any of
+those conventions finds it. Kebab names are split into words by the segmenter and are not joined.
+

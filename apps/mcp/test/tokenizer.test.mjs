@@ -43,7 +43,7 @@ import { porter2, segmenterSelfTest, termsOf } from "../src/search/text.js";
 // generateCorpus({ size: 100 }). Any change to the tokenizer's output changes
 // it, which is the point: an index built with other terms is never served
 // (bump INDEX_FORMAT_VERSION in the same change).
-const CORPUS_DIGEST = "9b97830d7b669cb40f242a7bbfbfeb6d001b30a7ec3f17e03a6a057f16ea9a43";
+const CORPUS_DIGEST = "a66eaaaf3ac73a236deb4e8aa11d46c2e3cf352051b9fb8a534200b8fed49ad6";
 
 const digest = (s) => createHash("sha256").update(s).digest("hex");
 
@@ -115,12 +115,12 @@ test("ASCII and typographic apostrophes both give gateway", () => {
   assert.deepEqual(termsOf("gateway’s"), ["gateway"]);
 });
 
-test("bench CODE identifiers emit whole and split forms", () => {
+test("bench CODE identifiers emit whole, joined (snake_case) and split forms", () => {
   assert.deepEqual(termsOf("Call `fetchUserProfile(userId)` before rendering."), [
     "call", "fetchuserprofile", "fetch", "user", "profil", "userid", "user", "id", "befor", "render",
   ]);
-  assert.deepEqual(termsOf("invoice_total_cents"), ["invoice_total_cents", "invoic", "total", "cent"]);
-  assert.deepEqual(termsOf("MAX_RETRY_COUNT"), ["max_retry_count", "max", "retri", "count"]);
+  assert.deepEqual(termsOf("invoice_total_cents"), ["invoice_total_cents", "invoicetotalcents", "invoic", "total", "cent"]);
+  assert.deepEqual(termsOf("MAX_RETRY_COUNT"), ["max_retry_count", "maxretrycount", "max", "retri", "count"]);
   assert.deepEqual(termsOf("parseHttpHeader"), ["parsehttpheader", "pars", "http", "header"]);
 });
 

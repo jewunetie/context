@@ -59,27 +59,38 @@ export function moveJobActive(job) {
   );
 }
 
-export async function loadMoveJobs(store) {
+/**
+ * Active move jobs, or null when the move state cannot be read (the listing or
+ * a marker read throws). A caller that would serve note text must fail closed
+ * on null: an unreadable move state is "moving or unknown", never "no moves".
+ * A marker that reads but does not parse is a damaged marker and is skipped, as
+ * before; the materializer reports the real failure when asked for that id.
+ */
+export async function loadMoveJobsOrNull(store) {
   const jobs = [];
-  let objects;
   try {
-    objects = await listAllKeys(store, MOVE_JOB_PREFIX);
-  } catch {
-    return jobs;
-  }
-  for (const { key } of objects) {
-    if (!key.endsWith(".json")) continue;
-    try {
+    for (const { key } of await listAllKeys(store, MOVE_JOB_PREFIX)) {
+      if (!key.endsWith(".json")) continue;
       const object = await getWithLegacyFallback(store, key);
       if (!object) continue;
-      const parsed = JSON.parse(await object.text());
+      const text = await object.text();
+      let parsed;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        continue;
+      }
       if (moveJobActive(parsed)) jobs.push(parsed);
-    } catch {
-      // A damaged move marker is not allowed to break ordinary reads. The
-      // materializer will report the real failure when asked for that id.
     }
+  } catch {
+    return null;
   }
   return jobs.sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));
+}
+
+/** Active move jobs; `[]` when the state cannot be read. Only for callers that never serve text on `[]`. */
+export async function loadMoveJobs(store) {
+  return (await loadMoveJobsOrNull(store)) ?? [];
 }
 
 /**

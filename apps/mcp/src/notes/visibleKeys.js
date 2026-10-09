@@ -7,6 +7,7 @@
 import {
   applyMoveOverlay,
   loadMoveJobs,
+  loadMoveJobsOrNull,
   movedSourceFor,
   noteUnderPrefix,
 } from "../moves/jobs.js";
@@ -52,7 +53,10 @@ export async function listVisibleNoteKeysWithMoves(store, scope, rules, override
  *   that must not exist twice — see the rows about second implementations.
  */
 export async function getVisibleMovedNote(store, scope, rules, overrides, path, fetchOne = getWithLegacyFallback) {
-  const jobs = await loadMoveJobs(store);
+  const jobs = await loadMoveJobsOrNull(store);
+  // Fail closed: an unreadable move state answers like a note that cannot be
+  // read, and says nothing about why.
+  if (jobs === null) return { object: null, physicalPath: path };
   if (jobs.some((job) => path.startsWith(`${job.source}/`))) {
     return { object: null, physicalPath: path };
   }

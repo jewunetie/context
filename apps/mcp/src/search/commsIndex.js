@@ -53,7 +53,7 @@ import { isDrawingPath } from "../../../../packages/drawings/src/excalidraw.js";
 import comments from "../../../../packages/shared/src/comments.cjs";
 import { NOTE_INDEX_CHAR_CAP } from "./maintain.js";
 import { chunkNote } from "./chunk.js";
-import { DEFAULT_FORMAT } from "./format.js";
+import { CHUNK } from "./format.js";
 import { extractFields } from "./indexer.js";
 
 export { isChannelDayNotePath as isChannelDayIndexPath };
@@ -246,24 +246,23 @@ function wholeNoteDocument(path, text) {
  * ciphertext, exactly as for every other encrypted note), and `visible.js`
  * still drops it at snippet time on `isEncryptedNote`.
  *
- * A chunked `format` (v3 only) indexes an ordinary note as its chunks instead,
- * see `chunkDocuments`; channel-day notes are unchanged by the format.
+ * An ordinary note is indexed as its chunks (`chunkDocuments`); channel-day
+ * notes are indexed per message.
  *
  * @param {string} path
  * @param {string} full uncapped note text
- * @param {{chunk: null|{target: number, max: number, cap: number}}} [format]
  * @returns {Array<{key: string, notePath: string, anchor: string|null,
  *   content: string, comms: object|null, chunk?: number, partial?: true}>}
  */
-export function subDocumentsFor(path, full, format = DEFAULT_FORMAT) {
+export function subDocumentsFor(path, full) {
   const text = typeof full === "string" ? full : "";
-  if (!isChannelDayNotePath(path)) return format?.chunk ? chunkDocuments(path, text, format.chunk) : [wholeNoteDocument(path, text)];
+  if (!isChannelDayNotePath(path)) return chunkDocuments(path, text, CHUNK);
   const messages = channelDaySubDocuments(path, text);
   return messages.length > 0 ? messages : [wholeNoteDocument(path, text)];
 }
 
 /**
- * An ordinary note under a chunked format (CONTRACT-v3.md "Chunked notes",
+ * An ordinary note (CONTRACT.md "Chunked notes",
  * ruling OPEN-53): one document `path#c<n>` per `chunkNote` chunk, all with
  * `notePath: path`, so visibility, the docmap version and per-note dedupe are
  * all decided on the note.
@@ -340,14 +339,12 @@ function chunkDocuments(path, text, chunk) {
  *
  * @param {string} path
  * @param {number} [size] the note's size in bytes, as the listing reported it
- * @param {{chunk: null|{cap: number}}} [format] the index format; a chunked one
- *   counts an ordinary note up to `format.chunk.cap` (CONTRACT-v3.md)
  * @returns {number}
  */
-export function indexVolumeOf(path, size, format = DEFAULT_FORMAT) {
+export function indexVolumeOf(path, size) {
   const bytes = Number.isFinite(size) && size > 0 ? size : NOTE_INDEX_CHAR_CAP;
-  // A chunked format indexes an ordinary note up to its cap (ruling OPEN-60).
-  if (!isChannelDayNotePath(path)) return Math.min(bytes, format?.chunk ? format.chunk.cap : NOTE_INDEX_CHAR_CAP);
+  // An ordinary note is indexed up to the chunk cap (ruling OPEN-60).
+  if (!isChannelDayNotePath(path)) return Math.min(bytes, CHUNK.cap);
   return Math.ceil(bytes * BUNDLED_VOLUME_FACTOR);
 }
 

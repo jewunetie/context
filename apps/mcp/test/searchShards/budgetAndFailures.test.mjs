@@ -15,8 +15,10 @@ import {
   parseShard,
   pathsForShard,
   serializeManifest,
-  shardKey,
+  shardKeyIn,
+  shardRevisionKeys,
   storedManifest,
+  shardHasNote,
   storedShard,
   syncShardedIndex,
 } from "./fixtures.mjs";
@@ -38,7 +40,7 @@ export async function runSearchShardsBudgetAndFailuresChecks(check) {
       "a manifest past its own cap is not written, and says so rather than reporting a clean pass",
       overflowed.manifestOverflow === true &&
         bucket.objects.has(MANIFEST_KEY) === false &&
-        bucket.objects.has(shardKey(0)) === true
+        shardRevisionKeys(bucket).length > 0
     );
     const recovered = await syncShardedIndex(store, { budget: createSearchBudget(60) });
     check(
@@ -115,14 +117,16 @@ export async function runSearchShardsBudgetAndFailuresChecks(check) {
         });
       }
       const before = new Map([...probe.objects].map(([key, entry]) => [key, entry.body]));
+      const keysBefore = [0, 1].map((id) => shardKeyIn(probe, id));
       const pass = await syncShardedIndex(new R2Store(probe), {
         budget: createSearchBudget(allowance),
       });
       probed += 1;
       if (pass.shards.size < 2) skipped += 1;
       for (const [id, shard] of pass.shards) {
-        if (probe.counts.puts.includes(shardKey(id))) continue;
-        const storedBefore = before.has(shardKey(id)) ? parseShard(before.get(shardKey(id))) : null;
+        // A shard the pass wrote is a new revision under its id's prefix.
+        if (probe.counts.puts.some((key) => key.startsWith(`.context/search/index/shards/${String(id).padStart(3, "0")}-`))) continue;
+        const storedBefore = before.has(keysBefore[id]) ? parseShard(before.get(keysBefore[id])) : null;
         if (storedBefore && shard.docs.size !== storedBefore.docs.size) handedBackEmpty += 1;
       }
     }
@@ -173,7 +177,7 @@ export async function runSearchShardsBudgetAndFailuresChecks(check) {
       "a note the store refuses to read is skipped and stays pending, and the rest still land",
       poisoned.pending === 1 &&
         storedShard(bucket, 0)?.docs.size === 5 &&
-        storedShard(bucket, 0).docs.has("1-projects/note-3.md") === false
+        shardHasNote(storedShard(bucket, 0), "1-projects/note-3.md") === false
     );
     bucket.failGetKeys.delete("1-projects/note-3.md");
     const healed = await converge(store);

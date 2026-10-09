@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, test } from "@jest/globals";
-import { DEFAULT_TOKENIZER as GATEWAY_DEFAULT, termsOf } from "../../mcp/src/search/text.js";
+import { termsOf } from "../../mcp/src/search/text.js";
 import { localTerms, searchLocalNotes, snippetFor } from "../features/home/localSearch";
 
 const NOTES = {
@@ -72,21 +72,15 @@ describe("snippetFor", () => {
 });
 
 /*
- * Parity with the gateway (Task 34, OPEN-62). The app tokenizes with the
- * gateway's own `termsOf`, so "indexer, query parser and local search switch
- * tokenizer together" holds by construction; these tests pin it.
+ * Parity with the gateway. The app tokenizes with the gateway's own `termsOf`,
+ * so "indexer, query parser and local search tokenize alike" holds by
+ * construction; this test pins it.
  *
  * Sabotage record (each guard broken once, named test confirmed red, restored):
- *  - `DEFAULT_TOKENIZER` set to 2: "the shared default is tokenizer 1", "app terms
- *    equal the gateway's terms" and the `private` snippet case failed.
- *  - `localTerms` pinned to tokenizer 1: "app terms equal the gateway's terms"
- *    failed, and so did the Chinese, identifier and snippet tokenizer 2 searches.
- *  - matching on the whole query string instead of its terms: the
- *    tokenizer 2 stem, identifier and snippet tests failed.
- *  - app given its own literal 2 while text.js stays 1: "app terms equal the
- *    gateway's terms" (the no-version check) failed.
- *  There is no second copy of the rules to drift (the app imports `termsOf`),
- *  so "one rule changed in one copy" is the second sabotage.
+ *  - `localTerms` given its own copy of the rules: "app terms equal the
+ *    gateway's terms" failed.
+ *  - matching on the whole query string instead of its terms: the stem,
+ *    identifier and snippet tests failed.
  */
 const FIXTURES = [
   "Pricing for the private plan",
@@ -99,34 +93,25 @@ const FIXTURES = [
 ];
 
 describe("parity with the gateway tokenizer", () => {
-  test("the shared default is tokenizer 1, and the app reads it", () => {
-    expect(GATEWAY_DEFAULT).toBe(1);
-  });
-
-  test("app terms equal the gateway's terms, term for term, for tokenizers 1 and 2", () => {
-    for (const version of [1, 2]) {
-      for (const text of FIXTURES) expect(localTerms(text, version)).toEqual(termsOf(text, version));
-    }
-    // No version argument on either side: both read the one shared default.
+  test("app terms equal the gateway's terms, term for term", () => {
     for (const text of FIXTURES) expect(localTerms(text)).toEqual(termsOf(text));
   });
-
 });
 
-describe("searchLocalNotes with the default tokenizer", () => {
+describe("searchLocalNotes prefix matching", () => {
   test("a prefix of a word finds it, and an infix no longer does", () => {
     expect(searchLocalNotes(NOTES, "pri").hits.map((h) => h.path)).toEqual(["02-pricing.md", "03-devlog.md"]);
     expect(searchLocalNotes(NOTES, "ate").hits).toEqual([]);
   });
 });
 
-describe("searchLocalNotes with tokenizer 2", () => {
+describe("searchLocalNotes with the shared tokenizer", () => {
   const notes = {
     "plan.md": "# Plan\n\n数据库迁移计划已经确认\n",
     "ship.md": "# Ship\n\nwe deployed on friday\n",
     "code.md": "# Code\n\ncall fetchUserProfile first\n",
   };
-  const paths = (query: string) => searchLocalNotes(notes, query, 20, 2).hits.map((h) => h.path);
+  const paths = (query: string) => searchLocalNotes(notes, query).hits.map((h) => h.path);
 
   test("a Chinese word inside a run finds the note", () => {
     expect(paths("迁移")).toEqual(["plan.md"]);
@@ -138,7 +123,7 @@ describe("searchLocalNotes with tokenizer 2", () => {
     expect(paths("user profile")).toEqual(["code.md"]);
   });
   test("the snippet is the line that matched", () => {
-    const [hit] = searchLocalNotes(notes, "user profile", 20, 2).hits;
+    const [hit] = searchLocalNotes(notes, "user profile").hits;
     expect(hit?.snippets).toEqual(["call fetchUserProfile first"]);
   });
 });

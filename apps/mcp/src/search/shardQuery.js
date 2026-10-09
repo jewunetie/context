@@ -417,16 +417,16 @@ function recencyMultiplier(uploaded, now) {
  *
  * @param {ReturnType<typeof collectShardCandidates>[]} perShardCollections
  * @param {string} query
- * @param {{ now?: Date|number, tokenizer?: 1 | 2 }} [options] `tokenizer` is the served index's
+ * @param {{ now?: Date|number }} [options]
  * @returns {{ path: string, score: number, matchedTerms: string[] }[]}
  */
-export function scoreCollected(perShardCollections, query, { now, tokenizer } = {}) {
+export function scoreCollected(perShardCollections, query, { now } = {}) {
   const collections = Array.isArray(perShardCollections) ? perShardCollections : [];
 
   const N = sumAcross(collections, (c) => c.visibleN);
   if (N === 0) return [];
 
-  const { phrases, terms } = parseQuery(query, tokenizer);
+  const { phrases, terms } = parseQuery(query);
   const queryTerms = [...new Set([...terms, ...phrases.flat()])]; // first-occurrence order preserved
   if (queryTerms.length === 0) return [];
 
@@ -511,7 +511,7 @@ export function scoreCollected(perShardCollections, query, { now, tokenizer } = 
   }
 
   /**
-   * The CJK fallback (ruling OPEN-48), tokenizer 2 only: a term the index never
+   * The CJK fallback (ruling OPEN-48): a term the index never
    * stored as a word is scored as its two-character pieces, on the docs that
    * hold every piece, each piece at its own df, all credited to `queryTerm` so
    * coverage still counts it once. The pieces' postings were gathered by the
@@ -521,7 +521,7 @@ export function scoreCollected(perShardCollections, query, { now, tokenizer } = 
    */
   function scorePieces(queryTerm) {
     const pieces = cjkPieces(queryTerm);
-    if (tokenizer !== 2 || pieces.length === 0) return false;
+    if (pieces.length === 0) return false;
     const merged = pieces.map((piece) => ({ piece, ...mergeDirectTerm(collections, piece) }));
     const together = [...merged[0].postings.keys()].filter((path) => merged.every((m) => m.postings.has(path)));
     if (together.length === 0) return false;

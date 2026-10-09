@@ -1,6 +1,6 @@
 import { indexVolumeOf, isBundledIndexPath } from "../commsIndex.js";
 import { SEARCH_PREFIX } from "../../../../../packages/shared/src/storageLayout.cjs";
-import { NOTES_PER_SHARD, INDEX_VOLUME_PER_SHARD, MAX_SHARD_COUNT, V3_SHARD_PREFIX } from "./constants.js";
+import { NOTES_PER_SHARD, INDEX_VOLUME_PER_SHARD, MAX_SHARD_COUNT, SHARD_PREFIX } from "./constants.js";
 import { emptyStats } from "./shapes.js";
 
 // -- placement -------------------------------------------------------------
@@ -182,21 +182,19 @@ export function growManifest(manifest, count) {
  * @param {Map<string, {version: string, uploaded: string|null, size: number|null}>} entries
  * @param {Map<string, number>} claimedShard
  * @param {number} volumeCap what one shard may be filled to
- * @param {object} [format] the index format, so a chunked note's load is its
- *   real volume (`indexVolumeOf`)
  * @returns {Map<string, number>} path → shard id, for unclaimed paths only
  */
-export function placeUnclaimed(manifest, entries, claimedShard, volumeCap, format) {
+export function placeUnclaimed(manifest, entries, claimedShard, volumeCap) {
   const load = manifest.stats.map(() => 0);
   for (const [path, id] of claimedShard) {
-    if (id < load.length) load[id] += indexVolumeOf(path, entries.get(path)?.size, format);
+    if (id < load.length) load[id] += indexVolumeOf(path, entries.get(path)?.size);
   }
 
   const bundled = [];
   const ordinary = [];
   for (const [path, listed] of entries) {
     if (claimedShard.has(path)) continue;
-    if (isBundledIndexPath(path)) bundled.push([path, indexVolumeOf(path, listed.size, format)]);
+    if (isBundledIndexPath(path)) bundled.push([path, indexVolumeOf(path, listed.size)]);
     else ordinary.push(path);
   }
   bundled.sort((a, b) => (b[1] - a[1]) || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
@@ -229,28 +227,14 @@ export function placeUnclaimed(manifest, entries, claimedShard, volumeCap, forma
   // document indexed twice.
   for (const path of ordinary) {
     const id = shardOf(path, manifest.shardCount);
-    load[id] += indexVolumeOf(path, entries.get(path)?.size, format);
+    load[id] += indexVolumeOf(path, entries.get(path)?.size);
     placed.set(path, id);
   }
   return placed;
 }
 
 /**
- * `.context/search/v2/shard-<nnn>.json`. Dot-prefixed for the same reason v1's key is:
- * `isPlumbing` already hides every dot-segment key from every tool at every
- * scope, so the index is unreachable through the note surface without a single
- * new rule.
- *
- * @param {number} id
- * @returns {string}
- */
-export function shardKey(id) {
-  return `${SEARCH_PREFIX}v2/shard-${String(id).padStart(3, "0")}.json`;
-}
-
-
-/**
- * One v3 shard revision: `.context/search/v3/shards/<nnn>-<hex16>.json`, where
+ * One shard revision: `.context/search/index/shards/<nnn>-<hex16>.json`, where
  * `hex16` is the first 16 hex characters of the SHA-256 of the stored body
  * (ruling OPEN-58). Content addressed, so a new body is always a new key and
  * an object some manifest references is never rewritten with other bytes.
@@ -260,5 +244,5 @@ export function shardKey(id) {
  * @returns {string}
  */
 export function revisionKey(id, digest) {
-  return `${V3_SHARD_PREFIX}${String(id).padStart(3, "0")}-${digest.slice(0, 16)}.json`;
+  return `${SHARD_PREFIX}${String(id).padStart(3, "0")}-${digest.slice(0, 16)}.json`;
 }

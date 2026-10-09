@@ -42,7 +42,7 @@ import { graphManifestKey } from "../src/graph/keys.js";
 import { projectNote } from "../src/graph/project.js";
 import { canSee } from "../src/privacy/engine.js";
 import { createSearchBudget } from "../src/search/maintain.js";
-import { MANIFEST_KEY, shardKey, syncShardedIndex } from "../src/search/shards.js";
+import { MANIFEST_KEY, SHARD_PREFIX, syncShardedIndex } from "../src/search/shards.js";
 import { withLogicalDelete } from "../src/store/logicalDelete.js";
 import { moveJobKey, refreshMoveSentinel, writeMoveSentinel } from "../src/moves/jobs.js";
 import { memoryBucket } from "./store/fixtures.mjs";
@@ -126,7 +126,6 @@ function suggest(store, options = {}) {
   });
 }
 
-const SHARD_PREFIX = shardKey(0).slice(0, -"000.json".length);
 const paths = (b) => b.candidates.map((c) => c.path);
 const bytes = (s) => new TextEncoder().encode(s).length;
 const hidden = (n, body, prefix = "h") =>

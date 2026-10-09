@@ -14,7 +14,7 @@ import {
   SEARCH_SUBREQUEST_BUDGET,
   TEAM_TOKEN,
   callTool,
-  convergeV2,
+  converge,
   defaultIsIndexable,
   indexedPaths,
   searchIndex,
@@ -239,7 +239,7 @@ export async function runSearchIntegrationMainFixtureChecks(check, harness) {
       );
     }
     const bucketStore = new R2Store(bucket);
-    await convergeV2(bucketStore);
+    await converge(bucketStore);
     const teamAfterBulk = await searchText(env, TEAM_TOKEN, { query: "zebrafish" });
     const ownerAfterBulk = await searchText(env, OWNER_TOKEN, { query: "zebrafish" });
     check(
@@ -275,13 +275,13 @@ export async function runSearchIntegrationMainFixtureChecks(check, harness) {
       "1-projects/alpha/marsupials.md",
       "# Field notes\n\nThe QUOKKATRON survey ran all summer.\n"
     );
-    await convergeV2(bucketStore);
+    await converge(bucketStore);
     const teamBeforePlant = await searchText(env, TEAM_TOKEN, { query: "quokka" });
     bucket.seed(
       "1-projects/vault/expedition.md",
       "# Vault\n\nThe QUOKKA itself is filed privately and must never leave.\n"
     );
-    await convergeV2(bucketStore);
+    await converge(bucketStore);
     const teamAfterPlant = await searchText(env, TEAM_TOKEN, { query: "quokka" });
     check(
       "a private note appearing does not change what a team connection's own query answers",
@@ -305,7 +305,7 @@ export async function runSearchIntegrationMainFixtureChecks(check, harness) {
     // a list every path in which the caller may read.
     bucket.seed("2-areas/aa-wombat.md", "# Wombat census\n\nCounting burrows.\n");
     bucket.seed("2-areas/zz-numbat.md", "# Numbat census\n\nCounting termites.\n");
-    await convergeV2(bucketStore);
+    await converge(bucketStore);
     const orderOf = (text) =>
       (text.match(/^2-areas\/(?:aa-wombat|zz-numbat)\.md$/gm) || []).join(",");
     const teamOrderBefore = orderOf(await searchText(env, TEAM_TOKEN, { query: "wombat numbat" }));
@@ -315,7 +315,7 @@ export async function runSearchIntegrationMainFixtureChecks(check, harness) {
         `# Vault wombat ${n}\n\nA private WOMBAT sighting, number ${n}.\n`
       );
     }
-    await convergeV2(bucketStore);
+    await converge(bucketStore);
     const teamOrderAfter = orderOf(await searchText(env, TEAM_TOKEN, { query: "wombat numbat" }));
     check(
       "and notes it cannot see do not reorder the ones it can",
@@ -340,7 +340,7 @@ export async function runSearchIntegrationMainFixtureChecks(check, harness) {
     // link graph could separate them.
     bucket.seed("2-areas/aa-bilby.md", "# Bilby east\n\nEastern BILBY survey.\n");
     bucket.seed("2-areas/zz-bilby.md", "# Bilby west\n\nWestern BILBY survey.\n");
-    await convergeV2(bucketStore);
+    await converge(bucketStore);
     const bilbyOrder = (text) =>
       (text.match(/^2-areas\/(?:aa|zz)-bilby\.md$/gm) || []).join(",");
     const teamBilbyBefore = bilbyOrder(await searchText(env, TEAM_TOKEN, { query: "bilby" }));
@@ -352,7 +352,7 @@ export async function runSearchIntegrationMainFixtureChecks(check, harness) {
         `# Citation ${n}\n\nSee [the west](../../2-areas/zz-bilby.md) for the private workup.\n`
       );
     }
-    await convergeV2(bucketStore);
+    await converge(bucketStore);
     const teamBilbyAfter = bilbyOrder(await searchText(env, TEAM_TOKEN, { query: "bilby" }));
     check(
       "and private notes citing a visible one do not promote it for a team connection",

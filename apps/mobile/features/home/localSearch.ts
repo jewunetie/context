@@ -1,7 +1,7 @@
 import { isDrawingPath } from "@context/drawings";
 import type { SearchAnswer } from "../console/files/browser";
 import { noteHeading, splitNote } from "../console/files/frontmatter";
-import { DEFAULT_TOKENIZER, termsOf } from "../../../mcp/src/search/text.js";
+import { termsOf } from "../../../mcp/src/search/text.js";
 
 /**
  * Search over the homepage's notes, which are all in the tab.
@@ -17,13 +17,13 @@ import { DEFAULT_TOKENIZER, termsOf } from "../../../mcp/src/search/text.js";
  * `pricing` means the page called Pricing before the page that mentions it.
  *
  * Matching is on the gateway's own tokenizer (`termsOf`), so the app, the
- * indexer and the query parser switch tokenizer together: a note matches when
+ * indexer and the query parser tokenize alike: a note matches when
  * every term of the query is a prefix of some term of its title or body.
  */
 
 /** The terms of `text`, from the gateway's tokenizer. */
-export function localTerms(text: string, tokenizer: number = DEFAULT_TOKENIZER): string[] {
-  return termsOf(text, tokenizer);
+export function localTerms(text: string): string[] {
+  return termsOf(text);
 }
 
 /** True when every query term is a prefix of some term in `terms`. */
@@ -68,12 +68,12 @@ function windowOf(line: string, at: number, length: number): string {
 type BodyLine = { line: string; terms: string[] };
 
 /** The body's lines as words, without the title's own heading (the row already says it). */
-function bodyLines(body: string, title: string, tokenizer: number): BodyLine[] {
+function bodyLines(body: string, title: string): BodyLine[] {
   const lines: BodyLine[] = [];
   for (const raw of body.split("\n")) {
     const line = plainLine(raw);
     if (HEADING.test(raw.trim()) && line === title) continue;
-    lines.push({ line, terms: localTerms(line, tokenizer) });
+    lines.push({ line, terms: localTerms(line) });
   }
   return lines;
 }
@@ -85,7 +85,8 @@ function snippetOf(lines: readonly BodyLine[], query: readonly string[]): string
   if (!hit) return null;
   const lower = hit.line.toLowerCase();
   const at = matchAt(lower, query);
-  return windowOf(hit.line, at, query.find((q) => lower.startsWith(q, at))?.length ?? 0);
+  // The whole word at the match: a stemmed query term ("privat") is shorter than the word it matched ("private").
+  return windowOf(hit.line, at, /^[\p{L}\p{N}]*/u.exec(lower.slice(at))?.[0].length ?? 0);
 }
 
 /**
@@ -96,20 +97,18 @@ export function snippetFor(
   body: string,
   needle: string,
   title: string,
-  tokenizer: number = DEFAULT_TOKENIZER,
 ): string | null {
-  const query = localTerms(needle, tokenizer);
+  const query = localTerms(needle);
   if (query.length === 0) return null;
-  return snippetOf(bodyLines(body, title, tokenizer), query);
+  return snippetOf(bodyLines(body, title), query);
 }
 
 export function searchLocalNotes(
   notes: Readonly<Record<string, string>>,
   query: string,
   limit = 20,
-  tokenizer: number = DEFAULT_TOKENIZER,
 ): SearchAnswer {
-  const terms = localTerms(query, tokenizer);
+  const terms = localTerms(query);
   const byTitle: SearchAnswer["hits"] = [];
   const byBody: SearchAnswer["hits"] = [];
   if (terms.length > 0) {
@@ -117,10 +116,10 @@ export function searchLocalNotes(
       // A drawing's body is the canvas's data, not words anybody wrote.
       if (isDrawingPath(path)) continue;
       const title = noteHeading(text, path);
-      const lines = bodyLines(splitNote(text).body, title, tokenizer);
+      const lines = bodyLines(splitNote(text).body, title);
       const inBody = coversQuery(terms, lines.flatMap((l) => l.terms));
       const snippet = inBody ? snippetOf(lines, terms) : null;
-      if (coversQuery(terms, localTerms(title, tokenizer))) {
+      if (coversQuery(terms, localTerms(title))) {
         byTitle.push({ path, title, snippets: snippet === null ? [] : [snippet] });
       } else if (snippet !== null) {
         byBody.push({ path, title, snippets: [snippet] });

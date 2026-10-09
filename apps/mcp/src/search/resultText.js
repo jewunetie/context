@@ -19,15 +19,15 @@ export function noteTitle(path, text) {
 
 /**
  * Lines of a freshly read note that actually carry one of the matched terms,
- * tokenized as the served index was (`tokenizer`, 1 when absent).
+ * tokenized as the index was.
  */
-export function snippetLinesFor(text, matchedTerms, tokenizer = 1) {
+export function snippetLinesFor(text, matchedTerms) {
   const wanted = new Set(matchedTerms || []);
   if (wanted.size === 0) return [];
   const lines = [];
   for (const line of comments.stripComments(String(text)).split("\n")) {
     if (!line.trim()) continue;
-    if (!termsOf(line, tokenizer).some((term) => wanted.has(term))) continue;
+    if (!termsOf(line).some((term) => wanted.has(term))) continue;
     lines.push(line.trim().slice(0, 200));
     if (lines.length === 3) break;
   }

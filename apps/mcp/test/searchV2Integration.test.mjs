@@ -1,17 +1,17 @@
 /**
- * The sharded index (v2) wired into the gateway — `searchVisibleNotes` in
- * `src/index.js` answering from `.context/search/v2/` through a real worker request.
+ * The sharded index (v2) wired into the gateway, `searchVisibleNotes` in
+ * `src/index.js` answering from `.context/search/index/` through a real worker request.
  *
  * `searchShards.test.mjs` and `searchShardQuery.test.mjs` hold the two halves
  * on their own: the storage half against an instrumented bucket, the query
  * half as pure functions over fixtures. Neither can see the thing this file is
- * for, which is what happens when the gateway wires them together — the
+ * for, which is what happens when the gateway wires them together, the
  * budget shared between a sync and a shard walk, the visibility predicate
  * handed to the collector, and the floor language a caller actually reads.
  *
  * Why v2 at all, in one measurement: v1 is a single object that must be parsed
  * whole, so `INDEX_PARSE_BYTE_CAP` bounds it, and a workspace whose capped index
- * crosses that bound plateaus at partial coverage **forever** — the write is
+ * crosses that bound plateaus at partial coverage **forever**, the write is
  * refused, the last readable object survives, and no number of passes ever
  * covers the rest. That is not an abstraction: block (c) below builds a bucket
  * whose v1 index genuinely cannot converge under a cap, then converges the
@@ -24,13 +24,13 @@
  *    manifest, its shard objects, and a second search that reads note bodies
  *    only for the hits it returns.
  * 2. **The privacy line survives the shard boundary.** The shards hold text
- *    drawn from private notes — fine inside the customer's own bucket, never
- *    fine in what leaves the gateway — so a team-scope search over a term
+ *    drawn from private notes, fine inside the customer's own bucket, never
+ *    fine in what leaves the gateway, so a team-scope search over a term
  *    appearing in both team notes and a private one surfaces the team paths,
  *    no private byte, and a count of exactly what it listed. Both tool dialects, because
  *    `search_notes` and the ChatGPT-dialect `search` share one path and a
  *    second path would be a second place for a visibility bug.
- * 3. **A shard the answer could not open is said out loud — in both the
+ * 3. **A shard the answer could not open is said out loud, in both the
  *    banner and the number.** `loadShard` answers `null` for a budget refusal
  *    and for an absent object alike, so the gateway checks the budget *before*
  *    asking. Treating a refusal as an empty shard is silently answering a
@@ -52,7 +52,7 @@
  *    failed, both in `searchIntegration.test.mjs`, and both on the *inference*
  *    line: a private note appearing changed a team connection's own answer,
  *    and private notes reordered the visible ones. That is the finding, and it
- *    is the reverse of the v1 record's first entry — every *content* check
+ *    is the reverse of the v1 record's first entry, every *content* check
  *    stayed green, because `rankedVisibleTo` at the output caught every
  *    private path before it was printed or counted. The two guards are not one
  *    guard with a spare here: the collector is what keeps private docs out of
@@ -61,7 +61,7 @@
  *    Neither of them alone is the privacy line.
  * 2. **A budget-refused shard read treated as an empty shard** (the
  *    `budget.remaining` pre-check deleted and a `null` read as "this shard
- *    holds nothing"). 1 check failed, the starved-budget floor below — which
+ *    holds nothing"). 1 check failed, the starved-budget floor below, which
  *    is the check written for it, because every other fixture here has budget
  *    to spare and cannot tell a refusal from an absence.
  * 3. **`rankedVisibleTo` skipped** on the v2 path. 1 check failed, and it is
@@ -69,7 +69,7 @@
  *    because that function applies `prefix` as well as the predicate. The
  *    *visibility* half fails zero end to end, exactly as CONTRACT.md says it
  *    must ("redundant … by construction and kept anyway: it is the half that
- *    does not depend on `visibleIndex` being correct") — the collector has
+ *    does not depend on `visibleIndex` being correct"), the collector has
  *    already narrowed every shard to visible docs by the time it runs. It is
  *    held where a redundant guard can be held: `searchQuery.test.mjs` drives
  *    `rankedVisibleTo` directly with a list nothing narrowed first, and
@@ -79,7 +79,7 @@
  * 4. **`shardsUnread` dropped from `matchCountIsFloor`** (leaving
  *    `visible.length >= MAX_RESULTS` alone, which is what the line was before
  *    the sharded walk existed). 1 check failed, alone: the starved count below.
- *    Nothing else in 947 catches it, and that is the point — every other
+ *    Nothing else in 947 catches it, and that is the point, every other
  *    fixture here has budget to spare, so `shardsUnread` is false and the two
  *    versions of the line are the same line. The starved answer renders
  *    `4 matching notes` under the mutation and `4+ matching notes` without it,
@@ -97,15 +97,14 @@ import { SEARCH_INDEX_KEY, createSearchBudget, syncIndex } from "../src/search/m
 import { parseIndex } from "../src/search/indexer.js";
 import { MAX_RESULTS } from "../src/search/query.js";
 import {
-  LEGACY_V1_KEY,
   MANIFEST_KEY,
   emptyManifest,
   parseManifest,
   parseShard,
   serializeManifest,
-  shardKey,
   syncShardedIndex,
 } from "../src/search/shards.js";
+import { shardKeyIn } from "./searchShards/shardKeys.mjs";
 import { CONTROL_PLANE_ORIGIN, GATEWAY_SECRET, createControlPlaneStub } from "./controlPlaneStub.mjs";
 import { createWorkerCtx } from "./workerCtx.mjs";
 
@@ -114,7 +113,7 @@ const SEARCH_SUBREQUEST_BUDGET = 40;
 const SEARCH_RESULT_LIMIT = 10;
 /** Every tool call reads `privacy.md` before it dispatches; not the search's to spend. */
 const PRIVACY_MANIFEST_READ = 1;
-/** Cloudflare's per-invocation ceiling on the free tier — the real limit. */
+/** Cloudflare's per-invocation ceiling on the free tier, the real limit. */
 const SUBREQUEST_LIMIT = 50;
 
 const MAIN_OWNER_TOKEN = `cat_searchv2_owner_${"0".repeat(17)}`;
@@ -279,9 +278,10 @@ function indexedPaths(bucket) {
   if (!manifest) return null;
   const paths = [];
   for (let id = 0; id < manifest.shardCount; id += 1) {
-    const raw = bucket.objects.get(shardKey(id));
+    const key = shardKeyIn(bucket, id);
+    const raw = key ? bucket.objects.get(key) : null;
     const shard = raw ? parseShard(raw.body) : null;
-    if (shard) paths.push(...shard.docs.keys());
+    if (shard) for (const doc of shard.docs.values()) if (!paths.includes(doc.notePath)) paths.push(doc.notePath);
   }
   return paths;
 }
@@ -296,7 +296,7 @@ function pathsIn(text) {
  * meets it: the number, and whether it carries the census's floor mark.
  *
  * Read off the rendered text rather than off `searchVisibleNotes`'s return,
- * because the `+` is the whole of the claim — a floor a caller cannot tell
+ * because the `+` is the whole of the claim, a floor a caller cannot tell
  * from a total is not a floor, it is a wrong number with a flag set behind it.
  */
 function reportedCount(text) {
@@ -366,7 +366,7 @@ export async function runSearchV2IntegrationChecks(check) {
       V2_SPREAD_BUCKET: spread,
     };
 
-    // -- (a) the first search builds `.context/search/v2/` and answers from it --------
+    // (a) the first search builds `.context/search/index/` and answers from it
     //
     // A multi-folder bucket, because the listing walk is delimited at the root
     // and flat inside each real folder: a fixture with one folder cannot tell
@@ -389,27 +389,22 @@ export async function runSearchV2IntegrationChecks(check) {
     main.seed("scopes.yml", "legacy: true\n");
     main.seed(".obsidian/app.json", "{}");
     main.seed(".history/index.md.2020-01-01.md", "# Front page\n\nNARWHAL once lived here.\n");
-    // (d) v1's object, left behind by a deployment that ran the old index.
-    main.seed(
-      LEGACY_V1_KEY,
-      JSON.stringify({ version: 1, generatedAt: new Date().toISOString(), docs: [], terms: [] })
-    );
 
     main.resetCounts();
     // The first search over a bucket with no index answers from the bounded
-    // literal scan and builds `.context/search/v2/` **behind the response**. A search no
-    // longer indexes on its way in — that is the 40-to-60-second search this
-    // whole shape removed — so the ranked answer is the *second* one, and the
+    // literal scan and builds `.context/search/index/` **behind the response**. A search no
+    // longer indexes on its way in, that is the 40-to-60-second search this
+    // whole shape removed, so the ranked answer is the *second* one, and the
     // index it reads was built by the first one's deferred pass.
     const firstOwner = await searchText(env, MAIN_OWNER_TOKEN, { query: "narwhal" });
     const firstManifest = storedManifest(main);
     const firstPaths = indexedPaths(main);
     check(
-      "the first search through the worker writes a v2 manifest and the shard objects under it",
+      "the first search through the worker writes a manifest and the shard revisions under it",
       firstManifest !== null &&
         firstManifest.shardCount >= 1 &&
         main.counts.puts.includes(MANIFEST_KEY) &&
-        main.counts.puts.includes(shardKey(0)) &&
+        main.counts.puts.includes(shardKeyIn(main, 0)) &&
         firstPaths.length > 0
     );
     check(
@@ -429,21 +424,7 @@ export async function runSearchV2IntegrationChecks(check) {
         )
     );
 
-    // (d) v1's object is dead weight the moment a manifest exists. Logical
-    // deletion leaves a content-free marker in the physical bucket, so assert
-    // the logical outcome and the one marker write rather than raw absence.
-    check(
-      "v1's object is deleted on the pass that first creates a manifest, and not probed again",
-      isLogicalDeleteMarker(main.objects.get(LEGACY_V1_KEY)?.body) &&
-        main.counts.puts.filter((key) => key === LEGACY_V1_KEY).length === 1 &&
-        (await (async () => {
-          main.resetCounts();
-          await searchText(env, MAIN_OWNER_TOKEN, { query: "narwhal" });
-          return main.counts.delete === 0;
-        })())
-    );
-
-    // -- (e) the second search re-uses the shards: no O(N) body reads --------
+    // (e) the second search re-uses the shards: no O(N) body reads
     main.resetCounts();
     const secondOwner = await searchText(env, MAIN_OWNER_TOKEN, { query: "narwhal" });
     const ownerHits = pathsIn(secondOwner);
@@ -455,11 +436,11 @@ export async function runSearchV2IntegrationChecks(check) {
         main.counts.put === 0
     );
 
-    // -- (b) THE PRIVACY LINE, across the shard boundary ---------------------
+    // (b) THE PRIVACY LINE, across the shard boundary
     //
     // The index was built by an owner-scope search, so a shard holds the
     // private note's path, title, terms and vocabulary. A team-scope search
-    // over the shared term must disclose none of it — not the path, not a
+    // over the shared term must disclose none of it, not the path, not a
     // snippet, and not a count that counts it.
     const teamSearch = await searchText(env, MAIN_TEAM_TOKEN, { query: "narwhal" });
     check(
@@ -493,7 +474,7 @@ export async function runSearchV2IntegrationChecks(check) {
         !JSON.stringify(teamDialect).includes("NARWHAL-PRIVATE-MARKER")
     );
 
-    // -- (f) an unprefixed search on a wide-ish context stays inside the budget
+    // (f) an unprefixed search on a wide-ish context stays inside the budget
     wide.seed("privacy.md", PRIVACY_MANIFEST);
     for (let n = 0; n < 60; n += 1) {
       wide.seed(
@@ -527,10 +508,10 @@ export async function runSearchV2IntegrationChecks(check) {
         !wideSteady.includes("still catching up")
     );
 
-    // -- (3) a shard the budget could not open is a floor, not an empty shard -
+    // (3) a shard the budget could not open is a floor, not an empty shard
     //
     // `loadShard` answers `null` for a budget refusal and for an absent object
-    // alike — deliberately, since to most callers the answer is the same — so
+    // alike, deliberately, since to most callers the answer is the same, so
     // the gateway checks `budget.remaining` before it asks. Reading a refusal
     // as "this shard holds nothing" is answering the query from part of the
     // corpus while telling the caller it is the whole of it.
@@ -584,13 +565,13 @@ export async function runSearchV2IntegrationChecks(check) {
         pathsIn(starved).every((path) => path.startsWith("1-projects/spread/"))
     );
 
-    // -- and the NUMBER beside that answer is a floor too --------------------
+    // And the NUMBER beside that answer is a floor too
     //
     // "still catching up" is the *index's* sentence: it says a sync has notes
     // left to reach. It says nothing about the total printed above it, and the
     // two are separate lines a reader can believe separately. `matchCount` is
     // computed over the shards this call could afford to open, so on a starved
-    // walk it is a count over a fraction of the corpus — and understating is
+    // walk it is a count over a fraction of the corpus, and understating is
     // the acceptable direction for a number only while the number says it is
     // understating. Unmarked, this answer reads `4 matching notes` over a
     // bucket holding twenty-four, and an agent told there are four stops
@@ -598,7 +579,7 @@ export async function runSearchV2IntegrationChecks(check) {
     // it. The census's language is the rule: **a floor is never printed as a
     // total.**
     //
-    // The pair is one fixture, one query, and one difference — the budget —
+    // The pair is one fixture, one query, and one difference, the budget , 
     // so neither half can be true for a reason the other does not share.
     const starvedCount = reportedCount(starved);
     const roomyCount = reportedCount(roomy);
@@ -624,15 +605,15 @@ export async function runSearchV2IntegrationChecks(check) {
       "and the same query with every occupied shard read prints a total, not a floor",
       roomyCount !== null &&
         roomyCount.isFloor === false &&
-        // Every note that matches, counted — so the walk plainly reached every
-        // occupied shard — and still short of the scoring cap, which is the
+        // Every note that matches, counted, so the walk plainly reached every
+        // occupied shard, and still short of the scoring cap, which is the
         // only other thing that may raise this mark.
         roomyCount.count === spreadNotes &&
         roomyCount.count < MAX_RESULTS
     );
 
     // 24 notes over 20 shards leaves some shards genuinely empty, and the walk
-    // must not spend a GET proving each one holds nothing — the sync already
+    // must not spend a GET proving each one holds nothing, the sync already
     // skips them on the manifest's authority, and an over-sharded small bucket
     // otherwise pays one 404 per empty shard on every query.
     const occupied = spreadManifest
@@ -646,29 +627,29 @@ export async function runSearchV2IntegrationChecks(check) {
     // invocation may open a shard: the walk opens every occupied one, and the
     // sync's rotating audit opens one it already knows about. Both are bounded
     // by the occupied set, so a fetch of an empty shard is still exactly what
-    // makes this number exceed `occupied` — which is the claim — while a repeat
+    // makes this number exceed `occupied`, which is the claim, while a repeat
     // read of an occupied one is not a 404 and not what this is about.
     const shardGets = new Set(
-      spread.counts.getKeys.filter((key) => key.startsWith(".context/search/v2/shard-"))
+      spread.counts.getKeys.filter((key) => key.startsWith(".context/search/index/shards/"))
     ).size;
     check(
       "an empty shard is never fetched: the walk reads exactly the occupied shards",
       occupied > 0 && occupied < 20 && shardGets === occupied
     );
 
-    // -- (c) THE WHOLE POINT: a bucket v1 cannot converge on, converged ------
+    // (c) THE WHOLE POINT: a bucket v1 cannot converge on, converged
     //
     // Driven at module level rather than through the worker, and deliberately:
     // the byte caps are injectable parameters on the two sync functions and
     // nothing in production passes them, so there is no way to reach this
-    // through a tool call — and building twelve real megabytes of index would
+    // through a tool call, and building twelve real megabytes of index would
     // take thousands of notes and minutes of wall clock. What the fixture
     // proves is the shape, at a cap small enough to run: **one number, applied
     // to v1's single object and to each v2 shard, is a plateau for one and a
     // convergence for the other.**
     //
     // The distinct vocabulary per note is what makes the index grow with the
-    // corpus rather than with its filler — the contact-heavy vocabulary of the
+    // corpus rather than with its filler, the contact-heavy vocabulary of the
     // live workspace that hit the real ceiling.
     {
       const seedNotes = (bucket) => {
@@ -702,7 +683,7 @@ export async function runSearchV2IntegrationChecks(check) {
       }
       let largestShardBytes = 0;
       for (let id = 0; id < 16; id += 1) {
-        const stored = measureV2.objects.get(shardKey(id));
+        const stored = measureV2.objects.get(shardKeyIn(measureV2, id));
         if (stored) largestShardBytes = Math.max(largestShardBytes, byteLength(stored.body));
       }
       // Halfway between the two, so the fixture is not one byte from either
@@ -741,7 +722,7 @@ export async function runSearchV2IntegrationChecks(check) {
         largestShardBytes > 0 && largestShardBytes < cap && cap < wholeIndexBytes
       );
       check(
-        "under that cap v1 plateaus — the stored index never holds the corpus, however many passes run",
+        "under that cap v1 plateaus, the stored index never holds the corpus, however many passes run",
         v1StoredDocs < 80 && v1Pass !== null
       );
       check(
@@ -756,7 +737,7 @@ export async function runSearchV2IntegrationChecks(check) {
         (() => {
           const manifest = storedManifest(v2Bucket);
           for (let id = 0; id < manifest.shardCount; id += 1) {
-            const stored = v2Bucket.objects.get(shardKey(id));
+            const stored = v2Bucket.objects.get(shardKeyIn(v2Bucket, id));
             if (!stored) continue;
             if (byteLength(stored.body) > cap) return false;
             if (parseShard(stored.body, cap) === null) return false;

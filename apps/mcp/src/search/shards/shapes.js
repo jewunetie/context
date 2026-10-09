@@ -1,5 +1,6 @@
 import { emptyIndex } from "../indexer.js";
 import { MAX_SHARD_COUNT } from "./constants.js";
+import { INDEX_FORMAT_VERSION } from "../format.js";
 
 // -- in-memory shapes ------------------------------------------------------
 
@@ -77,8 +78,8 @@ export function indexIsBehind(freshness) {
 }
 
 /**
- * Every note path shedding has reduced to one document, and every note a
- * chunked format cut at its cap (`partialPaths`, CONTRACT-v3.md), across the
+ * Every note path shedding has reduced to one document, and every note
+ * the chunk cap cut (`partialPaths`, CONTRACT-REVISIONS.md), across the
  * whole manifest — **raw and unfiltered, private notes included.** Both are
  * reduced recall to a caller (ruling OPEN-55); a distinct label for the cap
  * would be a wording change, not a format one.
@@ -124,7 +125,7 @@ export function emptyManifest(shardCount) {
     ? Math.min(MAX_SHARD_COUNT, Math.max(1, shardCount))
     : 1;
   return {
-    version: 3,
+    version: INDEX_FORMAT_VERSION,
     shardCount: count,
     generatedAt: null,
     docsByShard: Array.from({ length: count }, () => new Map()),

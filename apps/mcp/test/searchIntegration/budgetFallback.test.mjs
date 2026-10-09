@@ -13,7 +13,7 @@ import {
   createBucket,
   createSearchBudget,
   indexedPaths,
-  removeV2Index,
+  removeIndex,
   searchIndex,
   searchText,
   syncIndex,
@@ -29,7 +29,7 @@ export async function runSearchIntegrationBudgetFallbackChecks(check, harness) {
     // first index across dozens of searches. `SEARCH_SUBREQUEST_BUDGET` in the
     // environment raises it; garbage must fall back to the default rather than
     // take search down.
-    removeV2Index(big);
+    removeIndex(big);
     big.resetCounts();
     const bigBudget = await searchText(
       { ...env, SEARCH_SUBREQUEST_BUDGET: "200" },
@@ -57,7 +57,7 @@ export async function runSearchIntegrationBudgetFallbackChecks(check, harness) {
       "and the next search over it says nothing about catching up",
       typeof bigSettled === "string" && !bigSettled.includes("still catching up")
     );
-    removeV2Index(big);
+    removeIndex(big);
     big.resetCounts();
     const bigGarbage = await searchText(
       { ...env, SEARCH_SUBREQUEST_BUDGET: "not-a-number" },

@@ -14,12 +14,14 @@ import {
   emptyManifest,
   fnv1a32,
   serializeManifest,
-  shardKey,
+  shardKeyIn,
   shardOf,
   storedManifest,
+  shardHasNote,
   storedShard,
   syncShardedIndex,
 } from "./fixtures.mjs";
+import { unmarked } from "../../src/search/anchors.js";
 
 export async function runSearchShardsCorruptionAndConcurrencyChecks(check) {
   // -- the manifest is the concurrency point -------------------------------
@@ -49,17 +51,17 @@ export async function runSearchShardsCorruptionAndConcurrencyChecks(check) {
     check(
       "a lost conditional manifest write is one attempt and no throw, not a retry loop",
       manifestPuts === 1 &&
-        lost.manifest.docsByShard[0].get("1-projects/note-1.md") === bucket.etagOf("1-projects/note-1.md") &&
-        storedManifest(bucket).docsByShard[0].get("1-projects/note-1.md") !==
+        unmarked(lost.manifest.docsByShard[0].get("1-projects/note-1.md")) === bucket.etagOf("1-projects/note-1.md") &&
+        unmarked(storedManifest(bucket).docsByShard[0].get("1-projects/note-1.md")) !==
           bucket.etagOf("1-projects/note-1.md")
     );
     const recovered = await converge(store);
     check(
       "and the next pass recovers, because the stale manifest is what the diff reads",
       recovered.pending === 0 &&
-        storedManifest(bucket).docsByShard[0].get("1-projects/note-1.md") ===
+        unmarked(storedManifest(bucket).docsByShard[0].get("1-projects/note-1.md")) ===
           bucket.etagOf("1-projects/note-1.md") &&
-        storedShard(bucket, 0).terms.has("bilby")
+        storedShard(bucket, 0).terms.has("bilbi")
     );
   }
 
@@ -82,7 +84,7 @@ export async function runSearchShardsCorruptionAndConcurrencyChecks(check) {
     // that *nothing* touches, which no diff over the manifest can see — is the
     // block below: opening every shard per pass is the cost the manifest exists
     // to avoid, so one shard per pass is audited on spare budget instead.
-    bucket.seed(shardKey(0), "{ this is not the shard you are looking for");
+    bucket.seed(shardKeyIn(bucket, 0), "{ this is not the shard you are looking for");
     bucket.seed("1-projects/note-2.md", "# Note 2\n\nA MANATEE now, not a dugong.\n");
     bucket.resetCounts();
     const rebuilt = await syncShardedIndex(store, { budget: createSearchBudget(60) });
@@ -91,7 +93,7 @@ export async function runSearchShardsCorruptionAndConcurrencyChecks(check) {
       rebuilt.pending === 0 &&
         bucket.counts.noteGets.length === 5 &&
         storedShard(bucket, 0)?.docs.size === 5 &&
-        storedShard(bucket, 0).terms.has("manatee") &&
+        storedShard(bucket, 0).terms.has("manate") &&
         storedManifest(bucket).docsByShard[0].size === 5
     );
   }
@@ -126,7 +128,11 @@ export async function runSearchShardsCorruptionAndConcurrencyChecks(check) {
       0
     );
     const vouched = [...before.docsByShard[victim].keys()];
-    bucket.seed(shardKey(victim), "{ truncated by a writer this gateway refuses");
+    bucket.seed(shardKeyIn(bucket, victim), "{ truncated by a writer this gateway refuses");
+    // A rebuilt shard carries `generatedAt`; in the same millisecond as the
+    // first build its bytes, and so its revision key, would be the corrupt
+    // object's own, and a revision already named is not written again.
+    await new Promise((resolve) => setTimeout(resolve, 5));
     bucket.resetCounts();
 
     // `base % 4 === 0`, so the four passes rotate over the four shards.
@@ -140,13 +146,13 @@ export async function runSearchShardsCorruptionAndConcurrencyChecks(check) {
       "a corrupt shard no note of which was edited is audited and rebuilt, not vouched for forever",
       vouched.length > 0 &&
         repairedOnPass !== null &&
-        vouched.every((path) => storedShard(bucket, victim).docs.has(path)) &&
+        vouched.every((path) => shardHasNote(storedShard(bucket, victim), path)) &&
         storedManifest(bucket).docsByShard[victim].size === vouched.length
     );
     check(
       "and the repair is the existing rebuild path: only the unreadable shard is rewritten",
-      bucket.counts.puts.filter((key) => key.startsWith(".context/search/v2/shard-")).length === 1 &&
-        bucket.counts.puts.includes(shardKey(victim)) &&
+      bucket.counts.puts.filter((key) => key.startsWith(".context/search/index/shards/")).length === 1 &&
+        bucket.counts.puts.includes(shardKeyIn(bucket, victim)) &&
         bucket.counts.noteGets.length === vouched.length &&
         bucket.counts.noteGets.every((path) => vouched.includes(path))
     );
@@ -216,12 +222,12 @@ export async function runSearchShardsCorruptionAndConcurrencyChecks(check) {
     bucket.seed("1-projects/lonely.md", "# Lonely\n\nA SOLITARY OKAPI.\n");
     const store = new R2Store(bucket);
     await converge(store);
-    const occupied = shardKey(shardOf("1-projects/lonely.md", 4));
+    const occupied = shardKeyIn(bucket, shardOf("1-projects/lonely.md", 4));
     bucket.resetCounts();
     for (let pass = 0; pass < 4; pass += 1) {
       await syncShardedIndex(store, { budget: createSearchBudget(400), now: 4_000_000 + pass });
     }
-    const audited = bucket.counts.gets.filter((key) => key.startsWith(".context/search/v2/shard-"));
+    const audited = bucket.counts.gets.filter((key) => key.startsWith(".context/search/index/shards/"));
     check(
       "the audit rotates only over shards the manifest vouches for, never onto an empty one",
       storedManifest(bucket).shardCount === 4 &&

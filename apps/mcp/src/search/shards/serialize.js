@@ -5,9 +5,9 @@ import {
   SHARD_PARSE_BYTE_CAP,
   MANIFEST_PARSE_BYTE_CAP,
   FIELD_ORDER,
-  V3_SHARD_PREFIX,
+  SHARD_PREFIX,
 } from "./constants.js";
-import { readFormat } from "../format.js";
+import { INDEX_FORMAT_VERSION } from "../format.js";
 import { emptyFreshness } from "./shapes.js";
 
 // -- (de)serialization -----------------------------------------------------
@@ -25,7 +25,8 @@ function isFiniteNumber(value) {
 }
 
 /**
- * The stored manifest, **version 3: the query surface, without the diff**.
+ * The stored manifest: the query surface, without the diff, plus the shard
+ * revisions it names. `version` is `INDEX_FORMAT_VERSION` (format.js).
  *
  * Arrays of pairs throughout wherever a key could be attacker-chosen text —
  * `"__proto__"` as a property name is prototype pollution waiting for whoever
@@ -45,9 +46,8 @@ function isFiniteNumber(value) {
  *
  * ## The cost, stated
  *
- * A gateway rolled back to a version that only reads v2 finds no `docsByShard`,
- * refuses the manifest like any other invalid shape, and **rebuilds the index
- * from the notes**. That is expensive and it is not wrong: everything under
+ * A gateway that reads a different `INDEX_FORMAT_VERSION` refuses the manifest
+ * like any other invalid shape, and **rebuilds the index from the notes**. That is expensive and it is not wrong: everything under
  * this is a disposable derivative, and the contract already says a re-shard is
  * "delete the manifest". It is stated here rather than discovered, because the
  * cheaper-looking alternative — writing `docsByShard` into both objects to keep
@@ -59,7 +59,7 @@ function isFiniteNumber(value) {
  */
 export function serializeManifest(manifest) {
   return JSON.stringify({
-    version: 3,
+    version: INDEX_FORMAT_VERSION,
     shardCount: manifest.shardCount,
     generatedAt: new Date().toISOString(),
     stats: manifest.stats.map((entry) => ({
@@ -84,8 +84,8 @@ export function serializeManifest(manifest) {
       // field ignores a key it does not validate, so it travels both ways with
       // no version bump, exactly as `shed` itself did.
       ...(entry.shedPaths && entry.shedPaths.length ? { shedPaths: [...entry.shedPaths] } : {}),
-      // Notes cut at a chunked format's cap (v3 only, CONTRACT-v3.md), sparse
-      // like `shedPaths`, so a v2 manifest's bytes are unchanged.
+      // Notes cut at the chunk cap (CONTRACT.md "Chunked notes"), sparse like
+      // `shedPaths`.
       ...(entry.partialPaths && entry.partialPaths.length ? { partialPaths: [...entry.partialPaths] } : {}),
     })),
     filters: manifest.filters.map((filter) => (typeof filter === "string" ? filter : null)),
@@ -94,6 +94,13 @@ export function serializeManifest(manifest) {
       pending: manifest.freshness.pending,
       truncated: manifest.freshness.truncated,
     },
+    // One `{ key, digest }` per shard id, or null for nothing stored.
+    shards: Array.from({ length: manifest.shardCount }, (_, id) => {
+      const entry = manifest.shards?.[id];
+      return entry ? { key: entry.key, digest: entry.digest } : null;
+    }),
+    // Notes still owed an anchor-text refresh (anchors.js); absent when none.
+    ...(manifest.anchorRefresh?.length > 0 && { anchorRefresh: [...manifest.anchorRefresh] }),
   });
 }
 
@@ -199,7 +206,27 @@ function readDocsByShard(value, shardCount) {
  * @returns {ReturnType<typeof emptyManifest>|null}
  */
 export function parseManifest(text, byteCap = MANIFEST_PARSE_BYTE_CAP) {
-  return manifestFromParsed(parseObject(text, byteCap));
+  const parsed = parseObject(text, byteCap);
+  if (!parsed || parsed.version !== INDEX_FORMAT_VERSION) return null;
+  const manifest = manifestFromParsed(parsed);
+  if (manifest === null) return null;
+  if (!Array.isArray(parsed.shards) || parsed.shards.length !== manifest.shardCount) return null;
+  const shards = [];
+  for (const [id, entry] of parsed.shards.entries()) {
+    if (entry === null) {
+      // Nothing stored is an empty shard, so a null key over a shard whose
+      // stats count documents would hide them from every query: refused.
+      if (manifest.stats[id].docCount > 0) return null;
+      shards.push(null);
+      continue;
+    }
+    if (!isPlainObject(entry) || typeof entry.key !== "string" || typeof entry.digest !== "string") return null;
+    if (!entry.key.startsWith(SHARD_PREFIX) || entry.key.includes("..")) return null;
+    shards.push({ key: entry.key, digest: entry.digest });
+  }
+  // A malformed refresh list is dropped, not the manifest: it only names notes to re-index.
+  const anchorRefresh = Array.isArray(parsed.anchorRefresh) ? parsed.anchorRefresh.filter((p) => typeof p === "string") : [];
+  return { ...manifest, version: INDEX_FORMAT_VERSION, shards, ...(anchorRefresh.length > 0 && { anchorRefresh }) };
 }
 
 /** JSON text under the cap to a plain object, or `null`. Never throws. */
@@ -216,44 +243,33 @@ function parseObject(text, byteCap) {
   return isPlainObject(parsed) ? parsed : null;
 }
 
-/** The validation half of `parseManifest`, over an already parsed object. */
+/** The validation half of `parseManifest`, over an already parsed object whose version was checked. */
 function manifestFromParsed(parsed) {
-  if (!isPlainObject(parsed)) return null;
-  // Both dialects, and the older one is not deprecated bookkeeping: refusing a
-  // v2 manifest would rebuild a working index from the notes on the day this
-  // deploys, for every customer at once, to learn what it already knew. It is
-  // read whole — `docsByShard` inline, no filters, no freshness — and the first
-  // pass that writes anything migrates it.
-  if (parsed.version !== 2 && parsed.version !== 3) return null;
-  const legacy = parsed.version === 2;
   const shardCount = parsed.shardCount;
   if (!Number.isInteger(shardCount) || shardCount < 1 || shardCount > MAX_SHARD_COUNT) return null;
   if (typeof parsed.generatedAt !== "string" && parsed.generatedAt !== null) return null;
   if (!Array.isArray(parsed.stats) || parsed.stats.length !== shardCount) return null;
 
-  // A v3 manifest does not carry the diff at all; the sync reads it separately
+  // The manifest does not carry the diff at all; the sync reads it separately
   // and merges it in. Empty maps here are "nothing is indexed as far as this
   // object knows", which is the safe reading for a caller that never loads the
   // docmap: a query does not consult `docsByShard`, and a sync that skipped it
   // re-indexes rather than skipping notes.
-  const docsByShard = legacy
-    ? readDocsByShard(parsed.docsByShard, shardCount)
-    : Array.from({ length: shardCount }, () => new Map());
-  if (docsByShard === null) return null;
+  const docsByShard = Array.from({ length: shardCount }, () => new Map());
 
   // Absent, foreign or the wrong length: no filters, which every reader treats
   // as "read every shard". A partially-valid filter array is refused as a whole
   // rather than repaired entry by entry — a repaired one is a guess about which
   // entries line up with which shard.
   let filters = Array.from({ length: shardCount }, () => null);
-  if (!legacy && parsed.filters !== undefined) {
+  if (parsed.filters !== undefined) {
     if (!Array.isArray(parsed.filters) || parsed.filters.length !== shardCount) return null;
     if (!parsed.filters.every((entry) => typeof entry === "string" || entry === null)) return null;
     filters = parsed.filters.slice();
   }
 
   let freshness = emptyFreshness();
-  if (!legacy && parsed.freshness !== undefined) {
+  if (parsed.freshness !== undefined) {
     const stored = parsed.freshness;
     if (!isPlainObject(stored)) return null;
     if (typeof stored.listedAt !== "string" && stored.listedAt !== null) return null;
@@ -302,84 +318,16 @@ function manifestFromParsed(parsed) {
   }
 
   return {
-    version: 3,
+    version: INDEX_FORMAT_VERSION,
     shardCount,
     generatedAt: parsed.generatedAt,
     docsByShard,
     stats,
     filters,
     freshness,
-    // Whether the diff came in with this object. A v2 manifest carries it; a v3
-    // one needs `DOCMAP_KEY`, and the sync must not mistake "not loaded yet" for
-    // "this index holds nothing".
-    docmapLoaded: legacy,
-  };
-}
-
-/**
- * The v3-namespace manifest, **version 4** (CONTRACT-v3.md): every version 3
- * field, plus the `format` the index was built with, `shards` (one
- * `{ key, digest }` per shard id, or `null` for nothing stored) and `built`,
- * which the writer sets once a pass first ends with nothing pending and the
- * listing complete. Readers serve v3 only once it is true.
- *
- * Written from `serializeManifest`'s own output so the shared fields cannot
- * drift between the two versions.
- *
- * @param {ReturnType<typeof emptyManifest> & { format: object, shards: ({ key: string, digest: string }|null)[], built?: boolean }} manifest
- * @returns {string}
- */
-export function serializeManifestV4(manifest) {
-  return JSON.stringify({
-    ...JSON.parse(serializeManifest(manifest)),
-    version: 4,
-    format: manifest.format,
-    shards: manifest.shards.map((entry) => (entry ? { key: entry.key, digest: entry.digest } : null)),
-    built: manifest.built === true,
-    // Notes still owed an anchor-text refresh (anchors.js); absent when none.
-    ...(manifest.anchorRefresh?.length > 0 && { anchorRefresh: [...manifest.anchorRefresh] }),
-  });
-}
-
-/**
- * The inverse of `serializeManifestV4`, and the only reader of version 4.
- * `null` for anything it cannot fully validate, including a version 3 or older
- * manifest (the v3 namespace never holds one), a newer version, a `format`
- * this build does not understand, a `shards` array whose length is not
- * `shardCount`, an entry whose key or digest is not a string, a key outside
- * `V3_SHARD_PREFIX` (which this layout does not own) or holding `..`, or a
- * `null` entry for a shard whose stats count documents.
- *
- * @param {string} text
- * @param {number} [byteCap]
- */
-export function parseManifestV4(text, byteCap = MANIFEST_PARSE_BYTE_CAP) {
-  const parsed = parseObject(text, byteCap);
-  if (!parsed || parsed.version !== 4) return null;
-  const format = readFormat(parsed.format);
-  if (format === null) return null;
-  if (parsed.built !== undefined && typeof parsed.built !== "boolean") return null;
-  const manifest = manifestFromParsed({ ...parsed, version: 3 });
-  if (manifest === null) return null;
-  if (!Array.isArray(parsed.shards) || parsed.shards.length !== manifest.shardCount) return null;
-  const shards = [];
-  for (const [id, entry] of parsed.shards.entries()) {
-    if (entry === null) {
-      // Nothing stored is an empty shard, so a null key over a shard whose
-      // stats count documents would hide them from every query: refused.
-      if (manifest.stats[id].docCount > 0) return null;
-      shards.push(null);
-      continue;
-    }
-    if (!isPlainObject(entry) || typeof entry.key !== "string" || typeof entry.digest !== "string") return null;
-    if (!entry.key.startsWith(V3_SHARD_PREFIX) || entry.key.includes("..")) return null;
-    shards.push({ key: entry.key, digest: entry.digest });
-  }
-  // A malformed refresh list is dropped, not the manifest: it only names notes to re-index.
-  const anchorRefresh = Array.isArray(parsed.anchorRefresh) ? parsed.anchorRefresh.filter((p) => typeof p === "string") : [];
-  return {
-    ...manifest, version: 4, format, shards, built: parsed.built === true,
-    ...(format.anchors === true && anchorRefresh.length > 0 && { anchorRefresh }),
+    // The diff needs `DOCMAP_KEY`, and the sync must not mistake "not loaded
+    // yet" for "this index holds nothing".
+    docmapLoaded: false,
   };
 }
 
@@ -437,12 +385,11 @@ export function serializeShard(shard) {
       // `"shed":false` on every entry of every shard would be a standing cost
       // in the customer's bucket for a fact that is almost never true.
       ...(doc.shed ? { shed: true } : {}),
-      // A chunked note's sub-document only (v3, CONTRACT-v3.md), so a v2
-      // shard's bytes are unchanged.
+      // A chunked note's sub-document only (CONTRACT.md "Chunked notes").
       ...(Number.isInteger(doc.chunk) ? { chunk: doc.chunk } : {}),
-      // The last chunk of a note cut at the cap (v3 chunked only), when true.
+      // The last chunk of a note cut at the cap (chunked notes only), when true.
       ...(doc.partial === true ? { partial: true } : {}),
-      // Anchor text and its sources (v3 with anchors only, anchors.js).
+      // Anchor text and its sources (anchors.js).
       ...(doc.anchors ? { anchors: { text: doc.anchors.text, sources: [...doc.anchors.sources] } } : {}),
     },
   ]);
@@ -484,7 +431,7 @@ function readDocEntry(entry) {
   if (doc.shed !== undefined && typeof doc.shed !== "boolean") return null;
   if (doc.chunk !== undefined && !(Number.isInteger(doc.chunk) && doc.chunk >= 0)) return null;
   if (doc.partial !== undefined && doc.partial !== true) return null;
-  // The anchor field (v3 with anchors only): its length and its text with the
+  // The anchor field: its length and its text with the
   // sources the query checks, present together or not at all.
   if ((doc.len.anchors !== undefined) !== (doc.anchors !== undefined)) return null;
   if (doc.anchors !== undefined) {

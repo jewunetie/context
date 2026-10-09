@@ -264,19 +264,18 @@ function tallyField(tokens, fieldIndex, into, width = 4) {
  * @param {{etag: string, uploaded: string|null, content: string,
  *   notePath?: string, anchor?: string|null,
  *   comms?: {channel: string|null, date: string|null, threadId: string|null,
- *     participants: string[]}|null, tokenizer?: 1 | 2, chunk?: number|null,
+ *     participants: string[]}|null, chunk?: number|null,
  *   partial?: boolean}} note
- *   `tokenizer` is the index format's (`format.js`), today's 1 when absent.
  *   `chunk` is the chunk index of a chunked note's sub-document, stored on the
  *   doc entry only when given (per-note dedupe, `rankedVisibleTo`). `partial`
- *   marks the last chunk of a note cut at the format's cap, stored only when
+ *   marks the last chunk of a note cut at the chunk cap, stored only when
  *   true (`statsOfShard`'s `partialPaths`). `anchors` (`{ text, sources }`,
  *   `search/anchors.js`) is the text of the links pointing at the note: it is
  *   tokenized into a fifth tf slot and `len.anchors`, and stored on the doc
  *   entry so the query can drop it for a caller who cannot see every source.
  *   Absent, the doc is exactly what it was before the field existed.
  */
-export function addDoc(index, path, { etag, uploaded, content, notePath = path, anchor = null, comms = null, tokenizer = 1, chunk = null, partial = false, anchors = null }) {
+export function addDoc(index, path, { etag, uploaded, content, notePath = path, anchor = null, comms = null, chunk = null, partial = false, anchors = null }) {
   if (index.docs.has(path)) removeDoc(index, path);
 
   // The real note's own path/basename decide the filename-fallback title and
@@ -285,13 +284,13 @@ export function addDoc(index, path, { etag, uploaded, content, notePath = path, 
   // no message actually carries.
   const fields = extractFields(notePath, content);
   const tokensByField = [
-    termsOf(fields.title, tokenizer),
-    termsOf(fields.headings, tokenizer),
-    termsOf(fields.tags.join(" "), tokenizer),
-    termsOf(fields.body, tokenizer),
+    termsOf(fields.title),
+    termsOf(fields.headings),
+    termsOf(fields.tags.join(" ")),
+    termsOf(fields.body),
   ];
 
-  const anchorTokens = anchors ? termsOf(anchors.text, tokenizer) : null;
+  const anchorTokens = anchors ? termsOf(anchors.text) : null;
   const width = anchorTokens ? 5 : 4;
   const counts = new Map();
   tokensByField.forEach((tokens, fieldIndex) => tallyField(tokens, fieldIndex, counts, width));

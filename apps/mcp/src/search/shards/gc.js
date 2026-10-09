@@ -1,12 +1,12 @@
 /**
- * Garbage collection of unreferenced v3 shard revisions (CONTRACT-v3.md
+ * Garbage collection of unreferenced shard revisions (CONTRACT.md
  * "Collecting revisions", ruling OPEN-59).
  *
  * Revisions are content addressed and never rewritten, so every superseded
  * shard and every revision a losing pass wrote stays behind. Each call looks at
  * one page of the listing and deletes a revision only when all of these hold:
  *
- * - its key is under `.context/search/v3/shards/` and has the revision name
+ * - its key is under `.context/search/index/shards/` and has the revision name
  *   shape (nothing else is ever listed or deleted);
  * - the current manifest does not name it;
  * - its listed `uploaded` time is known and older than the retention window
@@ -41,8 +41,7 @@
  */
 
 import { SEARCH_PREFIX } from "../../../../../packages/shared/src/storageLayout.cjs";
-import { V3_SHARD_PREFIX } from "./constants.js";
-import { V3_LAYOUT } from "./io.js";
+import { SHARD_PREFIX } from "./constants.js";
 
 // lean: 15 minutes is well past any Worker request's wall time, so an in-flight
 // reader that pinned the previous manifest still finds its revisions; raise it
@@ -56,7 +55,7 @@ export const GC_BUDGET_FLOOR = 2;
 export const GC_PAGE_LIMIT = 200;
 
 /** Collector state: cursor, what was current, what was recently superseded. */
-export const GC_STATE_KEY = `${SEARCH_PREFIX}v3/gc.json`;
+export const GC_STATE_KEY = `${SEARCH_PREFIX}index/gc.json`;
 
 // Bounds on what `readState` accepts: a manifest names at most 64 revisions
 // (MAX_SHARD_COUNT), and `retained` entries older than a window are dropped, so
@@ -74,7 +73,7 @@ export const GC_STATE_MAX_BYTES = 256 * 1024;
 const REVISION_NAME = /^\d{3}-[0-9a-f]{16}\.json$/;
 
 function isRevisionKey(key) {
-  return typeof key === "string" && key.startsWith(V3_SHARD_PREFIX) && REVISION_NAME.test(key.slice(V3_SHARD_PREFIX.length));
+  return typeof key === "string" && key.startsWith(SHARD_PREFIX) && REVISION_NAME.test(key.slice(SHARD_PREFIX.length));
 }
 
 /** Upload time in ms, or null where the listing gives no usable time. */
@@ -132,7 +131,7 @@ function retainedAt(state, current, now) {
  * @param {import("../../store/index.js").ContextStore} store
  * @param {ReturnType<typeof import("../maintain.js").createSearchBudget>} budget
  * @param {{ manifest: object, now?: number, reserve?: number }} options
- *   `manifest` is the current v3 manifest; without one (or with another
+ *   `manifest` is the current manifest; without one (or with another
  *   layout) nothing is known to be referenced and nothing is read, listed or
  *   deleted. `reserve` is store ops the caller keeps for its own later work, on
  *   top of the floor.
@@ -141,7 +140,7 @@ function retainedAt(state, current, now) {
  */
 export async function collectShardRevisions(store, budget, { manifest, now = Date.now(), reserve = 0 } = {}) {
   const report = { deleted: 0, kept: 0, failed: 0 };
-  if (!manifest || manifest.layout !== V3_LAYOUT || !Array.isArray(manifest.shards)) return report;
+  if (!manifest || !Array.isArray(manifest.shards)) return report;
   const floor = GC_BUDGET_FLOOR + reserve;
   // A read and a listing whose state write cannot follow make no progress.
   if (budget.remaining < floor + 3 || !budget.take(floor)) return report;
@@ -158,12 +157,12 @@ export async function collectShardRevisions(store, budget, { manifest, now = Dat
   let cursor = state?.cursor;
   let page;
   try {
-    page = await store.list({ prefix: V3_SHARD_PREFIX, cursor, limit: GC_PAGE_LIMIT });
+    page = await store.list({ prefix: SHARD_PREFIX, cursor, limit: GC_PAGE_LIMIT });
   } catch (error) {
     // A cursor the provider no longer accepts restarts the listing.
     if (cursor === undefined || !budget.take(floor)) throw error;
     cursor = undefined;
-    page = await store.list({ prefix: V3_SHARD_PREFIX, limit: GC_PAGE_LIMIT });
+    page = await store.list({ prefix: SHARD_PREFIX, limit: GC_PAGE_LIMIT });
   }
 
   let finished = true;

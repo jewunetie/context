@@ -1,9 +1,9 @@
 /**
- * The CJK fallback's own rung of the shard walk (CONTRACT-v3.md "Queries and
+ * The CJK fallback's own rung of the shard walk (CONTRACT.md "Queries and
  * chunked results", ruling OPEN-48, Task 33 fix round 1).
  *
  * The walk routes and collects on the query's own terms. Only after it has
- * read, a tokenizer 2 query term containing CJK whose visible df is still 0
+ * read, a query term containing CJK whose visible df is still 0
  * has its two-character pieces routed: the occupied shards whose filter may
  * hold every piece of that term (or has no filter) are read within the same
  * budget and reserve, like the expansion wave before it. A term that hit
@@ -40,7 +40,7 @@ const NO_LEN = Object.freeze({ title: 0, headings: 0, tags: 0, body: 0 });
  * @param {object} store
  * @param {{ remaining: number }} budget the search budget, shared with the walk
  * @param {number} limit the snippet reserve the walk keeps
- * @param {object} manifest the served manifest (`format.tokenizer`, `filters`)
+ * @param {object} manifest the served manifest (`filters`)
  * @param {{ queryTerms: string[], occupied: number[], collections: object[],
  *   isVisible: (path: string) => boolean, shardsRead: number }} walk
  *   `collections` entries carry the shard `id` they were collected from; new
@@ -51,7 +51,6 @@ const NO_LEN = Object.freeze({ title: 0, headings: 0, tags: 0, body: 0 });
 export async function readFallbackPieceShards(store, budget, limit, manifest, walk) {
   const { queryTerms, occupied, collections, isVisible } = walk;
   let { shardsRead } = walk;
-  if (manifest.format?.tokenizer !== 2) return { shardsUnread: false, shardsRead };
 
   const found = (term) => collections.some((c) => (Number(c.dfByTerm?.get(term)) || 0) > 0);
   const pieceSets = queryTerms

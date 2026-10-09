@@ -5,8 +5,8 @@
  * sabotage-testing record.
  */
 
+import { INDEX_FORMAT_VERSION } from "../../src/search/format.js";
 import {
-  LEGACY_V1_KEY,
   MANIFEST_KEY,
   NOTE_INDEX_CHAR_CAP,
   R2Store,
@@ -19,12 +19,14 @@ import {
   fnv1a32,
   pathsForShard,
   serializeManifest,
-  shardKey,
+  shardKeyIn,
   shardOf,
   storedManifest,
+  shardHasNote,
   storedShard,
   syncShardedIndex,
 } from "./fixtures.mjs";
+import { unmarked } from "../../src/search/anchors.js";
 
 export async function runSearchShardsSyncBehaviorChecks(check) {
   // -- a first pass on a fresh bucket -------------------------------------
@@ -32,7 +34,6 @@ export async function runSearchShardsSyncBehaviorChecks(check) {
   {
     const bucket = createBucket();
     bucket.seed("privacy.md", "---\nrole: privacy-manifest\n---\n");
-    bucket.seed(LEGACY_V1_KEY, JSON.stringify({ version: 1, generatedAt: "", docs: [], terms: [] }));
     bucket.seed("index.md", "# Front page\n\nThe map of everything.\n");
     for (let n = 0; n < 6; n += 1) {
       bucket.seed(`1-projects/note-${n}.md`, `# Note ${n}\n\nA PANGOLIN sighting, number ${n}.\n`);
@@ -45,7 +46,7 @@ export async function runSearchShardsSyncBehaviorChecks(check) {
     check(
       "a first pass on a bucket with no manifest writes one, sized by the notes it listed",
       manifest !== null &&
-        manifest.version === 3 &&
+        manifest.version === INDEX_FORMAT_VERSION &&
         manifest.shardCount === chooseShardCount(7) &&
         // The freshness record a search reads instead of listing for itself.
         typeof manifest.freshness.listedAt === "string" &&
@@ -70,22 +71,8 @@ export async function runSearchShardsSyncBehaviorChecks(check) {
         manifest.stats[0].lenTotals.body ===
           [...storedShard(bucket, 0).docs.values()].reduce((sum, doc) => sum + doc.len.body, 0)
     );
-    check(
-      "v1's object is deleted on the pass that first creates a manifest",
-      bucket.objects.has(LEGACY_V1_KEY) === false && bucket.counts.delete === 1
-    );
-
-    // The other half of that rule: the delete is tied to *creating* the
-    // manifest, not spent on every pass. A delete per search is a subrequest
-    // per search bought for nothing.
-    bucket.seed(LEGACY_V1_KEY, "{}");
     bucket.seed("1-projects/note-0.md", "# Note 0\n\nAn OCELOT now, not a pangolin.\n");
-    bucket.resetCounts();
     await syncShardedIndex(store, { budget: createSearchBudget(60) });
-    check(
-      "and a later pass spends no delete, so v1 is not probed on every search",
-      bucket.counts.delete === 0 && bucket.objects.has(LEGACY_V1_KEY)
-    );
 
     bucket.resetCounts();
     const idle = await syncShardedIndex(store, { budget: createSearchBudget(60) });
@@ -108,7 +95,7 @@ export async function runSearchShardsSyncBehaviorChecks(check) {
         // than vouched for until somebody edits a note in it. It finds this one
         // healthy, which is why nothing above it moves — no note body, no write.
         // The bound is what this half pins; the audit's own block pins the rest.
-        bucket.counts.gets.filter((key) => key.startsWith(".context/search/v2/shard-")).length <= 1
+        bucket.counts.gets.filter((key) => key.startsWith(".context/search/index/shards/")).length <= 1
     );
   }
 
@@ -139,7 +126,7 @@ export async function runSearchShardsSyncBehaviorChecks(check) {
       "every note is in the shard fnv1a32 names, in the manifest and in the object",
       notes.every((path) => {
         const id = shardOf(path, 4);
-        return manifest.docsByShard[id].has(path) && storedShard(bucket, id)?.docs.has(path);
+        return manifest.docsByShard[id].has(path) && shardHasNote(storedShard(bucket, id), path);
       }) &&
         notes.every((path) =>
           manifest.docsByShard.every((docs, id) => (id === shardOf(path, 4)) === docs.has(path))
@@ -151,10 +138,11 @@ export async function runSearchShardsSyncBehaviorChecks(check) {
     const edited = notes.find((path) => shardOf(path, 4) === 1) || notes[0];
     const editedShard = shardOf(edited, 4);
     bucket.seed(edited, "# Note edited\n\nA NUMBAT replaced the wombat.\n");
+    const keyBefore = shardKeyIn(bucket, editedShard);
     bucket.resetCounts();
     const incremental = await syncShardedIndex(store, { budget: createSearchBudget(60) });
-    const shardGets = bucket.counts.gets.filter((key) => key.startsWith(".context/search/v2/shard-"));
-    const shardPuts = bucket.counts.puts.filter((key) => key.startsWith(".context/search/v2/shard-"));
+    const shardGets = bucket.counts.gets.filter((key) => key.startsWith(".context/search/index/shards/"));
+    const shardPuts = bucket.counts.puts.filter((key) => key.startsWith(".context/search/index/shards/"));
     check(
       "editing one note re-reads and re-writes exactly the shard that note is in",
       incremental.pending === 0 &&
@@ -162,17 +150,19 @@ export async function runSearchShardsSyncBehaviorChecks(check) {
         // audit on spare budget — never a second shard of *work*. Written: the
         // edited shard alone, because an audit that finds its shard readable
         // writes nothing. And exactly one note body, whatever the audit read.
-        shardGets.includes(shardKey(editedShard)) &&
+        // The write is a new content-addressed revision that the manifest now names.
+        shardGets.includes(keyBefore) &&
         shardGets.length <= 2 &&
         shardPuts.length === 1 &&
-        shardPuts[0] === shardKey(editedShard) &&
+        shardPuts[0] === shardKeyIn(bucket, editedShard) &&
+        shardPuts[0] !== keyBefore &&
         bucket.counts.noteGets.length === 1 &&
         bucket.counts.noteGets[0] === edited
     );
     check(
       "and the manifest is written once, with the new version token for that note",
       bucket.counts.puts.filter((key) => key === MANIFEST_KEY).length === 1 &&
-        storedManifest(bucket).docsByShard[editedShard].get(edited) === bucket.etagOf(edited) &&
+        unmarked(storedManifest(bucket).docsByShard[editedShard].get(edited)) === bucket.etagOf(edited) &&
         storedShard(bucket, editedShard).terms.has("numbat")
     );
 
@@ -184,7 +174,7 @@ export async function runSearchShardsSyncBehaviorChecks(check) {
     await syncShardedIndex(store, { budget: createSearchBudget(60) });
     check(
       "a deleted note leaves its shard and its docsByShard entry, not just the listing",
-      storedShard(bucket, removedShard)?.docs.has(removed) === false &&
+      shardHasNote(storedShard(bucket, removedShard), removed) === false &&
         storedManifest(bucket).docsByShard[removedShard].has(removed) === false &&
         storedManifest(bucket).stats[removedShard].docCount ===
           storedShard(bucket, removedShard).docs.size
@@ -212,8 +202,8 @@ export async function runSearchShardsSyncBehaviorChecks(check) {
     const measured = createBucket();
     seedBoth(measured);
     await converge(new R2Store(measured));
-    const bigBytes = bytesOf(measured.objects.get(shardKey(0)).body);
-    const smallBytes = bytesOf(measured.objects.get(shardKey(1)).body);
+    const bigBytes = bytesOf(measured.objects.get(shardKeyIn(measured, 0)).body);
+    const smallBytes = bytesOf(measured.objects.get(shardKeyIn(measured, 1)).body);
 
     const capped = createBucket();
     seedBoth(capped);
@@ -230,7 +220,7 @@ export async function runSearchShardsSyncBehaviorChecks(check) {
     // is on trial is the *containment* — one shard refused, its neighbour
     // written — and that is what these assert.
     const idOf = (path) => {
-      for (const [id, shard] of refused.shards) if (shard.docs.has(path)) return id;
+      for (const [id, shard] of refused.shards) if (shardHasNote(shard, path)) return id;
       return -1;
     };
     const bigId = idOf(bigPath);
@@ -242,9 +232,9 @@ export async function runSearchShardsSyncBehaviorChecks(check) {
     check(
       "a shard whose serialized form crosses the cap sheds the note that did it, and is written",
       shardByteCap < bigBytes &&
-        capped.objects.has(shardKey(bigId)) === true &&
-        capped.objects.has(shardKey(smallId)) === true &&
-        bytesOf(capped.objects.get(shardKey(bigId)).body) <= shardByteCap
+        capped.objects.has(shardKeyIn(capped, bigId)) === true &&
+        capped.objects.has(shardKeyIn(capped, smallId)) === true &&
+        bytesOf(capped.objects.get(shardKeyIn(capped, bigId)).body) <= shardByteCap
     );
     check(
       "...naming that note rather than reporting work still outstanding",
@@ -255,7 +245,7 @@ export async function runSearchShardsSyncBehaviorChecks(check) {
     );
     check(
       "...and the note stays recorded at its version, so the diff converges rather than re-fetching it",
-      storedManifest(capped)?.docsByShard[bigId].get(bigPath) === capped.etagOf(bigPath) &&
+      unmarked(storedManifest(capped)?.docsByShard[bigId].get(bigPath)) === capped.etagOf(bigPath) &&
         storedManifest(capped)?.stats[bigId].shed === 1 &&
         storedManifest(capped)?.docsByShard[smallId].size === 1
     );

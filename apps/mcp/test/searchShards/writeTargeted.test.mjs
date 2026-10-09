@@ -20,12 +20,14 @@ import {
   converge,
   createBucket,
   createSearchBudget,
-  shardKey,
+  shardKeyIn,
   shardOf,
   storedManifest,
+  shardHasNote,
   storedShard,
   syncShardedIndex,
 } from "./fixtures.mjs";
+import { unmarked } from "../../src/search/anchors.js";
 
 function seeded() {
   const bucket = createBucket();
@@ -65,7 +67,7 @@ export async function runSearchShardsWriteTargetedChecks(check) {
       bucket.counts.list === 0 &&
         bucket.counts.noteGets.join(",") === path &&
         shard.terms.has("okapi") &&
-        manifest.docsByShard[shardOf(path, manifest.shardCount)].get(path) === bucket.etagOf(path) &&
+        unmarked(manifest.docsByShard[shardOf(path, manifest.shardCount)].get(path)) === bucket.etagOf(path) &&
         pass.committed === true &&
         pass.touched.join(",") === path
     );
@@ -86,7 +88,7 @@ export async function runSearchShardsWriteTargetedChecks(check) {
     const edited = shardHolding(bucket, path).shard;
     check(
       "an edit replaces the note's terms rather than adding to them",
-      edited.terms.has("giraffe") && !edited.terms.has("okapi")
+      edited.terms.has("giraff") && !edited.terms.has("okapi")
     );
 
     bucket.remove(path);
@@ -97,7 +99,7 @@ export async function runSearchShardsWriteTargetedChecks(check) {
     const removed = shardHolding(bucket, path);
     check(
       "a path the writer removed leaves the index",
-      !removed.shard.docs.has(path) &&
+      !shardHasNote(removed.shard, path) &&
         !removed.manifest.docsByShard[removed.id].has(path)
     );
   }
@@ -155,7 +157,8 @@ export async function runSearchShardsWriteTargetedChecks(check) {
     await converge(store);
     const path = "1-projects/note-2.md";
     const { id } = shardHolding(bucket, path);
-    bucket.objects.set(shardKey(id), { body: "{not json", etag: "broken", uploaded: new Date() });
+    const brokenKey = shardKeyIn(bucket, id);
+    bucket.objects.set(brokenKey, { body: "{not json", etag: "broken", uploaded: new Date() });
     bucket.seed(path, "# Note 2\n\nNow about an OKAPI.\n");
     bucket.resetCounts();
     const pass = await syncShardedIndex(store, {
@@ -164,8 +167,8 @@ export async function runSearchShardsWriteTargetedChecks(check) {
     });
     check(
       "a shard the pass cannot read is left for a listing to rebuild, never rebuilt from one note",
-      !bucket.counts.puts.includes(shardKey(id)) &&
-        bucket.objects.get(shardKey(id)).body === "{not json" &&
+      !bucket.counts.puts.some((key) => key.startsWith(".context/search/index/shards/")) &&
+        bucket.objects.get(brokenKey).body === "{not json" &&
         pass.pending === 1
     );
   }

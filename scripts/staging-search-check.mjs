@@ -2,9 +2,9 @@
  * The staging check that the deployed Worker segments Chinese end to end
  * (Task 35, ruling OPEN-63). `staging-cli-live.mjs` writes a note holding
  * 数据库迁移计划已经确认 and calls this to search for 迁移 until it hits.
- * Tokenizer 1 reads the whole run as one token, so only a v3 index built with
- * tokenizer 2 can answer: a hit proves the Worker's `Intl.Segmenter` works and
- * the v3 index is built and served.
+ * A tokenizer without word segmentation reads the whole run as one token, so
+ * only an index built with the Worker's `Intl.Segmenter` can answer: a hit
+ * proves the segmenter works and the index is built and served.
  *
  * A hit is only believed after a control search for a substring of the note's
  * marker that no tokenizer produces as a term or prefix (`control`). If that
@@ -13,11 +13,11 @@
  *
  * Callers never see index counts (`visible.js` withholds them so a team
  * connection cannot subtract them from what it sees), so this check cannot
- * report them. They are operator-only: v3 `built` and `pending` are in the
- * Worker's `search-index-format` log line, one per v3 pass.
+ * report them.
  *
- * Known limit: a bucket with a permanently oversized shard never reaches
- * `built`, so v3 is never served there and this check fails with no hit.
+ * Known limit: until the first index pass completes, search answers from the
+ * literal scan, and a runtime whose segmenter fails its self-test serves no
+ * index at all; either way this check fails with no hit.
  *
  * Returns identifiers and booleans only, never note text.
  */
@@ -36,5 +36,5 @@ export async function segmentsChinese({ search, control, path, sleep = (ms) => n
     }
     if (attempt < attempts) await sleep(delayMs);
   }
-  return { ok: false, attempts, reason: `no hit in ${attempts} attempts; v3 built and pending are in the Worker search-index-format log` };
+  return { ok: false, attempts, reason: `no hit in ${attempts} attempts; the index may still be building, or the Worker segmenter failed its self-test` };
 }

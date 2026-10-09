@@ -21,7 +21,7 @@ import {
 } from "../src/search/indexer.js";
 import { exceedsUtf8Bytes } from "../src/search/maintain.js";
 import { noteTitle, snippetLinesFor } from "../src/search/visible.js";
-import { termsOf, tokenize } from "../src/search/text.js";
+import { termsOf } from "../src/search/text.js";
 import { extractReferences } from "../src/links.js";
 import { referenceCases } from "./fixtures/linkReferences.mjs";
 
@@ -434,7 +434,7 @@ export async function runSearchIndexerChecks(check) {
   //
   // **The floor is a Latin-script-prose assumption, and that is not a defect
   // it hides.** CJK is not fixed by lowering it: there is no segmentation at
-  // all, so `tokenize("日本語 の 本")` is `["日本語"]` and a query for 日本 or 本
+  // all, so the old `tokenize("日本語 の 本")` was `["日本語"]` and a query for 日本 or 本
   // misses whatever the floor is. `>= 1` would gain の, a particle. CJK needs
   // bigram indexing or a segmenter, and this test does not stand in the way of
   // one — but a future CJK change will touch this line, and should read this
@@ -444,21 +444,20 @@ export async function runSearchIndexerChecks(check) {
   // header is explicit that it borrows `termsOf` as a fixture helper rather
   // than as a subject. So this is the tokenizer's first test.
   {
-    const twoChars = tokenize("AI and ML at 3M, PR go ok");
+    const twoChars = termsOf("AI and ML at 3M, PR go ok");
     check(
       "a two-character run is a term, so ordinary short words stay searchable",
       ["ai", "ml", "at", "3m", "pr", "go", "ok"].every((term) => twoChars.includes(term))
     );
     check(
       "a one-character run is not a term, so single letters stay out of the vocabulary",
-      tokenize("a b c 1 2 x").length === 0 &&
-        tokenize("one a two").join(" ") === "one two"
+      termsOf("a b c 1 2 x").length === 0 &&
+        termsOf("one a two").join(" ") === "one two"
     );
-    // Through `termsOf` as well, since that is what the indexer and the query
-    // parser both call — a floor enforced in `tokenize` and lost in the wrapper
-    // would be a floor that holds nowhere it matters.
+    // And through the case-folding path of a mixed-case query, since that is
+    // what the indexer and the query parser both call.
     check(
-      "and the same floor holds through termsOf, which is what both sides call",
+      "and the same floor holds for mixed case, which is what both sides call",
       termsOf("a b AI").join(" ") === "ai" && !termsOf("x y z").length
     );
 
@@ -471,8 +470,8 @@ export async function runSearchIndexerChecks(check) {
     // **entirely unsearchable** — every token dropped, every query empty — and
     // the suite would have said nothing.
     check(
-      "tokens are Unicode letters and digits, not ASCII ones",
-      tokenize("café Привет 日本語 3M").join(" ") === "café привет 日本語 3m"
+      "tokens are Unicode letters and digits, not ASCII ones (Latin accents fold, CJK runs add pieces)",
+      termsOf("café Привет 日本語 3M").join(" ") === "cafe привет 日本語 日本 本語 3m"
     );
     // And `termsOf` losing its `.map(stem)` passed too, so nothing anywhere
     // asserted that a search for "notes" finds a note that says "note" — which
@@ -484,8 +483,9 @@ export async function runSearchIndexerChecks(check) {
         // …and the `ss` guard, so "class" does not become "clas"…
         termsOf("classes class").join(" ") === "class class" &&
         // …and the length guard, so a three-letter word keeps its s: "gas"
-        // stemmed to "ga" is not a smaller word, it is a different one.
-        termsOf("gas bus its").join(" ") === "gas bus its" &&
+        // stemmed to "ga" is not a smaller word, it is a different one. (Porter2
+        // drops the s of "its", which the previous stemmer kept.)
+        termsOf("gas bus its").join(" ") === "gas bus it" &&
         // …at exactly four, which is where the guard sits: "tags" and "apps"
         // are the shape a note's own vocabulary is full of.
         termsOf("tags apps eyes").join(" ") === "tag app eye"

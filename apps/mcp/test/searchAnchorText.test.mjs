@@ -1,24 +1,23 @@
 /**
- * Anchor-text indexing (SEARCH_ANCHOR_TEXT, off by default).
+ * Anchor-text indexing (always on).
  *
  * When note A links to note B, the link's display text (`[[B|alias]]`,
  * `[label](B.md)`) and A's title are recorded on the graph's posting entry for
- * B, and a v3 index built with the switch adds them to B's document as a fifth,
- * low-weight field. Covered here: the format switch, the graph record and
- * posting fields, the caps, the privacy rule at index time and the guard at
- * query time, bare-name uniqueness, freshness after an edit and a delete of A,
- * and progress at DEFERRED_SYNC_FLOOR. The switch-off pins are
- * searchV2Frozen.test.mjs and searchV3Frozen.test.mjs.
+ * B, and the index adds them to B's document as a fifth, low-weight field.
+ * Covered here: the graph record and posting fields, the caps, the privacy
+ * rule at index time and the guard at query time, bare-name uniqueness,
+ * freshness after an edit and a delete of A, and progress at
+ * DEFERRED_SYNC_FLOOR. `searchFrozen.test.mjs` pins the store operations and
+ * stored bodies of a whole build.
  *
  * ## Sabotage record
  *
- * Run as temporary local edits and reverted, against this file plus both
- * frozen pins. Counts are failing tests.
+ * Run as temporary local edits and reverted, against this file plus the
+ * frozen pin. Counts are failing tests.
  *
  *   admission always true (admitsAnchor)                                 3 (admission table, collectAnchors, private source)
  *   query-time guard off (anchorsCount always true)                      1 (invariance after narrowing)
  *   bare name used without the uniqueness check                          1 (ambiguous name)
- *   switch on by default                                                 3 (format, end to end, v3 off pin)
  *   no refresh after a write (afterWrite.js)                             2 (write freshness, queued refresh)
  *   no refresh after reconciliation (maintenance.js)                     1 (delete freshness)
  *   refresh list not written to the manifest                             1 (queued refresh)
@@ -36,7 +35,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { indexFormatFor, formatsEqual, usesV3, DEFAULT_FORMAT } from "../src/search/format.js";
 import { buildNodeRecord, membershipsFor, PARSER_VERSION } from "../src/graph/facts.js";
 import { readPostings } from "../src/graph/postings.js";
 import { initGraphManifest } from "../src/graph/manifest.js";
@@ -54,25 +52,11 @@ import {
 import { censusFromManifest } from "../src/search/d1/backfill.js";
 import { canSee, effectiveVisibility } from "../src/privacy/engine.js";
 import { r2LikeBucket } from "./store/fixtures.mjs";
-import { DOCMAP_KEY, V3_DOCMAP_KEY } from "../src/search/shards/constants.js";
+import { DOCMAP_KEY } from "../src/search/shards/constants.js";
 
 const NOW = Date.parse("2026-01-01T00:00:00Z");
-const ANCHORS = indexFormatFor({ SEARCH_TOKENIZER: "2", SEARCH_ANCHOR_TEXT: "1" });
-const PLAIN = indexFormatFor({ SEARCH_TOKENIZER: "2" });
 const isIndexable = (key) => key.endsWith(".md") && key !== "privacy.md" && !key.split("/").some((s) => s.startsWith("."));
 const big = () => createSearchBudget(100000);
-
-// ---------------------------------------------------------------- the switch
-
-test("format: SEARCH_ANCHOR_TEXT=1 adds anchors to the format, anything else leaves it absent", () => {
-  assert.equal(ANCHORS.anchors, true);
-  assert.equal(usesV3(indexFormatFor({ SEARCH_ANCHOR_TEXT: "1" })), true, "tokenizer 1 with anchors is still a v3 index");
-  assert.equal(formatsEqual(ANCHORS, PLAIN), false);
-  for (const value of [undefined, "", "0", "true", "on", " 2", 1]) {
-    assert.deepEqual(indexFormatFor({ SEARCH_ANCHOR_TEXT: value }), DEFAULT_FORMAT, String(value));
-  }
-  assert.equal("anchors" in PLAIN, false);
-});
 
 // ---------------------------------------------------------------- graph facts
 
@@ -158,8 +142,8 @@ test("collectAnchors: skips self, unknown and narrower sources, and caps sources
 
 // ---------------------------------------------------------------- end to end
 
-/** A bucket with `notes`, their graph projection, and a v3 index built in `format`. */
-async function world(notes, { format = ANCHORS, rules = [{ prefix: "w", vis: "team" }], overrides = new Map() } = {}) {
+/** A bucket with `notes`, their graph projection, and the index built over them. */
+async function world(notes, { rules = [{ prefix: "w", vis: "team" }], overrides = new Map() } = {}) {
   const store = r2LikeBucket();
   store.capabilities = { conditionalWrite: true, conditionalCreate: true };
   for (const [path, body] of Object.entries(notes)) await store.put(path, body);
@@ -168,11 +152,9 @@ async function world(notes, { format = ANCHORS, rules = [{ prefix: "w", vis: "te
     const { state } = await projectNote(store, path, body, "1", { budget: big(), gen: "1", mode: "conditional", now: NOW });
     assert.equal(state, "projected", path);
   }
-  store.searchIndexFormat = format;
   store.privacy = { rules, overrides };
   await converge(store);
-  const manifest = await loadIndexManifest(store, big(), 0);
-  assert.equal(manifest.layout.namespace, "v3");
+  assert.ok(await loadIndexManifest(store, big(), 0), "the index is served");
   return store;
 }
 
@@ -202,13 +184,11 @@ const LINKED = {
   "w/c.md": "# Unrelated\n\nNothing here.\n",
 };
 
-test("end to end: the alias finds the target only with the switch on", async () => {
+test("end to end: the alias finds the target", async () => {
   const on = await world(LINKED);
   assert.deepEqual((await search(on, "qlcodename")).paths.sort(), ["w/a.md", "w/b.md"]);
   // A's title is in B's anchor field too.
   assert.ok((await search(on, "kickoff")).paths.includes("w/b.md"));
-  const off = await world(LINKED, { format: PLAIN });
-  assert.deepEqual((await search(off, "qlcodename")).paths, ["w/a.md"]);
 });
 
 test("end to end: the anchor field weighs less than the target's own words", async () => {
@@ -268,12 +248,9 @@ test("invariance: a source narrowed after indexing never makes the target findab
 
 test("chunks: the anchor field rides on a chunked note's first document only", async () => {
   const long = Array.from({ length: 60 }, (_, i) => `Sentence ${i} of a long plan with words.`).join(" ");
-  const store = await world(
-    { "w/a.md": "# A\n\nSee [[b|qlchunkalias]].\n", "w/b.md": `# B\n\n${long}\n\n## Part two\n\n${long}\n` },
-    { format: indexFormatFor({ SEARCH_TOKENIZER: "2", SEARCH_CHUNK_CHARS: "1000", SEARCH_ANCHOR_TEXT: "1" }) }
-  );
+  const store = await world({ "w/a.md": "# A\n\nSee [[b|qlchunkalias]].\n", "w/b.md": `# B\n\n${long}\n\n## Part two\n\n${long}\n` });
   const docs = [];
-  for (const [key, { body }] of store.objects) if (key.startsWith(".context/search/v3/shards/")) docs.push(...JSON.parse(body).docs);
+  for (const [key, { body }] of store.objects) if (key.startsWith(".context/search/index/shards/")) docs.push(...JSON.parse(body).docs);
   const ofB = docs.filter(([, doc]) => doc.notePath === "w/b.md");
   assert.ok(ofB.length > 1, "B is chunked");
   assert.equal(ofB.filter(([, doc]) => doc.anchors).length, 1);
@@ -289,7 +266,7 @@ test("encrypted: a sealed target gets no anchor text, so nothing about it reache
   assert.deepEqual((await search(store, "qlsealedalias")).paths, ["w/a.md"]);
   // The answer alone would not show it (search drops a sealed note's hits), so the shard is read.
   const docs = [];
-  for (const [key, { body }] of store.objects) if (key.startsWith(".context/search/v3/shards/")) docs.push(...JSON.parse(body).docs);
+  for (const [key, { body }] of store.objects) if (key.startsWith(".context/search/index/shards/")) docs.push(...JSON.parse(body).docs);
   const b = docs.find(([path]) => path === "w/b.md");
   assert.ok(b, "the sealed note is indexed (its version, no words)");
   assert.equal(b[1].anchors, undefined);
@@ -323,7 +300,7 @@ test("freshness: deleting the source removes its words from the target within on
   assert.deepEqual((await search(store, "qlcodename")).paths, []);
 });
 
-test("freshness: a refresh the pass cannot afford is kept in the v3 manifest and done by the next pass", async () => {
+test("freshness: a refresh the pass cannot afford is kept in the manifest and done by the next pass", async () => {
   const store = await world(LINKED);
   const body = LINKED["w/a.md"].replace("qlcodename", "qlqueued");
   const put = await store.put("w/a.md", body);
@@ -336,42 +313,26 @@ test("freshness: a refresh the pass cannot afford is kept in the v3 manifest and
 
 // ---------------------------------------------------------------- budget
 
-test("budget: at DEFERRED_SYNC_FLOOR the anchor build is served as fast as without anchors, v2 progress is unchanged, and every anchor is read once served", async () => {
-  // The Task 31 liveness cell's shape (40 notes, one folder), each note linking the next by alias.
+test("budget: at DEFERRED_SYNC_FLOOR the build completes, and every anchor is read once it has", async () => {
+  // The liveness cell's shape (40 notes, one folder), each note linking the next by alias.
   const notes = Array.from({ length: 40 }, (_, i) => ({ path: `f0/n${i}.md`, text: `# N${i}\n\nword${i} see [[n${(i + 1) % 40}|qlalias${i}]]\n` }));
-  const make = async (format) => {
-    const store = r2LikeBucket();
-    store.capabilities = { conditionalWrite: true, conditionalCreate: true };
-    for (const note of notes) await store.put(note.path, note.text);
-    await initGraphManifest(store, big(), { mode: "conditional", now: NOW });
-    for (const note of notes) await projectNote(store, note.path, note.text, "1", { budget: big(), gen: "1", mode: "conditional", now: NOW });
-    store.searchIndexFormat = format;
-    return store;
-  };
-  const on = await make(ANCHORS);
-  const off = await make(PLAIN);
-  const v2 = (store) => store.objects.get(DOCMAP_KEY)?.body ?? null;
-  const served = async (store) => (await loadIndexManifest(store, big(), 0)).layout.namespace === "v3";
+  const on = r2LikeBucket();
+  on.capabilities = { conditionalWrite: true, conditionalCreate: true };
+  for (const note of notes) await on.put(note.path, note.text);
+  await initGraphManifest(on, big(), { mode: "conditional", now: NOW });
+  for (const note of notes) await projectNote(on, note.path, note.text, "1", { budget: big(), gen: "1", mode: "conditional", now: NOW });
   const quiet = console.log;
   console.log = () => {};
-  let servedOn = 0;
-  let servedOff = 0;
+  let complete = 0;
   try {
-    for (let pass = 1; pass <= 1000 && (!servedOn || !servedOff); pass += 1) {
-      // One fixed clock for every pass, so both arms are deterministic. (A clock
-      // that moves between passes makes the v2 pass rewrite its manifest every
-      // time, and at this budget v3 then never advances, with or without
-      // anchors: measured, pre-existing.)
-      if (!servedOn) await syncShardedIndex(on, { budget: DEFERRED_SYNC_FLOOR, now: NOW, visibilityOf: () => "team" });
-      if (!servedOff) await syncShardedIndex(off, { budget: DEFERRED_SYNC_FLOOR, now: NOW });
-      if (!servedOn && !servedOff) assert.equal(v2(on), v2(off), `v2 docmap after pass ${pass}`);
-      if (!servedOn && (await served(on))) servedOn = pass;
-      if (!servedOff && (await served(off))) servedOff = pass;
+    for (let pass = 1; pass <= 1000 && !complete; pass += 1) {
+      // One fixed clock for every pass, so the run is deterministic.
+      const result = await syncShardedIndex(on, { budget: DEFERRED_SYNC_FLOOR, now: NOW, visibilityOf: () => "team" });
+      if (result.pending === 0 && !result.listingTruncated) complete = pass;
     }
-    assert.ok(servedOn > 0 && servedOff > 0, `served: anchors ${servedOn}, without ${servedOff}`);
-    assert.ok(servedOn <= servedOff, `anchors ${servedOn} passes vs ${servedOff} without`);
-    // Notes indexed before their anchors could be afforded are re-read once v3 is served.
-    const unread = () => [...on.objects.get(V3_DOCMAP_KEY).body.matchAll(/\\u0000anchors/g)].length;
+    assert.ok(complete > 0, "the build completes at the floor budget");
+    // Notes indexed before their anchors could be afforded are re-read once the build is complete.
+    const unread = () => [...on.objects.get(DOCMAP_KEY).body.matchAll(/\\u0000anchors/g)].length;
     let pass = 0;
     for (; pass < 400 && unread() > 0; pass += 1) {
       await syncShardedIndex(on, { budget: DEFERRED_SYNC_FLOOR, now: NOW, visibilityOf: () => "team" });

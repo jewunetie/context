@@ -267,10 +267,9 @@ async function maintainNow(store, budget, isIndexable, found, visibilityOf, opti
   const inline = options.backfillOps !== undefined;
   const graphOff = store.writeEnrichBudget === 0;
   if (!inline && !graphOff && synced?.manifest && budget.remaining >= graphPassFloor(store)) {
-    // With anchor text on, the graph leaves enough for the refresh pass below
-    // to record what it cannot do on the v3 manifest (anchors.js).
-    const anchors = store.searchIndexFormat?.anchors === true;
-    const graphBudget = anchors ? keepBack(budget, ANCHOR_REFRESH_RESERVE) : budget;
+    // The graph leaves enough for the refresh pass below to record what it
+    // cannot do on the manifest (anchors.js).
+    const graphBudget = keepBack(budget, ANCHOR_REFRESH_RESERVE);
     let reconciled = null;
     try {
       const freshness = synced.manifest.freshness;
@@ -288,13 +287,11 @@ async function maintainNow(store, budget, isIndexable, found, visibilityOf, opti
     } catch {
       // Reconciliation repairs it on a later pass.
     }
-    if (anchors) await refreshAnchorTargets(store, reconciled?.touched, { visibilityOf, budget, isIndexable });
+    await refreshAnchorTargets(store, reconciled?.touched, { visibilityOf, budget, isIndexable });
   }
   // Housekeeping last, after the graph: superseded revisions only cost storage,
   // so the graph (correctness) gets the budget first. It never changes the pass's
-  // outcome, so a failure here is swallowed like the sync's above. `collectShardRevisions`
-  // refuses any manifest that is not the v3 layout (while v3 builds, the sync
-  // returns the v2 one), so nothing is listed or deleted then.
+  // outcome, so a failure here is swallowed like the sync's above.
   // Nothing runs after it, so no `reserve` is kept back (the projection's ran above).
   try {
     if (budget.remaining > GC_BUDGET_FLOOR) {

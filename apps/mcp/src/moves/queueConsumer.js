@@ -8,18 +8,15 @@ import { createControlPlane } from "../controlPlane.js";
 import { MOVE_MATERIALIZE_BATCH } from "./limits.js";
 import { moveProgressFromText } from "./jobs.js";
 import { searchBudgetFor } from "../search/budget.js";
-import { indexFormatFor } from "../search/format.js";
 import { storeForOpenedBinding } from "../session.js";
 import { toolMaterializeMove } from "../tools/moves/materialize.js";
 
 /**
  * The deployment's search settings on a job's store, as `route.js` sets them
- * per request: the subrequest budget and the index format switch, so a move's
- * index updates reach the same namespace a search serves.
+ * per request: the subrequest budget.
  */
 export function configureJobStore(store, env) {
   store.searchSubrequestBudget = searchBudgetFor(env);
-  store.searchIndexFormat = indexFormatFor(env);
   return store;
 }
 

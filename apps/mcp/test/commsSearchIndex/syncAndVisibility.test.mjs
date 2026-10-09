@@ -147,7 +147,7 @@ export async function runCommsVisibilityChecks(check) {
   // The direct proof: A's own stored shard object never contains a doc whose
   // content came from B's note — two entirely separate stores, so nothing in
   // A's bytes was ever computed from B's bucket at all.
-  const shardKeysA = [...workspaceA.objects.keys()].filter((k) => k.startsWith(".context/search/v2/shard-"));
+  const shardKeysA = [...workspaceA.objects.keys()].filter((k) => k.startsWith(".context/search/index/shards/"));
   let sawB = false;
   for (const key of shardKeysA) {
     if (workspaceA.objects.get(key).body.includes("B holds")) sawB = true;

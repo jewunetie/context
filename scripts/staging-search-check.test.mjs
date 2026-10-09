@@ -14,12 +14,12 @@ test('a hit on the written note with a clean control passes', async () => {
   assert.deepEqual(result, { ok: true, attempts: 3 });
 });
 
-test('no hit fails with one fixed reason that points at the v3 log', async () => {
+test('no hit fails with one fixed reason', async () => {
   const result = await run({ search: replies([`${miss}\n\n[note: the search index is still catching up]`]) });
   assert.equal(result.ok, false);
   assert.equal(result.attempts, 3);
   assert.equal(result.inconclusive, undefined);
-  assert.equal(result.reason, 'no hit in 3 attempts; v3 built and pending are in the Worker search-index-format log');
+  assert.equal(result.reason, 'no hit in 3 attempts; the index may still be building, or the Worker segmenter failed its self-test');
   const other = await run({ search: replies([miss]) });
   assert.equal(other.reason, result.reason);
 });

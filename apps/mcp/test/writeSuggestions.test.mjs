@@ -71,6 +71,7 @@ import { parseNode } from "../src/graph/records.js";
 import { projectNote } from "../src/graph/project.js";
 import { encryptNote } from "../src/encryption.js";
 import { createSearchBudget } from "../src/search/maintain.js";
+import { ANCHOR_REFRESH_OPS } from "../src/search/anchors.js";
 import { DOCMAP_KEY, syncShardedIndex } from "../src/search/shards.js";
 import { CONTROL_PLANE_ORIGIN, GATEWAY_SECRET, createControlPlaneStub } from "./controlPlaneStub.mjs";
 import { memoryBucket } from "./store/fixtures.mjs";
@@ -161,7 +162,13 @@ const enrichOps = (store) => store.log.filter((op) => !op.includes(".context/mov
 // The write itself maintains the search index, so suggestion work shows only
 // as search ops beyond the same call's with suggestions unable to run.
 // Audit keys carry a time and a random id.
-const audited = (s) => String(s).replace(/\.context\/audit\/[^"\s]+\.json/g, ".context/audit/A.json");
+// Shard revisions are named by a digest of their bytes, which carry real
+// timestamps and etags, so two runs of the same write never agree on the name.
+const audited = (s) =>
+  String(s)
+    .replace(/\.context\/audit\/[^"\s]+\.json/g, ".context/audit/A.json")
+    .replace(/(shards\/\d{3})-[0-9a-f]{16}/g, "$1-H")
+    .replace(/"digest":"[0-9a-f]{64}"/g, '"digest":"H"');
 const extraSearch = (on, off) => searchOps(on).length - searchOps(off).length;
 
 /** Today's result plus exactly one appended block, and no other field. */
@@ -341,11 +348,14 @@ test("post-commit ops: the graph update alone stays within WRITE_ENRICH_SUBREQUE
   for (const budget of [1, 8, 9, 20, 30, 48, 60, 80, 200]) {
     const graphOnly = asStore(await bucketWith(), { budget });
     await write(graphOnly, args, { suggest: false });
-    assert.ok(enrichOps(graphOnly).length - floor <= budget, `budget ${budget}: graph update ${enrichOps(graphOnly).length - floor} ops`);
+    // Anchor text is always on, so a write that changes a link target's anchors
+    // also re-indexes that target on a refresh budget of its own
+    // (ANCHOR_REFRESH_OPS, after the graph update).
+    assert.ok(enrichOps(graphOnly).length - floor <= budget + ANCHOR_REFRESH_OPS, `budget ${budget}: graph update ${enrichOps(graphOnly).length - floor} ops`);
     const store = asStore(await bucketWith(), { budget });
     await write(store, args);
     const spent = enrichOps(store).length - floor;
-    assert.ok(spent <= 2 * budget, `budget ${budget}: ${spent} ops after commit`);
+    assert.ok(spent <= 2 * budget + ANCHOR_REFRESH_OPS, `budget ${budget}: ${spent} ops after commit`);
   }
 });
 
@@ -459,7 +469,7 @@ test("through dispatch: plain write_note gets the block; comments and forms neve
   assert.ok(high.plainOps > low.plainOps, "positive control: the plain write searched");
   for (const [i, [name]] of calls.entries()) {
     assert.doesNotMatch(JSON.stringify(high.rest[i].result), /Link suggestions|linkSuggestions/, name);
-    assert.deepEqual(high.rest[i].ops, low.rest[i].ops, name);
+    assert.deepEqual(high.rest[i].ops.map(audited), low.rest[i].ops.map(audited), name);
   }
 });
 

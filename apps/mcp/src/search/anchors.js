@@ -1,7 +1,7 @@
 /**
  * Anchor text: the words other notes use for a note, added to its search
- * document (CONTRACT-v3.md "Anchor text"). Only for a v3 index whose format
- * carries `anchors: true` (`SEARCH_ANCHOR_TEXT=1`, `format.js`).
+ * document (CONTRACT-REVISIONS.md "Anchor text"). Always on: there is no
+ * switch.
  *
  * The link graph records, on each `incoming:` and `bare:` posting entry, the
  * link's display texts and the source note's title (`graph/facts.js`). When
@@ -21,7 +21,7 @@
  * Freshness: the graph reports which targets' postings an edit, a delete or a
  * reconciliation pass changed (`touched`); those notes are re-indexed by a
  * targeted pass (`refreshAnchorTargets`), and what a pass could not afford is
- * kept on the v3 manifest (`anchorRefresh`, at most ANCHOR_REFRESH_CAP paths)
+ * kept on the manifest (`anchorRefresh`, at most ANCHOR_REFRESH_CAP paths)
  * for the next pass of any kind.
  */
 
@@ -31,8 +31,7 @@ import { isNewer, readGraphManifest } from "../graph/manifest.js";
 import { nameHash, pathHash } from "../graph/keys.js";
 import { readPostings } from "../graph/postings.js";
 import { createSearchBudget } from "./maintain.js";
-import { writerFor } from "./shards/revisions.js";
-import { syncPass } from "./shards/sync.js";
+import { syncShardedIndex } from "./shards/sync.js";
 
 export { ANCHOR_TEXT_CHARS, ANCHOR_TEXTS_PER_ENTRY, ANCHOR_TITLE_CHARS } from "../graph/facts.js";
 export { ANCHOR_FIELD_B, ANCHOR_FIELD_WEIGHT } from "./shardQuery.js";
@@ -42,7 +41,7 @@ export { ANCHORS_UNREAD, unmarked } from "./shards/constants.js";
 export const ANCHOR_SOURCES_PER_TARGET = 32;
 /** Posting pages read per family per note: page 0 only (256 entries). */
 export const ANCHOR_POSTING_PAGES = 1;
-/** Paths kept on the v3 manifest for a later refresh; the oldest go first past it. */
+/** Paths kept on the manifest for a later refresh; the oldest go first past it. */
 export const ANCHOR_REFRESH_CAP = 256;
 /** Passes a refresh tries when it loses the manifest race to another writer. */
 const REFRESH_ATTEMPTS = 3;
@@ -178,20 +177,18 @@ export function refreshPaths(carried, refresh, paths, claimed) {
 }
 
 /**
- * Re-index the notes in `touched` for their anchor field, in the v3 index,
- * behind a write or after a reconciliation pass. A pass with no listing: the
- * notes are fetched by name; what it cannot afford stays on the manifest.
- * Does nothing unless the configured format has anchors. Never rejects.
+ * Re-index the notes in `touched` for their anchor field, behind a write or
+ * after a reconciliation pass. A pass with no listing: the notes are fetched by
+ * name; what it cannot afford stays on the manifest. Never rejects.
  */
 export async function refreshAnchorTargets(store, touched, { visibilityOf, budget = ANCHOR_REFRESH_OPS, isIndexable } = {}) {
-  const writer = writerFor(store);
-  if (!writer.format?.anchors || !Array.isArray(touched) || touched.length === 0) return;
+  if (!Array.isArray(touched) || touched.length === 0) return;
   try {
     const ops = typeof budget === "object" && budget ? budget : createSearchBudget(budget);
     // A write's own targeted pass runs beside this one; the manifest is the
     // concurrency point, so a pass that lost it re-reads and tries again.
     for (let attempt = 0; attempt < REFRESH_ATTEMPTS; attempt += 1) {
-      const pass = await syncPass(store, { budget: ops, only: new Map(), refresh: touched, visibilityOf, ...(isIndexable && { isIndexable }) }, writer);
+      const pass = await syncShardedIndex(store, { budget: ops, only: new Map(), refresh: touched, visibilityOf, ...(isIndexable && { isIndexable }) });
       if (pass.committed || !pass.changed) return;
     }
   } catch {

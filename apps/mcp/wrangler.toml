@@ -85,17 +85,6 @@ SEARCH_SUBREQUEST_BUDGET = "600"
 # Store ops one write may spend on link-graph work behind its response (default 8).
 WRITE_ENRICH_SUBREQUEST_BUDGET = "80"
 
-# The search index format switch (src/search/CONTRACT-v3.md, ruling OPEN-57).
-# Unset everywhere: search reads and writes today's index under
-# `.context/search/v2/`. Setting either to a non-default value builds a second
-# index under `.context/search/v3/` while v2 keeps serving, and search switches
-# to it only once a full pass has built it. Staging sets SEARCH_TOKENIZER in `[env.staging.vars]`.
-# SEARCH_TOKENIZER = "2"        # "1" (today) or "2"
-# SEARCH_CHUNK_CHARS = "2000"   # "0" or unset (no chunking), "1000", "2000", "4000"
-# SEARCH_ANCHOR_TEXT = "1"      # exactly "1": a v3 index with the anchor-text field (link aliases and
-#                               # source titles from the link graph, src/search/anchors.js); anything else is off.
-#                               # Bench only so far: never set it in `[vars]` or `[env.staging.vars]` without a bench win.
-
 # ── Presence: who else has this note open ───────────────────────────────────
 #
 # One Durable Object per note, addressed by `idFromName(workspaceId + path)`.
@@ -230,11 +219,6 @@ PUBLIC_ORIGIN = "https://mcp-staging.context.lc"
 ALLOWED_ORIGINS = "https://staging.context.lc"
 APP_ORIGIN = "https://staging.context.lc"
 SEARCH_SUBREQUEST_BUDGET = "600"
-# Staging only (Task 35): builds the tokenizer 2 index under `v3/`. Never put
-# this in `[vars]`. `scripts/staging-cli-live.mjs` checks that this Worker
-# segments Chinese before the switch is considered for production; v3 `built`
-# and `pending` are in the `search-index-format` log.
-SEARCH_TOKENIZER = "2"
 # Store ops one write may spend on link-graph work behind its response (default 8).
 WRITE_ENRICH_SUBREQUEST_BUDGET = "80"
 

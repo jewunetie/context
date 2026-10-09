@@ -9,6 +9,7 @@
 // `search` helper are used only here, so they stay local rather than moving
 // to the shared fixture module.
 
+import { liveShardKeys } from "../searchShards/shardKeys.mjs";
 import { NOTE_INDEX_CHAR_CAP, createSearchBudget } from "../../src/search/maintain.js";
 import {
   MANIFEST_KEY,
@@ -118,15 +119,14 @@ export async function runCommsShardSizingChecks(check) {
   /*
     The calibration those two checks rest on, at the other end of it. The
     volume term can only be safe over ordinary notes because `indexVolumeOf`
-    caps an ordinary note at one per-note window however large the file is —
-    that is what the note rule was already assuming, and dropping the cap
-    would re-shard every existing index of large notes on the day this
-    deploys. A bundled note is the exception on purpose: its documents are a
-    set, so it is worth its bytes.
+    caps an ordinary note at the chunk cap (64,000 characters) however large
+    the file is: that is the most one note can add to the index. A bundled
+    note is the exception on purpose: its documents are a set, so it is worth
+    its bytes.
   */
   check(
-    "an ordinary note is worth one per-note window however large the file is; a bundled note is worth its bytes",
-    indexVolumeOf("1-projects/plan.md", 5_000_000) === NOTE_INDEX_CHAR_CAP &&
+    "an ordinary note is worth its size up to the chunk cap however large the file is; a bundled note is worth its bytes",
+    indexVolumeOf("1-projects/plan.md", 5_000_000) === 64_000 &&
       indexVolumeOf("1-projects/plan.md", 10) === 10 &&
       indexVolumeOf("0-inbox/email/name-at-example-com/2026-09-07.md", 1_000) === 1_250 &&
       // A backend that reports no size falls back to one per-note window of
@@ -139,8 +139,8 @@ export async function runCommsShardSizingChecks(check) {
 
   {
     // ...and the same thing end to end, because the unit above is only a
-    // guard if something drives it: a vault of notes each far past the
-    // per-note window is one shard, the count it already had.
+    // guard if something drives it: 24 notes of about 36,000 characters hold
+    // 864,000 characters of index volume, which is two shards' worth.
     const bigPlain = createBucket();
     const filler = "prose ".repeat(6_000);
     for (let i = 0; i < 24; i += 1) {
@@ -148,8 +148,8 @@ export async function runCommsShardSizingChecks(check) {
     }
     const sized = await converge(bigPlain);
     check(
-      "a vault of notes far larger than the per-note window is still one shard, so nothing existing is re-sharded",
-      sized.manifest.shardCount === 1 && sized.pending === 0
+      "a vault of notes far larger than the old per-note window is sized by the volume its chunks hold",
+      sized.manifest.shardCount === 2 && sized.pending === 0
     );
   }
 
@@ -170,7 +170,7 @@ export async function runCommsShardSizingChecks(check) {
     "...across several shards, because the sizing followed the documents rather than the objects",
     built.manifest.shardCount > 1
   );
-  const shardObjects = [...mailbox.objects.keys()].filter((key) => key.startsWith(".context/search/v2/shard-"));
+  const shardObjects = liveShardKeys(mailbox);
   check(
     "...and the shards were actually written, which under the note-count sizing none ever was",
     shardObjects.length > 1 &&
@@ -366,10 +366,10 @@ export async function runCommsShardSizingChecks(check) {
   const behind = createBucket();
   for (const note of plainNotes(20)) behind.seed(note.path, note.text);
   await converge(behind, 2000, { shardByteCap: cap });
-  const docmapAtOneShard = behind.objects.get(".context/search/v2/docmap.json").body;
+  const docmapAtOneShard = behind.objects.get(".context/search/index/docmap.json").body;
   for (const note of days) behind.seed(note.path, note.text);
   const behindAfter = await converge(behind, 2000, { shardByteCap: cap });
-  behind.objects.set(".context/search/v2/docmap.json", { body: docmapAtOneShard, etag: "stale", uploaded: new Date() });
+  behind.objects.set(".context/search/index/docmap.json", { body: docmapAtOneShard, etag: "stale", uploaded: new Date() });
   const nextPass = await syncShardedIndex(behind, {
     budget: createSearchBudget(2000),
     shardByteCap: cap,
@@ -430,7 +430,7 @@ export async function runCommsShardSizingChecks(check) {
     "a day whose documents no shard can hold is shed rather than refusing the shard's write",
     shedPass.shed.includes(huge.path)
   );
-  const shedShards = [...tight.objects.keys()].filter((key) => key.startsWith(".context/search/v2/shard-"));
+  const shedShards = liveShardKeys(tight);
   check(
     "...so shards are still written, under the cap",
     shedShards.length > 0 &&
@@ -573,6 +573,6 @@ export async function runCommsShardSizingChecks(check) {
     "a shard no amount of shedding can fit is refused, and named as refused rather than as pending alone",
     refused.oversizedShards > 0 &&
       refused.pending > 0 &&
-      [...impossible.objects.keys()].every((key) => !key.startsWith(".context/search/v2/shard-"))
+      [...impossible.objects.keys()].every((key) => !key.startsWith(".context/search/index/shards/"))
   );
 }

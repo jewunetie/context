@@ -6,6 +6,7 @@
 // Split out of commsSearchIndex.test.mjs; see fixtures.mjs for the shared
 // bucket and message builders.
 
+import { INDEX_FORMAT_VERSION } from "../../src/search/format.js";
 import { NOTE_INDEX_CHAR_CAP, createSearchBudget } from "../../src/search/maintain.js";
 import { serializeShard, syncShardedIndex } from "../../src/search/shards.js";
 import { searchIndexedNotes } from "../../src/search/visible.js";
@@ -232,11 +233,15 @@ export async function runCommsLegacyIndexChecks(check) {
   const bucket = createBucket();
   bucket.seed(dayPath, dayText, uploaded);
   bucket.seed(plainPath, plainText, uploaded);
-  bucket.seed(".context/search/v2/shard-000.json", bytes, uploaded);
+  // The shard is a revision the manifest names; its bytes are the old dialect
+  // (docs without notePath, anchor or comms), which parseShard still reads.
+  const legacyShardKey = ".context/search/index/shards/000-0123456789abcdef.json";
+  bucket.seed(legacyShardKey, bytes, uploaded);
   bucket.seed(
-    ".context/search/v2/manifest.json",
+    ".context/search/index/manifest.json",
     JSON.stringify({
-      version: 3,
+      version: INDEX_FORMAT_VERSION,
+      shards: [{ key: legacyShardKey, digest: "0".repeat(64) }],
       shardCount: 1,
       generatedAt: "2026-09-06T00:00:00.000Z",
       stats: [
@@ -262,7 +267,7 @@ export async function runCommsLegacyIndexChecks(check) {
     uploaded
   );
   bucket.seed(
-    ".context/search/v2/docmap.json",
+    ".context/search/index/docmap.json",
     JSON.stringify({
       version: 3,
       shardCount: 1,
@@ -311,8 +316,8 @@ export async function runCommsLegacyIndexChecks(check) {
   const mixedShard = [...mixed.shards.values()][0];
   const keys = [...mixedShard.docs.keys()];
   check(
-    "re-indexing over a legacy shard splits the day into sub-documents and leaves the ordinary note alone",
-    keys.includes(plainPath) && keys.some((key) => key.startsWith(`${dayPath}#msg-`)) && !keys.includes(dayPath)
+    "re-indexing over a legacy shard splits the day into sub-documents and chunks the ordinary note",
+    keys.includes(`${plainPath}#c0`) && keys.some((key) => key.startsWith(`${dayPath}#msg-`)) && !keys.includes(dayPath) && !keys.includes(plainPath)
   );
   const mixedTeam = await searchIndexedNotes(bucket, {
     isVisible: (path) => path === plainPath,

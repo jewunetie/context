@@ -1,55 +1,34 @@
 /**
- * Tokenization for the search index — the one copy of the rules.
+ * Tokenization for the search index: the one copy of the rules.
  *
  * Everything that turns note text or a query into terms lives here, because
  * an indexer and a query parser that tokenize differently produce an index
  * that can never be hit. See CONTRACT.md for the format these terms feed.
  *
- * The stemmer is a deliberately light suffix-stripper (an s-stemmer with the
- * two cheapest verb endings), not Porter: personal notes are full of names,
- * project slugs and code identifiers, and an aggressive stemmer conflates
- * exactly those. Every rule guards on length so short tokens pass untouched.
- * That is tokenizer version 1. Version 2 (`tokenizeV2`, Porter2 on Latin-script
- * words) is reached only through `termsOf(text, 2)`.
+ * The tokenizer (`termsOf`) is Porter2 on Latin-script words, identifier
+ * splitting, accent folding for Latin, `Intl.Segmenter` words and CJK
+ * two-character pieces. There is one tokenizer and no switch.
  */
 
 import { porter2 } from "./porter2.js";
 
 /**
- * The tokenizer version used when a caller names none: the gateway's default
- * and the app's local search read this one constant, so flipping it (Task 39,
- * owner-approved) flips both together.
+ * The terms both the indexer and the query parser store (see `tokenizeWords`
+ * below for the rules). Terms come back in document order with repeats.
  */
-export const DEFAULT_TOKENIZER = 1;
-
-/** Lowercased runs of Unicode letters/digits, length ≥ 2. */
-export function tokenize(text) {
-  if (typeof text !== "string" || !text) return [];
-  const matches = text.toLowerCase().match(/[\p{L}\p{N}]+/gu);
-  if (!matches) return [];
-  return matches.filter((token) => token.length >= 2);
+export function termsOf(text) {
+  return tokenizeWords(text, { pieces: true });
 }
 
 /**
- * The terms both the indexer and the query parser store, for a tokenizer
- * version: 1 is tokenize + stem (today's index), 2 is `tokenizeV2`. Any other
- * value throws, so a version this code does not know is never read as 1.
+ * The terms a query is parsed into: `termsOf`, except that it emits segmenter
+ * words only, never the CJK two-character pieces the index side adds for
+ * recall (ruling OPEN-48). A query word the index never stored reaches those
+ * pieces through the scorer's CJK fallback (`shardQuery.js`), required
+ * together, instead of as loose terms.
  */
-export function termsOf(text, tokenizer = DEFAULT_TOKENIZER) {
-  if (tokenizer === 1) return tokenize(text).map(stem);
-  if (tokenizer === 2) return tokenizeV2(text);
-  throw new RangeError(`unknown tokenizer version ${tokenizer}`);
-}
-
-/**
- * The terms a query is parsed into, for a tokenizer version: `termsOf`, except
- * that tokenizer 2 emits segmenter words only, never the CJK two-character
- * pieces the index side adds for recall (ruling OPEN-48). A query word the
- * index never stored reaches those pieces through the scorer's CJK fallback
- * (`shardQuery.js`), required together, instead of as loose terms.
- */
-export function queryTermsOf(text, tokenizer = DEFAULT_TOKENIZER) {
-  return tokenizer === 2 ? tokenizeV2(text, { pieces: false }) : termsOf(text, tokenizer);
+export function queryTermsOf(text) {
+  return tokenizeWords(text, { pieces: false });
 }
 
 export { porter2 };
@@ -87,7 +66,8 @@ function wordSegmenter() {
 /**
  * True only when `Intl.Segmenter` exists and segments the fixed checks the way
  * the pinned workerd does. Memoized per isolate. A writer or reader whose
- * self-test fails must refuse tokenizer 2 (ruling OPEN-52, Task 35).
+ * self-test fails serves and writes no index (ruling OPEN-52, Task 35): there
+ * is no second tokenizer to fall back to.
  */
 export function segmenterSelfTest() {
   return wordSegmenter().selfTest;
@@ -115,7 +95,7 @@ function termsOfPiece(piece) {
 }
 
 /**
- * Tokenizer version 2 (PLAN P9, rulings OPEN-48 to OPEN-52): NFKC and U+2019
+ * The tokenizer (PLAN P9, rulings OPEN-48 to OPEN-52): NFKC and U+2019
  * to an ASCII apostrophe; `Intl.Segmenter` words (or `[\p{L}\p{N}_.']+` runs
  * when it is absent); identifier split on the original case; each piece
  * lowercased, Latin accents folded, length >= 2, Porter2 for Latin-script
@@ -123,18 +103,18 @@ function termsOfPiece(piece) {
  * two-character pieces (unless `pieces: false`, the query side). Terms come
  * back in document order with repeats.
  */
-export function tokenizeV2(text, { pieces = true } = {}) {
+function tokenizeWords(text, { pieces }) {
   if (typeof text !== "string" || !text) return [];
   const normal = text.normalize("NFKC").replace(/\u2019/g, "'");
   const { instance } = wordSegmenter();
   // lean: the Segmenter-less fallback is a stopgap with two known defects. It
   // has no combining marks (`\p{M}`), so Devanagari and Thai split at vowel
   // signs, and a sentence-final period sticks to its word, which can make a
-  // plain word read as an identifier. Neither is fixed here because tokenizer 2
-  // is never written or queried when `segmenterSelfTest()` is false
-  // (`formatUsable`, Task 35): this branch only runs for a caller of
-  // `tokenizeV2` outside that gate. Upgrade path: add `\p{M}` and trim
-  // trailing periods, only if a Segmenter-less runtime must serve tokenizer 2.
+  // plain word read as an identifier. Neither is fixed here because the index is
+  // never written or queried when `segmenterSelfTest()` is false (Task 35):
+  // this branch only runs for a caller of `termsOf` outside that gate. Upgrade
+  // path: add `\p{M}` and trim trailing periods, only if a Segmenter-less
+  // runtime must serve the index.
   const words = instance
     ? [...instance.segment(normal)].filter((s) => s.isWordLike).map((s) => ({ at: s.index, word: s.segment }))
     : [...normal.matchAll(/[\p{L}\p{N}_.']+/gu)].map((m) => ({ at: m.index, word: m[0] }));
@@ -166,47 +146,11 @@ function locatedPieces(text) {
 
 /**
  * The distinct CJK two-character pieces of one query term, in order: what the
- * tokenizer 2 index stored for that text besides its words. Empty for a term
+ * index stored for that text besides its words. Empty for a term
  * with no CJK run.
  */
 export function cjkPieces(term) {
   return typeof term === "string" ? [...new Set(locatedPieces(term).map(([, piece]) => piece))] : [];
-}
-
-/**
- * Pinned rules, applied top to bottom, first match wins:
- *   …'s → drop            (possessive survives tokenization as trailing "s"?
- *                          no — the apostrophe splits the token, so "gateway's"
- *                          tokenizes to ["gateway"] already; rule kept for
- *                          callers that stem un-tokenized words)
- *   ies → y   at length ≥ 5   (stories → story)
- *   sses → ss at length ≥ 5   (classes → class)
- *   ss  → keep                (class stays class)
- *   s   → drop at length ≥ 4  (notes → note; "das", "its" short enough to keep)
- *   ing → drop at length ≥ 6, un-double a doubled final consonant, and keep
- *         the original when the stem would fall under 3 (running → run)
- *   ed  → drop at length ≥ 5, same doubling rule (planned → plan)
- */
-export function stem(token) {
-  if (typeof token !== "string") return "";
-  let t = token;
-  if (t.endsWith("'s")) t = t.slice(0, -2);
-  if (t.length >= 5 && t.endsWith("ies")) return `${t.slice(0, -3)}y`;
-  if (t.length >= 5 && t.endsWith("sses")) return t.slice(0, -2);
-  if (t.endsWith("ss")) return t;
-  if (t.length >= 4 && t.endsWith("s")) return t.slice(0, -1);
-  if (t.length >= 6 && t.endsWith("ing")) return unDouble(t.slice(0, -3), t);
-  if (t.length >= 5 && t.endsWith("ed")) return unDouble(t.slice(0, -2), t);
-  return t;
-}
-
-function unDouble(stemmed, original) {
-  if (stemmed.length < 3) return original;
-  const last = stemmed[stemmed.length - 1];
-  if (last === stemmed[stemmed.length - 2] && /[bdfgklmnprt]/.test(last)) {
-    return stemmed.slice(0, -1);
-  }
-  return stemmed;
 }
 
 /**

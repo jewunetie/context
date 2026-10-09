@@ -333,8 +333,8 @@ export async function searchIndexedNotes(store, options) {
   // same miss. The listing was the point; the re-ask only earns its cost when
   // the listing found something.
   if (!pass.changed) return first;
-  // A given manifest is the one the first answer read; the refresh changed it.
-  const second = await answerFromIndex(store, { ...options, manifest: undefined, budget });
+  // The refresh changed the index; a pass that lost the manifest race answers from the manifest it built.
+  const second = await answerFromIndex(store, { ...options, manifest: pass.committed ? undefined : pass.manifest, budget });
   // Never the empty one over the one that has hits: a refresh that lost a race
   // with another writer must not turn an answer into a miss.
   return second.indexed && second.hits && second.hits.length > 0 ? second : first;
@@ -381,8 +381,8 @@ async function answerFromIndex(store, options) {
   // comment above on why it must not be gated on that.
   const reducedRecallNotes = [...new Set(shedNotePathsOf(manifest).filter(isVisible))].sort();
 
-  // Parsed once, with the served index's own tokenizer, so every shard is asked the same question.
-  const queryTerms = gatherTermsFor(parseQuery(query, manifest.format?.tokenizer));
+  // Parsed once, with the index's own tokenizer, so every shard is asked the same question.
+  const queryTerms = gatherTermsFor(parseQuery(query));
   const collections = [];
   // A shard this answer could not look inside. Not the same as one the routing
   // filter ruled out: that shard cannot hold a query term at all, while this is
@@ -544,7 +544,7 @@ async function answerFromIndex(store, options) {
     }
   }
   if (!shardsUnread) ({ shardsUnread, shardsRead } = await readFallbackPieceShards(store, budget, limit, manifest, { queryTerms, occupied, collections, isVisible, shardsRead }));
-  const ranked = scoreCollected(collections, query, { tokenizer: manifest.format?.tokenizer });
+  const ranked = scoreCollected(collections, query);
   const visible = rankedVisibleTo(ranked, isVisible, prefix);
   // Every op is taken before any read starts, so a wave can never overspend the
   // counter, and the reads themselves overlap: ten sequential GETs is ten round
@@ -587,7 +587,7 @@ async function answerFromIndex(store, options) {
         if (isEncryptedNote(text)) return null;
 
         if (typeof anchor !== "string") {
-          return { key: readPath, title: noteTitle(readPath, text), snippets: snippetLinesFor(text, matchedTerms, manifest.format?.tokenizer) };
+          return { key: readPath, title: noteTitle(readPath, text), snippets: snippetLinesFor(text, matchedTerms) };
         }
 
         // The specific message, re-read from a fresh copy of the note — never
@@ -603,7 +603,7 @@ async function answerFromIndex(store, options) {
           // (docs/decisions/communications.md, "Search must index messages").
           key: `${readPath}#${anchor}`,
           title: segment.title,
-          snippets: snippetLinesFor(segment.snippetText, matchedTerms, manifest.format?.tokenizer),
+          snippets: snippetLinesFor(segment.snippetText, matchedTerms),
         };
       } catch {
         return null;

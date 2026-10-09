@@ -6,7 +6,6 @@
  */
 
 import {
-  LEGACY_V1_KEY,
   MANIFEST_KEY,
   MANIFEST_PARSE_BYTE_CAP,
   NOTE_INDEX_CHAR_CAP,
@@ -25,9 +24,12 @@ import {
   serializeDocmap,
   serializeManifest,
   serializeShard,
-  shardKey,
+  revisionKey,
   shardOf,
 } from "./fixtures.mjs";
+import { INDEX_FORMAT_VERSION } from "../../src/search/format.js";
+
+const SHARD_KEY = ".context/search/index/shards/000-0123456789abcdef.json";
 
 export async function runSearchShardsPlacementAndFormatsChecks(check) {
   // -- placement: the hash ------------------------------------------------
@@ -162,15 +164,13 @@ export async function runSearchShardsPlacementAndFormatsChecks(check) {
   );
 
   check(
-    "shardKey is the zero-padded decimal name the contract pins",
-    shardKey(0) === ".context/search/v2/shard-000.json" &&
-      shardKey(7) === ".context/search/v2/shard-007.json" &&
-      shardKey(63) === ".context/search/v2/shard-063.json" &&
-      MANIFEST_KEY === ".context/search/v2/manifest.json" &&
-      LEGACY_V1_KEY === ".context/search/search-v1.json"
+    "revisionKey is the zero-padded id plus the first 16 hex digits of the digest the contract pins",
+    revisionKey(0, "ab".repeat(32)) === ".context/search/index/shards/000-abababababababab.json" &&
+      revisionKey(63, "01".repeat(32)) === ".context/search/index/shards/063-0101010101010101.json" &&
+      MANIFEST_KEY === ".context/search/index/manifest.json"
   );
 
-  // -- the two formats ----------------------------------------------------
+  // The on-bucket formats
 
   {
     const manifest = emptyManifest(3);
@@ -179,6 +179,7 @@ export async function runSearchShardsPlacementAndFormatsChecks(check) {
     manifest.docsByShard[2].set("constructor", "e3");
     manifest.stats[0] = { docCount: 2, lenTotals: { title: 4, headings: 2, tags: 1, body: 90 } };
     manifest.filters[0] = buildTermFilter(["plan", "shipping"]);
+    manifest.shards = [{ key: SHARD_KEY, digest: "d".repeat(64) }, null, null];
     manifest.freshness = { listedAt: "2026-09-01T00:00:00.000Z", pending: 4, truncated: true };
     // Two objects, one round trip each: the manifest is what a query reads and
     // the docmap is the diff only maintenance needs. They are parsed back
@@ -273,7 +274,7 @@ export async function runSearchShardsPlacementAndFormatsChecks(check) {
         round.version === 2 &&
         round.docs.size === 2 &&
         round.docs.get("1-projects/real.md").uploaded === "2026-01-01T00:00:00.000Z" &&
-        round.terms.get("ordinary")?.get("1-projects/real.md")?.length === 4
+        round.terms.get("ordinari")?.get("1-projects/real.md")?.length === 4
     );
     check(
       "and the stored form is version 3 with postings interned as doc indexes, never path strings",
@@ -362,6 +363,21 @@ export async function runSearchShardsPlacementAndFormatsChecks(check) {
       parseManifest(null) === null
   );
 
+  {
+    // The version is the format check: a manifest written by any other
+    // INDEX_FORMAT_VERSION (the previous index format was 4) is read as absent,
+    // so the index is rebuilt rather than served with another tokenizer.
+    const valid = JSON.parse(serializeManifest(emptyManifest(1)));
+    check(
+      "a manifest of another index format version is refused, and this version's own parses",
+      parseManifest(JSON.stringify(valid)) !== null &&
+        parseManifest(JSON.stringify({ ...valid, version: INDEX_FORMAT_VERSION - 1 })) === null &&
+        parseManifest(JSON.stringify({ ...valid, version: INDEX_FORMAT_VERSION + 1 })) === null &&
+        parseManifest(JSON.stringify({ ...valid, shards: [{ key: ".context/search/v3/shards/000-x.json", digest: "d" }] })) === null &&
+        parseManifest(JSON.stringify({ ...valid, shards: [] })) === null
+    );
+  }
+
   check(
     "parseShard refuses a wrong version, a malformed posting, and anything that is not a string",
     parseShard("{ truncated") === null &&
@@ -388,7 +404,13 @@ export async function runSearchShardsPlacementAndFormatsChecks(check) {
     */
     const statsOf = (extra) => [{ docCount: 1, lenTotals: { title: 1, headings: 0, tags: 0, body: 1 }, ...extra }];
     const manifestWith = (extra) =>
-      JSON.stringify({ version: 3, shardCount: 1, generatedAt: null, stats: statsOf(extra) });
+      JSON.stringify({
+        version: INDEX_FORMAT_VERSION,
+        shardCount: 1,
+        generatedAt: null,
+        stats: statsOf(extra),
+        shards: [{ key: SHARD_KEY, digest: "d".repeat(64) }],
+      });
     check(
       "a manifest with no shed count reads as none, one with a count reads it, a malformed one is refused",
       parseManifest(manifestWith({}))?.stats[0].shed === 0 &&

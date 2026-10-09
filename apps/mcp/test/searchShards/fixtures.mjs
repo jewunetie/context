@@ -8,7 +8,6 @@ import { R2Store } from "../../src/store/r2.js";
 import { NOTE_INDEX_CHAR_CAP, createSearchBudget } from "../../src/search/maintain.js";
 import {
   DOCMAP_KEY,
-  LEGACY_V1_KEY,
   MANIFEST_KEY,
   MANIFEST_PARSE_BYTE_CAP,
   SHARD_PARSE_BYTE_CAP,
@@ -20,14 +19,15 @@ import {
   parseDocmap,
   parseManifest,
   parseShard,
+  revisionKey,
   serializeDocmap,
   serializeManifest,
   serializeShard,
-  shardKey,
   shardOf,
   syncShardedIndex,
 } from "../../src/search/shards.js";
 
+import { shardKeyIn, shardRevisionKeys } from "./shardKeys.mjs";
 import { addDoc } from "../../src/search/indexer.js";
 import { buildTermFilter } from "../../src/search/filter.js";
 
@@ -37,7 +37,6 @@ export {
   NOTE_INDEX_CHAR_CAP,
   createSearchBudget,
   DOCMAP_KEY,
-  LEGACY_V1_KEY,
   MANIFEST_KEY,
   MANIFEST_PARSE_BYTE_CAP,
   SHARD_PARSE_BYTE_CAP,
@@ -49,14 +48,16 @@ export {
   parseDocmap,
   parseManifest,
   parseShard,
+  revisionKey,
   serializeDocmap,
   serializeManifest,
   serializeShard,
-  shardKey,
   shardOf,
   syncShardedIndex,
   addDoc,
   buildTermFilter,
+  shardKeyIn,
+  shardRevisionKeys,
 };
 
 export const encoder = new TextEncoder();
@@ -203,8 +204,14 @@ export function storedManifest(bucket) {
 }
 
 export function storedShard(bucket, id) {
-  const raw = bucket.objects.get(shardKey(id));
+  const key = shardKeyIn(bucket, id);
+  const raw = key ? bucket.objects.get(key) : null;
   return raw ? parseShard(raw.body) : null;
+}
+
+/** Whether `shard` holds any chunk of the note at `path` (a note is indexed as chunks keyed \`path#c<n>\`). */
+export function shardHasNote(shard, path) {
+  return [...shard.docs.values()].some((doc) => doc.notePath === path);
 }
 
 export function bytesOf(text) {

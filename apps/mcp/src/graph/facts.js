@@ -15,7 +15,7 @@ import { extractFields } from "../search/indexer.js";
 export const PARSER_VERSION = 3;
 export const RESOLVER_VERSION = 1;
 
-// Anchor-text caps (CONTRACT-v3.md "Anchor text"). A display text is cut to
+// Anchor-text caps (CONTRACT-REVISIONS.md "Anchor text"). A display text is cut to
 // ANCHOR_TEXT_CHARS, one posting entry keeps at most ANCHOR_TEXTS_PER_ENTRY
 // distinct texts, and a title is cut to ANCHOR_TITLE_CHARS. They bound what
 // one entry adds to a posting page: at most 8 x 64 + 120 characters.

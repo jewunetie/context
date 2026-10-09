@@ -128,9 +128,9 @@ try {
   await commands.use({ workspace: `@${personal.slug}`, endpoint: ENDPOINT, log });
   pass("use switches the workspace commands act on");
 
-  // -- the deployed Worker segments Chinese (Task 35, OPEN-63). Tokenizer 1
-  // reads this run as one token, so a hit for 迁移 proves tokenizer 2 and the
-  // v3 index serve here. Output is captured, not printed: search results are
+  // The deployed Worker segments Chinese (Task 35, OPEN-63). A tokenizer without segmentation
+  // reads this run as one token, so a hit for 迁移 proves the segmenting
+  // tokenizer and the index serve here. Output is captured, not printed: search results are
   // the persona's notes. Only counts and booleans are logged.
   segmenterNotePath = `0-inbox/cli-live-segmenter-${Date.now()}.md`;
   const quiet = () => {};

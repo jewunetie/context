@@ -185,14 +185,13 @@ approves where a browser would), lists workspaces, runs `orient` and a search
 from the terminal, fires the session-end hook and checks the capture lands,
 installs and uninstalls Cursor's MCP entry, and logs out. It also writes a
 note holding a Chinese sentence and searches for a word inside it, retrying
-while the v3 index builds: only a tokenizer 2 index served by the deployed
-Worker can hit, so a pass proves `Intl.Segmenter` works there (staging sets
-`SEARCH_TOKENIZER = "2"`). A control search for a fragment of the note's marker
-that no tokenizer produces must miss, or the run is inconclusive (the literal
-scan answered). Callers never see index counts, so on no hit the check says only
-that; v3 `built` and `pending` are in the Worker's `search-index-format` log,
-one line per v3 pass. A bucket with a permanently oversized shard never reaches
-built, so v3 is never served there and the check fails with no hit. It archives the
+while the index builds: only an index served by the deployed Worker can hit,
+so a pass proves `Intl.Segmenter` works there. A control search for a fragment
+of the note's marker that no tokenizer produces must miss, or the run is
+inconclusive (the literal scan answered). Callers never see index counts, so on
+no hit the check says only that. Until the first index pass completes, search
+answers from the literal scan, and a Worker whose segmenter fails its
+self-test serves no index, so the check fails with no hit in either case. It archives the
 capture note and revokes the grant it made, so repeated runs leave the persona
 as the seed left it. It needs no secret, only the staging environment's
 `STAGING_CONVEX_DEPLOYMENT` variable.

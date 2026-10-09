@@ -8,7 +8,8 @@
 // bucket and message builders.
 
 import { createSearchBudget } from "../../src/search/maintain.js";
-import { syncShardedIndex } from "../../src/search/shards.js";
+import { unmarked } from "../../src/search/anchors.js";
+import { parseManifest, syncShardedIndex } from "../../src/search/shards.js";
 import { searchIndexedNotes } from "../../src/search/visible.js";
 import { messageAnchor } from "../../../../packages/communications/src/anchors.js";
 import { renderChannelDayNote } from "../../../../packages/communications/src/note.js";
@@ -69,9 +70,16 @@ export async function runCommsRebuildChecks(check) {
   fresh.seed(dayPath, twoMessages, uploaded);
   await converge(fresh);
 
-  const shardKeys = [...incremental.objects.keys()].filter((key) => key.startsWith(".context/search/v2/shard-")).sort();
-  const freshKeys = [...fresh.objects.keys()].filter((key) => key.startsWith(".context/search/v2/shard-")).sort();
-  check("both indexes hold the same shard objects", JSON.stringify(shardKeys) === JSON.stringify(freshKeys));
+  // Shards are content-addressed revisions, so the live ones are the ones the
+  // manifest names; superseded revisions stay behind until collected.
+  const liveShards = (bucket) =>
+    (parseManifest(bucket.objects.get(".context/search/index/manifest.json").body).shards ?? [])
+      .map((entry, id) => (entry ? [id, entry.key] : null))
+      .filter(Boolean);
+  const incrementalShards = liveShards(incremental);
+  const freshShards = liveShards(fresh);
+  const shardKeys = incrementalShards.map(([, key]) => key);
+  check("both indexes hold shards at the same ids", JSON.stringify(incrementalShards.map(([id]) => id)) === JSON.stringify(freshShards.map(([id]) => id)));
 
   /*
     Two things in a stored shard are legitimately not a function of the notes,
@@ -95,15 +103,18 @@ export async function runCommsRebuildChecks(check) {
     parsed.generatedAt = "<when>";
     for (const [, doc] of parsed.docs) {
       const live = store.objects.get(doc.notePath)?.etag;
-      doc.etag = doc.etag === live ? "<live>" : `<stale:${doc.etag}>`;
+      // A pass with no `visibilityOf` marks the version "anchors unread"; the
+      // marker is not a version of the note.
+      const version = unmarked(doc.etag);
+      doc.etag = version === live ? "<live>" : `<stale:${doc.etag}>`;
     }
     return JSON.stringify(parsed);
   };
   let identical = shardKeys.length > 0;
   let liveVersions = true;
-  for (const key of shardKeys) {
+  for (const [position, key] of shardKeys.entries()) {
     const a = normalize(incremental, incremental.objects.get(key).body);
-    const b = normalize(fresh, fresh.objects.get(key).body);
+    const b = normalize(fresh, fresh.objects.get(freshShards[position][1]).body);
     if (a !== b) identical = false;
     if (a.includes("<stale:")) liveVersions = false;
   }
@@ -128,8 +139,8 @@ export async function runCommsRebuildChecks(check) {
       shardKeys.some((key) => incremental.objects.get(key).body.includes(otherPath))
   );
 
-  const docmapIncremental = JSON.parse(incremental.objects.get(".context/search/v2/docmap.json").body);
-  const docmapFresh = JSON.parse(fresh.objects.get(".context/search/v2/docmap.json").body);
+  const docmapIncremental = JSON.parse(incremental.objects.get(".context/search/index/docmap.json").body);
+  const docmapFresh = JSON.parse(fresh.objects.get(".context/search/index/docmap.json").body);
   check(
     "the diff surface names each note once, in both",
     JSON.stringify(docmapIncremental.docsByShard.map((s) => s.map(([p]) => p))) ===
@@ -198,9 +209,11 @@ export async function runCommsNoMessageFallbackChecks(check) {
     after.indexed && (after.hits || []).length === 0 && after.matchCount === 0
   );
   check(
-    "...and from the stored shard's bytes, so nothing is merely being filtered on the way out",
-    ![...bucket.objects.entries()].some(
-      ([key, stored]) => key.startsWith(".context/search/v2/shard-") && stored.body.includes("plaintext-canary-beta")
+    "...and from the live shard's bytes, so nothing is merely being filtered on the way out",
+    // The live shards are the revisions the manifest names; a superseded
+    // revision waits for collection (shards/gc.js) beside it.
+    !parseManifest(bucket.objects.get(".context/search/index/manifest.json").body).shards.some(
+      (entry) => entry && bucket.objects.get(entry.key).body.includes("plaintext-canary-beta")
     )
   );
   const idle = await syncShardedIndex(bucket, { budget: createSearchBudget(2000) });

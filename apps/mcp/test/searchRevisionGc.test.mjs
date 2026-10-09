@@ -1,11 +1,11 @@
 /**
- * SEARCH INDEX v3 GARBAGE COLLECTION: unreferenced shard revisions
- * (`src/search/shards/gc.js`, CONTRACT-v3.md "Collecting revisions", ruling
+ * SEARCH INDEX GARBAGE COLLECTION: unreferenced shard revisions
+ * (`src/search/shards/gc.js`, CONTRACT.md "Collecting revisions", ruling
  * OPEN-59).
  *
  * A pass that loses the manifest commit, and every superseded shard, leaves a
  * content-addressed revision nothing references. `collectShardRevisions` lists
- * one page of `.context/search/v3/shards/` and deletes a revision only when the
+ * one page of `.context/search/index/shards/` and deletes a revision only when the
  * current manifest does not name it and its `uploaded` is older than the
  * retention window, the time an in-flight reader that pinned the previous
  * manifest needs to finish. It never lists or deletes outside that prefix.
@@ -22,11 +22,10 @@
  *   `uploaded` ignored (every revision treated as old)                       2
  *   unknown `uploaded` (epoch 0, missing) treated as old                     1
  *   create-only refusal recorded as present without `exists` (tombstone)     1
- *   v3 layout check removed from `collectShardRevisions`                     1
+ *   shards check removed from `collectShardRevisions`                        1
  *   budget floor ignored (`take(0)`)                                         1
  *   GC failure not caught in `maintainNow`                                   1
- *   (the `layout` gate in `maintainNow` was removed in fix round 1: it was
- *   dead, `collectShardRevisions` refuses a non-v3 manifest itself)
+ *   (`collectShardRevisions` refuses a manifest without shards itself)
  *
  *   Fix round 1:
  *   cursor not stored between passes (always restart)                        3
@@ -52,13 +51,11 @@ import {
   GC_STATE_MAX_BYTES,
   collectShardRevisions,
 } from "../src/search/shards/gc.js";
-import { writerFor } from "../src/search/shards/revisions.js";
+import { INDEX_WRITER as writer } from "../src/search/shards/revisions.js";
 import {
   MANIFEST_KEY,
-  V3_MANIFEST_KEY,
-  V3_LAYOUT,
-  V3_SHARD_PREFIX,
-  parseManifestV4,
+  SHARD_PREFIX,
+  parseManifest,
   syncShardedIndex,
 } from "../src/search/shards.js";
 import { createSearchBudget } from "../src/search/maintain.js";
@@ -68,7 +65,6 @@ import { GRAPH_PREFIX } from "../../../packages/shared/src/storageLayout.cjs";
 import { withLogicalDelete } from "../src/store/logicalDelete.js";
 import { memoryBucket } from "./store/fixtures.mjs";
 
-const FORMAT = { tokenizer: 1, chunk: null, namespace: "v3" };
 const NOW = Date.parse("2026-06-01T12:00:00Z");
 const OLD = new Date(NOW - 10 * REVISION_RETENTION_MS);
 const YOUNG = new Date(NOW - Math.floor(REVISION_RETENTION_MS / 3));
@@ -77,7 +73,6 @@ const YOUNG = new Date(NOW - Math.floor(REVISION_RETENTION_MS / 3));
 function bucketWithClock() {
   const bucket = memoryBucket();
   bucket.capabilities = { conditionalWrite: true, conditionalCreate: true };
-  bucket.searchIndexFormat = FORMAT;
   bucket.uploadedAt = new Map();
   bucket.listed = [];
   bucket.cursors = [];
@@ -116,8 +111,8 @@ async function syncUntilBuilt(store) {
   throw new Error("did not converge");
 }
 
-const manifestOf = (bucket) => ({ ...parseManifestV4(bucket.objects.get(V3_MANIFEST_KEY).body), layout: V3_LAYOUT });
-const revisionKeys = (bucket) => [...bucket.objects.keys()].filter((key) => key.startsWith(V3_SHARD_PREFIX));
+const manifestOf = (bucket) => parseManifest(bucket.objects.get(MANIFEST_KEY).body);
+const revisionKeys = (bucket) => [...bucket.objects.keys()].filter((key) => key.startsWith(SHARD_PREFIX));
 const referencedKeys = (manifest) => manifest.shards.filter(Boolean).map((entry) => entry.key);
 
 /**
@@ -129,7 +124,7 @@ function prime(store, manifest) {
   return collectShardRevisions(store, createSearchBudget(100), { manifest, now: NOW - 2 * REVISION_RETENTION_MS });
 }
 
-/** Build v3, then edit a note and sync again: one superseded, unreferenced revision. */
+/** Build the index, then edit a note and sync again: one superseded, unreferenced revision. */
 async function withSupersededRevision() {
   const bucket = bucketWithClock();
   await seed(bucket);
@@ -176,23 +171,23 @@ test("a listing with no usable uploaded time deletes nothing", async () => {
   }
 });
 
-test("only .context/search/v3/shards/ is listed or deleted", async () => {
+test("only .context/search/index/shards/ is listed or deleted", async () => {
   const { bucket, manifest, stale } = await withSupersededRevision();
   const bystanders = [
     ".context/search/v2/shards/000.json",
-    ".context/search/v2/manifest.json.old",
-    ".context/search/v3/docmap.json.old",
+    ".context/search/v3/shards/000-0123456789abcdef.json",
+    ".context/search/index/docmap.json.old",
     ".context/graph/v1/manifest.json",
     ".context/graph/v1/g/1/nodes/abc.json",
     "notes/keep.md",
-    `${V3_SHARD_PREFIX.slice(0, -1)}-sibling/000-0123456789abcdef.json`,
+    `${SHARD_PREFIX.slice(0, -1)}-sibling/000-0123456789abcdef.json`,
   ];
   for (const key of bystanders) await bucket.put(key, "x");
   bucket.listed.length = 0;
   bucket.deleted.length = 0;
   await collectShardRevisions(bucket, createSearchBudget(100), { manifest, now: NOW });
   assert.ok(bucket.listed.length >= 1);
-  for (const prefix of bucket.listed) assert.equal(prefix, V3_SHARD_PREFIX);
+  for (const prefix of bucket.listed) assert.equal(prefix, SHARD_PREFIX);
   assert.deepEqual(bucket.deleted.sort(), [...stale].sort());
   for (const key of bystanders) assert.ok(bucket.objects.has(key), `${key} untouched`);
 });
@@ -200,7 +195,7 @@ test("only .context/search/v3/shards/ is listed or deleted", async () => {
 test("a listing that over-returns keys outside the prefix still deletes nothing outside it", async () => {
   const { bucket, manifest } = await withSupersededRevision();
   const outside = [".context/search/v2/shards/001.json", ".context/graph/v1/manifest.json", "notes/n1.md"];
-  const inside = `${V3_SHARD_PREFIX}099-0123456789abcdef.json`;
+  const inside = `${SHARD_PREFIX}099-0123456789abcdef.json`;
   await bucket.put(inside, "x");
   for (const key of outside) await bucket.put(key, "x");
   const list = bucket.list;
@@ -218,15 +213,15 @@ test("a listing that over-returns keys outside the prefix still deletes nothing 
 
 test("a key under the prefix that is not a revision name is kept", async () => {
   const { bucket, manifest } = await withSupersededRevision();
-  const odd = [`${V3_SHARD_PREFIX}notes.md`, `${V3_SHARD_PREFIX}sub/000-0123456789abcdef.json`, `${V3_SHARD_PREFIX}000-XYZ.json`];
+  const odd = [`${SHARD_PREFIX}notes.md`, `${SHARD_PREFIX}sub/000-0123456789abcdef.json`, `${SHARD_PREFIX}000-XYZ.json`];
   for (const key of odd) await bucket.put(key, "x");
   await collectShardRevisions(bucket, createSearchBudget(100), { manifest, now: NOW });
   for (const key of odd) assert.ok(bucket.objects.has(key), `${key} kept`);
 });
 
-test("a manifest that is absent, v2 or without v3 layout deletes nothing and lists nothing", async () => {
+test("a manifest that is absent or without shards deletes nothing and lists nothing", async () => {
   const { bucket, manifest } = await withSupersededRevision();
-  for (const bad of [undefined, null, { shards: [] }, { ...manifest, layout: "v2" }, { ...manifest, shards: undefined }]) {
+  for (const bad of [undefined, null, { ...manifest, shards: undefined }]) {
     bucket.listed.length = 0;
     const report = await collectShardRevisions(bucket, createSearchBudget(100), { manifest: bad, now: NOW });
     assert.equal(report.deleted, 0);
@@ -236,7 +231,7 @@ test("a manifest that is absent, v2 or without v3 layout deletes nothing and lis
 
 test("the budget bounds the pass: one listing, then deletes, never below the floor", async () => {
   const { bucket, manifest, stale } = await withSupersededRevision();
-  for (let i = 0; i < 5; i += 1) await bucket.put(`${V3_SHARD_PREFIX}1${i}0-0123456789abcdef.json`, "x");
+  for (let i = 0; i < 5; i += 1) await bucket.put(`${SHARD_PREFIX}1${i}0-0123456789abcdef.json`, "x");
   const total = stale.length + 5;
   const budget = createSearchBudget(GC_BUDGET_FLOOR + 5);
   bucket.deleted.length = 0;
@@ -257,7 +252,7 @@ test("the budget bounds the pass: one listing, then deletes, never below the flo
 
 test("a delete that throws is counted, does not stop the pass and does not escape", async () => {
   const { bucket, manifest } = await withSupersededRevision();
-  await bucket.put(`${V3_SHARD_PREFIX}098-0123456789abcdef.json`, "x");
+  await bucket.put(`${SHARD_PREFIX}098-0123456789abcdef.json`, "x");
   const del = bucket.delete;
   let first = true;
   bucket.delete = async (key, options) => {
@@ -280,7 +275,7 @@ async function maintain(bucket, remaining = 200) {
   return maintainIndexAfter(bucket, createSearchBudget(remaining), isIndexable, null, undefined);
 }
 
-test("maintenance collects superseded revisions after the sync while v3 is served", async () => {
+test("maintenance collects superseded revisions after the sync", async () => {
   const { bucket, stale } = await withSupersededRevision();
   await bucket.put("notes/n1.md", "# Note 1\n\nanother rewrite entirely\n");
   assert.equal(await maintain(bucket), "inline");
@@ -289,25 +284,13 @@ test("maintenance collects superseded revisions after the sync while v3 is serve
   for (const key of referencedKeys(manifest)) assert.ok(bucket.objects.has(key), `${key} still referenced and present`);
 });
 
-test("maintenance with the switch off never touches the v3 prefix", async () => {
-  const bucket = bucketWithClock();
-  delete bucket.searchIndexFormat;
-  await seed(bucket);
-  await bucket.put(`${V3_SHARD_PREFIX}000-0123456789abcdef.json`, "x");
-  bucket.listed.length = 0;
-  await maintain(bucket);
-  assert.ok(bucket.objects.has(MANIFEST_KEY));
-  assert.ok(!bucket.listed.includes(V3_SHARD_PREFIX));
-  assert.ok(bucket.objects.has(`${V3_SHARD_PREFIX}000-0123456789abcdef.json`));
-});
-
-test("maintenance does not collect while v3 is still being built", async () => {
+test("maintenance does not collect while the index is still being built", async () => {
   const bucket = bucketWithClock();
   await seed(bucket);
-  await bucket.put(`${V3_SHARD_PREFIX}000-0123456789abcdef.json`, "x");
-  // One tiny budget: the pass cannot finish the v3 build, so v2 is still served.
+  await bucket.put(`${SHARD_PREFIX}000-0123456789abcdef.json`, "x");
+  // One tiny budget: the pass cannot finish the build and has nothing left for collection.
   await maintain(bucket, 4);
-  assert.ok(bucket.objects.has(`${V3_SHARD_PREFIX}000-0123456789abcdef.json`));
+  assert.ok(bucket.objects.has(`${SHARD_PREFIX}000-0123456789abcdef.json`));
 });
 
 test("maintenance below the budget floor does not collect", async () => {
@@ -315,10 +298,10 @@ test("maintenance below the budget floor does not collect", async () => {
   bucket.listed.length = 0;
   await maintain(bucket, 6);
   for (const key of stale) assert.ok(bucket.objects.has(key), "superseded revision kept when the budget is thin");
-  assert.ok(!bucket.listed.includes(V3_SHARD_PREFIX) || bucket.deleted.length === 0);
+  assert.ok(!bucket.listed.includes(SHARD_PREFIX) || bucket.deleted.length === 0);
 });
 
-test("maintenance runs the graph pass before collection when v3 is served and only one fits", async () => {
+test("maintenance runs the graph pass before collection when only one fits", async () => {
   let contested = 0;
   for (let total = 20; total <= 90; total += 1) {
     const { bucket } = await withSupersededRevision();
@@ -360,14 +343,13 @@ test("a garbage-collection failure does not change the maintenance result", asyn
   await failing.bucket.put("notes/n1.md", "# Note 1\n\nanother rewrite entirely\n");
   const list = failing.bucket.list;
   failing.bucket.list = async (options) => {
-    if (options?.prefix === V3_SHARD_PREFIX) throw new Error("listing failed");
+    if (options?.prefix === SHARD_PREFIX) throw new Error("listing failed");
     return list(options);
   };
   const outcome = await maintain(failing.bucket);
   assert.equal(outcome, expected);
   // Shard bodies carry timestamps, so digests differ run to run; compare the rest.
   const published = manifestOf(failing.bucket);
-  assert.equal(published.built, expectedManifest.built);
   assert.deepEqual(published.stats, expectedManifest.stats);
   assert.deepEqual(published.freshness.pending, expectedManifest.freshness.pending);
   for (const key of referencedKeys(published)) assert.ok(failing.bucket.objects.has(key));
@@ -400,7 +382,6 @@ function tombstoningBucket() {
 
 test("a create-only revision put refused over a tombstone is not recorded as present", async () => {
   const bucket = tombstoningBucket();
-  const writer = writerFor(bucket);
   const manifest = { shards: [] };
   await writer.putShard(bucket, manifest, 0, "body one");
   const key = manifest.shards[0].key;
@@ -415,7 +396,6 @@ test("a create-only revision put refused over a tombstone is not recorded as pre
 
 test("a create-only revision put refused because the same bytes exist is recorded", async () => {
   const bucket = tombstoningBucket();
-  const writer = writerFor(bucket);
   const first = { shards: [] };
   await writer.putShard(bucket, first, 0, "body one");
   const again = { shards: [] };
@@ -471,8 +451,8 @@ function pagedBucket() {
 }
 
 const hex = (i) => i.toString(16).padStart(16, "0");
-const revision = (i) => `${V3_SHARD_PREFIX}000-${hex(i)}.json`;
-const liveBodies = (raw) => [...raw.objects.entries()].filter(([key, o]) => key.startsWith(V3_SHARD_PREFIX) && o.body === "x".repeat(300)).length;
+const revision = (i) => `${SHARD_PREFIX}000-${hex(i)}.json`;
+const liveBodies = (raw) => [...raw.objects.entries()].filter(([key, o]) => key.startsWith(SHARD_PREFIX) && o.body === "x".repeat(300)).length;
 
 function pagedFixture({ stale, young = 0 }) {
   const raw = pagedBucket();
@@ -485,7 +465,7 @@ function pagedFixture({ stale, young = 0 }) {
   for (let i = 1; i <= stale; i += 1) raw.objects.set(revision(1000 + i), { body: "x".repeat(300), etag: `e${i}` });
   const live = revision(5000);
   raw.objects.set(live, { body: "x".repeat(300), etag: "live" });
-  const manifest = { layout: V3_LAYOUT, shards: [{ key: live, digest: "d" }] };
+  const manifest = { shards: [{ key: live, digest: "d" }] };
   return { raw, store, manifest, live };
 }
 
@@ -599,7 +579,7 @@ test("a stored state over the size cap is never read with text() and counts as n
   const { bucket, manifest, stale } = await withSupersededRevision();
   // A valid state with a cursor, so reading it would change what is listed.
   const state = JSON.parse(bucket.objects.get(GC_STATE_KEY).body);
-  await bucket.put(GC_STATE_KEY, JSON.stringify({ ...state, cursor: `${V3_SHARD_PREFIX}zzz` }));
+  await bucket.put(GC_STATE_KEY, JSON.stringify({ ...state, cursor: `${SHARD_PREFIX}zzz` }));
   const get = bucket.get.bind(bucket);
   for (const [size, read] of [
     [GC_STATE_MAX_BYTES + 1, false],
@@ -614,13 +594,13 @@ test("a stored state over the size cap is never read with text() and counts as n
     bucket.cursors.length = 0;
     const report = await collectShardRevisions(bucket, createSearchBudget(100), { manifest, now: NOW });
     assert.equal(texts, read ? 1 : 0, `size ${size}`);
-    assert.deepEqual(bucket.cursors, [read ? `${V3_SHARD_PREFIX}zzz` : undefined], `size ${size}`);
+    assert.deepEqual(bucket.cursors, [read ? `${SHARD_PREFIX}zzz` : undefined], `size ${size}`);
     if (!read) {
       assert.equal(report.deleted, 0, "no state protects everything for one window");
       for (const key of stale) assert.ok(bucket.objects.has(key));
     }
     bucket.get = get;
-    await bucket.put(GC_STATE_KEY, JSON.stringify({ ...state, cursor: `${V3_SHARD_PREFIX}zzz` }));
+    await bucket.put(GC_STATE_KEY, JSON.stringify({ ...state, cursor: `${SHARD_PREFIX}zzz` }));
   }
 });
 

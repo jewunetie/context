@@ -464,8 +464,8 @@ describe("the console's search", () => {
     // its own key would be a second derivative to keep honest, and the gateway
     // would go on answering from a cold one.
     const keys = Object.keys(store.snapshot());
-    expect(keys).toContain(".context/search/v2/manifest.json");
-    expect(keys.some((key) => key.startsWith(".context/search/v2/shard-"))).toBe(true);
+    expect(keys).toContain(".context/search/index/manifest.json");
+    expect(keys.some((key) => key.startsWith(".context/search/index/shards/"))).toBe(true);
   });
 
   /**

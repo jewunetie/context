@@ -1,10 +1,10 @@
 /**
  * CHUNKED SUB-DOCUMENTS AND THE 64,000-CHARACTER CAP IN THE SYNC (Task 36,
- * CONTRACT-v3.md "Chunked notes").
+ * CONTRACT.md "Chunked notes").
  *
  * Through `subDocumentsFor`, `indexVolumeOf` and a real build
- * (`syncShardedIndex`) plus `searchIndexedNotes` on a memory bucket with a
- * chunked format forced on the store: an ordinary note is one document per
+ * (`syncShardedIndex`) plus `searchIndexedNotes` on a memory bucket: an
+ * ordinary note is one document per
  * `chunkNote` chunk, every chunk titled by the note, the last chunk of a note
  * past the cap marked partial and reported as reduced recall to the callers
  * who can see that note and nobody else.
@@ -22,39 +22,34 @@
  *   `partialPaths` left out of `shedNotePathsOf`                           2
  *   `partial` on every chunk, not the last                                 1
  *   no title line on later chunks                                          2
- *   `indexVolumeOf` ignores the format                                     1
+ *   `indexVolumeOf` ignores the chunk cap                                  1
  *   drawings chunked like ordinary notes (fix round 1)                    1
  *   comments not stripped before chunking (fix round 1)                    1
- *   `placeUnclaimed` ignores the format for claimed load (fix round 1)     1
+ *   `placeUnclaimed` counts claimed load without the chunk cap (fix round 1) 1
  *
  * RED first: 7 of 13 failed; the 6 that passed pin behaviour that must not
- * change (channel-day and `chunk: null` documents, an empty or encrypted note's
- * single document, removal of old chunk docs, convergence of Task 31's
- * chunking without `partial`).
+ * change (channel-day documents, an empty or encrypted note's single document,
+ * removal of old chunk docs, convergence of the chunking without `partial`).
  *
- * Fix round 1 RED: the drawing and comment tests failed before the change; the
- * placement test passed (Task 36 already passes the format) and fails only
- * under its sabotage.
+ * Fix round 1 RED: the drawing and comment tests failed before the change.
  */
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { syncShardedIndex, loadShard, loadIndexManifest } from "../src/search/shards.js";
+import { DOCMAP_KEY, syncShardedIndex, loadShard, loadIndexManifest } from "../src/search/shards.js";
 import { createSearchBudget, NOTE_INDEX_CHAR_CAP } from "../src/search/maintain.js";
 import { searchIndexedNotes } from "../src/search/visible.js";
 import { subDocumentsFor, indexVolumeOf, channelDaySubDocuments } from "../src/search/commsIndex.js";
 import { chunkNote } from "../src/search/chunk.js";
-import { DEFAULT_FORMAT } from "../src/search/format.js";
+import { CHUNK } from "../src/search/format.js";
 import { extractFields } from "../src/search/indexer.js";
 import { placeUnclaimed } from "../src/search/shards/placement.js";
 import { emptyManifest } from "../src/search/shards/shapes.js";
 import { renderChannelDayNote } from "../../../packages/communications/src/note.js";
 import { memoryBucket } from "./store/fixtures.mjs";
 
-const CHUNKED = { tokenizer: 1, chunk: { target: 2000, max: 3000, cap: 64_000 } };
 const NOW = Date.parse("2026-01-01T00:00:00Z");
-const V3_DOCMAP = ".context/search/v3/docmap.json";
 
 /** `# title`, then ~400-character paragraphs to `length`; `marks` places a word at a character offset. */
 function longNote(title, length, marks = {}) {
@@ -72,7 +67,7 @@ function longNote(title, length, marks = {}) {
 const MID = longNote("Field notes", 20_000, { zanzibar: 15_000 });
 const HUGE = longNote("Expedition log", 70_000, { wallaby: 30_000, quokka: 66_000 });
 
-function bucketWith(notes, format = CHUNKED) {
+function bucketWith(notes) {
   const bucket = memoryBucket();
   bucket.capabilities = { conditionalWrite: true, conditionalCreate: true };
   const list = bucket.list.bind(bucket);
@@ -82,7 +77,6 @@ function bucketWith(notes, format = CHUNKED) {
     return listed;
   };
   for (const [path, text] of Object.entries(notes)) bucket.objects.set(path, { body: text, etag: `seed-${path}` });
-  bucket.searchIndexFormat = format;
   return bucket;
 }
 
@@ -134,9 +128,9 @@ async function storedTerms(bucket) {
   return terms;
 }
 
-/** The v3 docmap's recorded version per note path. */
+/** The docmap's recorded version per note path. */
 function docmapVersions(bucket) {
-  const docmap = JSON.parse(bucket.objects.get(V3_DOCMAP).body);
+  const docmap = JSON.parse(bucket.objects.get(DOCMAP_KEY).body);
   const versions = new Map();
   for (const shard of docmap.docsByShard) for (const [path, version] of shard) versions.set(path, version);
   return versions;
@@ -144,10 +138,10 @@ function docmapVersions(bucket) {
 
 // -- the documents one note contributes -------------------------------------
 
-test("a 20,000-character note is about ten chunk documents, each titled by the note", () => {
-  const docs = subDocumentsFor("notes/mid.md", MID, CHUNKED);
-  const { chunks } = chunkNote("notes/mid.md", MID, CHUNKED.chunk);
-  assert.ok(docs.length >= 8 && docs.length <= 12, `${docs.length} docs`);
+test("a 20,000-character note is about twenty chunk documents, each titled by the note", () => {
+  const docs = subDocumentsFor("notes/mid.md", MID);
+  const { chunks } = chunkNote("notes/mid.md", MID, CHUNK);
+  assert.ok(docs.length >= 16 && docs.length <= 24, `${docs.length} docs`);
   assert.equal(docs.length, chunks.length);
   docs.forEach((doc, i) => {
     assert.equal(doc.key, `notes/mid.md#c${i}`);
@@ -163,7 +157,7 @@ test("a 20,000-character note is about ten chunk documents, each titled by the n
 });
 
 test("only the last chunk of a note past the cap is partial", () => {
-  const docs = subDocumentsFor("notes/huge.md", HUGE, CHUNKED);
+  const docs = subDocumentsFor("notes/huge.md", HUGE);
   assert.deepEqual(docs.filter((doc) => doc.partial).map((doc) => doc.chunk), [docs.length - 1]);
   assert.equal(docs[docs.length - 1].partial, true);
   assert.ok(!docs.some((doc) => doc.content.includes("quokka")), "nothing past 64,000 characters is indexed");
@@ -171,13 +165,13 @@ test("only the last chunk of a note past the cap is partial", () => {
 
 test("a note with no heading gets no title line on its later chunks", () => {
   const text = longNote("x", 9_000).replace(/^# x\n\n/, "");
-  const docs = subDocumentsFor("notes/bare.md", text, CHUNKED);
-  const { chunks } = chunkNote("notes/bare.md", text, CHUNKED.chunk);
+  const docs = subDocumentsFor("notes/bare.md", text);
+  const { chunks } = chunkNote("notes/bare.md", text, CHUNK);
   assert.ok(docs.length > 1);
   assert.deepEqual(docs.map((doc) => doc.content), chunks.map((chunk) => chunk.text));
 });
 
-test("a channel-day note produces exactly today's message documents", () => {
+test("a channel-day note produces its message documents, not chunks", () => {
   const msg = (i) => ({
     channel: "email",
     account: "name-at-example-com",
@@ -202,44 +196,32 @@ test("a channel-day note produces exactly today's message documents", () => {
   const path = "0-inbox/email/name-at-example-com/2026-09-07.md";
   const today = subDocumentsFor(path, day);
   assert.equal(today.length, 3);
-  assert.deepEqual(subDocumentsFor(path, day, CHUNKED), today);
   assert.deepEqual(today, channelDaySubDocuments(path, day));
 });
 
-test("with chunk: null every document equals today's", () => {
-  for (const [path, text] of [["notes/huge.md", HUGE], ["notes/mid.md", MID], ["notes/empty.md", ""], ["notes/short.md", "# Hi\n\nthere"]]) {
-    const today = subDocumentsFor(path, text);
-    assert.deepEqual(today, [{ key: path, notePath: path, anchor: null, content: text.slice(0, NOTE_INDEX_CHAR_CAP), comms: null }]);
-    assert.deepEqual(subDocumentsFor(path, text, DEFAULT_FORMAT), today);
-    assert.deepEqual(subDocumentsFor(path, text, { tokenizer: 2, chunk: null }), today);
-  }
+test("an empty note keeps its one whole-note document, so its version is still recorded", () => {
+  assert.deepEqual(subDocumentsFor("notes/empty.md", ""), [{ key: "notes/empty.md", notePath: "notes/empty.md", anchor: null, content: "", comms: null }]);
 });
 
-test("an empty note under a chunked format keeps its one whole-note document", () => {
-  assert.deepEqual(subDocumentsFor("notes/empty.md", "", CHUNKED), subDocumentsFor("notes/empty.md", ""));
-});
-
-test("sizing: a 50,000-byte ordinary note counts 50,000 chunked and 2,048 without", () => {
-  assert.equal(indexVolumeOf("notes/big.md", 50_000, CHUNKED), 50_000);
-  assert.equal(indexVolumeOf("notes/big.md", 50_000, DEFAULT_FORMAT), 2048);
-  assert.equal(indexVolumeOf("notes/big.md", 50_000), 2048);
-  assert.equal(indexVolumeOf("notes/big.md", 200_000, CHUNKED), 64_000, "capped at the format's cap");
-  // A size the listing did not report reads as one per-note window, as today.
-  assert.equal(indexVolumeOf("notes/big.md", undefined, CHUNKED), NOTE_INDEX_CHAR_CAP);
-  // Channel-day notes are counted by their bytes whatever the format.
+test("sizing: an ordinary note counts its bytes up to the 64,000 chunk cap", () => {
+  assert.equal(indexVolumeOf("notes/big.md", 50_000), 50_000);
+  assert.equal(indexVolumeOf("notes/big.md", 200_000), 64_000, "capped at the chunk cap");
+  // A size the listing did not report reads as one per-note window.
+  assert.equal(indexVolumeOf("notes/big.md", undefined), NOTE_INDEX_CHAR_CAP);
+  // Channel-day notes are counted by their bytes times the bundled factor.
   const day = "0-inbox/email/name-at-example-com/2026-09-07.md";
-  assert.equal(indexVolumeOf(day, 50_000, CHUNKED), indexVolumeOf(day, 50_000));
+  assert.equal(indexVolumeOf(day, 50_000), 62_500);
 });
 
 // -- through the sync and search ----------------------------------------------
 
-test("a built chunked index stores every chunk under the note's path and version, and finds a term at 15,000", async () => {
+test("a built index stores every chunk under the note's path and version, and finds a term at 15,000", async () => {
   const bucket = bucketWith({ "notes/mid.md": MID, "notes/other.md": "# Other\n\nunrelated" });
   await build(bucket);
   const docs = (await storedDocs(bucket)).filter(([, doc]) => doc.notePath === "notes/mid.md");
-  const expected = chunkNote("notes/mid.md", MID, CHUNKED.chunk).chunks.length;
+  const expected = chunkNote("notes/mid.md", MID, CHUNK).chunks.length;
   assert.equal(docs.length, expected);
-  assert.ok(docs.length >= 8 && docs.length <= 12);
+  assert.ok(docs.length >= 16 && docs.length <= 24);
   const versions = new Set(docs.map(([, doc]) => doc.etag));
   assert.equal(versions.size, 1, "every chunk carries the same version");
   assert.equal(docmapVersions(bucket).get("notes/mid.md"), [...versions][0], "the docmap records that version");
@@ -276,11 +258,11 @@ test("a term past 64,000 is not found, and the note is reduced recall only for c
 test("the diff converges: a second pass over chunked and capped notes changes nothing", async () => {
   const bucket = bucketWith({ "notes/mid.md": MID, "notes/huge.md": HUGE });
   await build(bucket);
-  const before = new Map([...bucket.objects].filter(([key]) => key.startsWith(".context/search/v3/shards/")));
+  const before = new Map([...bucket.objects].filter(([key]) => key.startsWith(".context/search/index/shards/")));
   const again = await sync(bucket);
   assert.equal(again.pending, 0);
   assert.equal(again.changed, false);
-  const after = [...bucket.objects.keys()].filter((key) => key.startsWith(".context/search/v3/shards/"));
+  const after = [...bucket.objects.keys()].filter((key) => key.startsWith(".context/search/index/shards/"));
   assert.deepEqual(after.sort(), [...before.keys()].sort(), "no new shard revision");
 });
 
@@ -291,8 +273,8 @@ test("editing a note to fewer chunks removes its old chunk documents", async () 
   bucket.objects.set("notes/mid.md", { body: shorter, etag: "edited" });
   await build(bucket);
   const keys = (await storedDocs(bucket)).filter(([, doc]) => doc.notePath === "notes/mid.md").map(([key]) => key).sort();
-  const expected = chunkNote("notes/mid.md", shorter, CHUNKED.chunk).chunks.map((_, i) => `notes/mid.md#c${i}`).sort();
-  assert.ok(expected.length < 8);
+  const expected = chunkNote("notes/mid.md", shorter, CHUNK).chunks.map((_, i) => `notes/mid.md#c${i}`).sort();
+  assert.ok(expected.length < 16);
   assert.deepEqual(keys, expected);
 });
 
@@ -305,7 +287,7 @@ test("a note shortened under the cap stops being reported as reduced recall", as
   assert.deepEqual((await search(bucket, "zanzibar")).reducedRecallNotes, []);
 });
 
-test("an encrypted note teaches a chunked index no plaintext term", async () => {
+test("an encrypted note teaches the index no plaintext term", async () => {
   const sealed = `---\ncontext_encryption: v1\n---\n${"ciphertext kestrel blob. ".repeat(1500)}`;
   const bucket = bucketWith({ "notes/sealed.md": sealed, "notes/open.md": "# Open\n\nnothing here" });
   await build(bucket);
@@ -337,11 +319,11 @@ function indexedTermsOf(path, docs) {
   return terms;
 }
 
-test("a drawing stays one whole-note document under a chunked format, indexed up to the cap", async () => {
+test("a drawing stays one whole-note document, indexed up to the cap", async () => {
   const path = "d/plan.excalidraw.md";
   const drawing = drawingNote();
   assert.ok(drawing.length > 20_000);
-  const docs = subDocumentsFor(path, drawing, CHUNKED);
+  const docs = subDocumentsFor(path, drawing);
   assert.deepEqual(docs, [{ key: path, notePath: path, anchor: null, content: drawing, comms: null }]);
   const whole = indexedTermsOf(path, [{ content: drawing }]);
   assert.ok(whole.size > 200, `${whole.size} terms in the whole drawing`);
@@ -350,7 +332,7 @@ test("a drawing stays one whole-note document under a chunked format, indexed up
   await build(bucket);
   assert.ok((await storedTerms(bucket)).has("secretlabel119"), "a label far past 2,048 characters is indexed");
   // Past the cap, the one document is cut there and reported as partial.
-  const huge = subDocumentsFor(path, drawing + " ".repeat(64_000), CHUNKED);
+  const huge = subDocumentsFor(path, drawing + " ".repeat(64_000));
   assert.equal(huge.length, 1);
   assert.equal(huge[0].content.length, 64_000);
   assert.equal(huge[0].partial, true);
@@ -367,7 +349,7 @@ test("comments are stripped before chunking: no comment word is indexed at any c
     }
     note += `${block}\`\`\`\n`;
     assert.ok(!/commentonlyword|reviewerchatter/.test(extractFields("n/c.md", note).body), "the whole note indexes no comment word");
-    const docs = subDocumentsFor("n/c.md", note, CHUNKED);
+    const docs = subDocumentsFor("n/c.md", note);
     const terms = indexedTermsOf("n/c.md", docs);
     const leaking = [...terms].filter((term) => /commentonlyword|reviewerchatter/.test(term));
     assert.deepEqual(leaking, [], `body ${bodyLength}: ${docs.length} chunks`);
@@ -389,7 +371,6 @@ test("placement: a channel-day note avoids a shard that holds long chunked notes
   }
   const day = "0-inbox/email/name-at-example-com/2026-09-07.md";
   entries.set(day, { version: "v", uploaded: null, size: 30_000 });
-  // Shard 0 holds 180,000 indexed characters under the chunked format, 6,144 without.
-  assert.equal(placeUnclaimed(emptyManifest(2), entries, claimed, 1e9).get(day), 0, "today's rule");
-  assert.equal(placeUnclaimed(manifest, entries, claimed, 1e9, CHUNKED).get(day), 1);
+  // Shard 0 holds 180,000 indexed characters, shard 1 holds 20,000.
+  assert.equal(placeUnclaimed(manifest, entries, claimed, 1e9).get(day), 1);
 });

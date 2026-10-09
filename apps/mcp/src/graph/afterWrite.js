@@ -20,7 +20,7 @@ export const SUGGEST_DEADLINE_MS = 250;
 /**
  * Project one written note. With budget 0 the manifest read is refused before any store op; with no manifest (reconciliation
  * creates it, Task 10), nothing else runs. A "pending" or "stale" result is
- * left to reconciliation. Then, for a v3 index with anchor text, the link
+ * left to reconciliation. Then, the link
  * targets whose postings changed are re-indexed on a budget of their own
  * (`refreshBudget`, ANCHOR_REFRESH_OPS by default); `visibilityOf` is the
  * privacy engine as of this write. Never rejects.

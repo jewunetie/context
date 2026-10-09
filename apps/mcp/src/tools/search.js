@@ -6,7 +6,7 @@ import { forwardPath, readForwarding } from "../forwarding.js";
 import { getVisibleMovedNote } from "../notes/visibleKeys.js";
 import { getWithLegacyFallback } from "../storageLayout.js";
 import { normalizePath, noteUrl } from "../notes/paths.js";
-import { NOTE_INDEX_CHAR_CAP } from "../search/maintain.js";
+import { CHUNK } from "../search/format.js";
 import { noteTitle, splitReducedRecallNotes } from "../search/visible.js";
 import { probeWithLegacyFallback } from "../notes/storage.js";
 import { searchVisibleNotes } from "../search/visibleNotes.js";
@@ -18,12 +18,8 @@ export async function toolSearchNotes(store, scope, rules, overrides, query, pre
   const prefix = prefixArg ? normalizePath(prefixArg) : "";
   if (prefixArg && prefix === null) return toolError("invalid prefix");
   const found = await searchVisibleNotes(store, scope, rules, overrides, query, prefix);
-  const hits = found.hits.map(({ key, snippets, title, linked }) =>
-    // Graph-assisted ranking (Task 29): found through a link from a result,
-    // not through its text, so it has no matching line to quote.
-    linked
-      ? `${key}\n    (linked from a result)`
-      : snippets.length
+  const hits = found.hits.map(({ key, snippets, title }) =>
+    snippets.length
       ? `${key}\n${snippets.map((line) => `    ${line}`).join("\n")}`
       : // Indexed, then edited: it matched when it was indexed and its current
         // text does not carry the term. The title was actually read; a snippet
@@ -34,19 +30,17 @@ export async function toolSearchNotes(store, scope, rules, overrides, query, pre
   // answers from its own head. It is almost always the wrong conclusion — the
   // note exists under a word the user would have used and this query did not —
   // so the miss says what to try instead of stopping the sentence at "no".
-  const linked = found.hits.filter((hit) => hit.linked).length;
-  const textHits = hits.length - linked;
   let out = hits.length
     ? `${found.matchCount}${found.matchCountIsFloor ? "+" : ""} matching note${
         found.matchCount === 1 && !found.matchCountIsFloor ? "" : "s"
-      }${textHits < found.matchCount ? ` — the ${textHits} best shown` : ""}${linked ? `, plus ${linked} linked` : ""}\n\n${hits.join(
+      }${hits.length < found.matchCount ? ` \u2014 the ${hits.length} best shown` : ""}\n\n${hits.join(
         "\n\n"
       )}`
     : "(no matches)\n\nA miss usually means the wrong word rather than the wrong assumption — " +
       "this searches the words in the notes, not their meaning. Before concluding it is not " +
       "written down: try the term the user would have typed, drop the prefix if you passed " +
       "one, or call orient / list_notes to see which folders exist. And if the note is long, " +
-      `a note is indexed by its opening ${NOTE_INDEX_CHAR_CAP.toLocaleString("en-US")} characters, ` +
+      `a note is indexed by its opening ${CHUNK.cap.toLocaleString("en-US")} characters, ` +
       "so a term deep inside a saved session or a long log will not match here even though " +
       "read_note returns the whole file.";
   // The floor, in the language the census and orient already use. Deliberately

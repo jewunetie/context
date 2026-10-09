@@ -21,7 +21,7 @@ import { isEncryptedNote } from "../encryption.js";
 import { extractReferences, indexByName, resolveReference } from "../links.js";
 import { extractFields } from "../search/indexer.js";
 import { indexIsBehind, loadDocmapPaths, loadIndexManifest } from "../search/shards.js";
-import { tokenize, stem } from "../search/text.js";
+import { queryTermsOf } from "../search/text.js";
 import { searchIndexedNotes } from "../search/visible.js";
 import { activeMoveJobsOrNull, noteUnderPrefix } from "../moves/jobs.js";
 import { graphView } from "./mode.js";
@@ -47,6 +47,9 @@ const EXPLICIT = new Set(["links_here", "linked_from_here"]);
 // Body words too common to say what a note is about; shorter ones are dropped by length.
 const STOP = new Set("that this with from have were will would there their what when which about into than then them they been also some more such only other your just like over each must should could does".split(" "));
 
+/** Lowercased runs of letters and digits, two characters or longer. */
+const words = (text) => (String(text ?? "").toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter((w) => w.length >= 2);
+
 /** Arch 8.3: segments of A's and B's directories outside their common prefix. */
 export function directoryDistance(a, b) {
   const da = a.split("/").slice(0, -1);
@@ -62,8 +65,8 @@ export function directoryDistance(a, b) {
  * For `link_suggestions` only the given sections: their headings, then their
  * text. Link and URL targets are blanked first: they are addresses, not
  * prose, and the graph already counts them. Bare URLs (`kind: "url"`) stay in,
- * as they did before the reader reported them. Raw tokens are emitted (the
- * query parser stems once), deduplicated on the stem.
+ * as they did before the reader reported them. Raw words are emitted (the
+ * query parser stems once), deduplicated on their terms.
  */
 export function seedQuery(seed, intent) {
   const prose = (text) => {
@@ -83,13 +86,13 @@ export function seedQuery(seed, intent) {
   }
   const picked = new Map();
   const add = (token) => {
-    const s = stem(token);
-    if (picked.size < MAX_QUERY_TERMS && !picked.has(s)) picked.set(s, token);
+    const key = queryTermsOf(token).join(" ");
+    if (key && picked.size < MAX_QUERY_TERMS && !picked.has(key)) picked.set(key, token);
   };
-  for (const t of tokenize(title)) add(t);
-  for (const t of tokenize(headings)) add(t);
+  for (const t of words(title)) add(t);
+  for (const t of words(headings)) add(t);
   const counts = new Map();
-  for (const t of tokenize(body)) if (t.length >= 4 && !STOP.has(t) && !/^\d+$/.test(t)) counts.set(t, (counts.get(t) ?? 0) + 1);
+  for (const t of words(body)) if (t.length >= 4 && !STOP.has(t) && !/^\d+$/.test(t)) counts.set(t, (counts.get(t) ?? 0) + 1);
   // Map order is first occurrence and sort is stable, so ties keep it.
   for (const [t] of [...counts].sort((a, b) => b[1] - a[1])) add(t);
   return [...picked.values()].join(" ");

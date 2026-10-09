@@ -212,7 +212,7 @@ describe("a projection pass the control plane runs itself", () => {
     // having an index. The projection's census is that index's own docmap, so
     // a pass that only projected would have nothing to walk, forever.
     const store = bucket();
-    expect(store.snapshot()[".context/search/v2/manifest.json"]).toBeUndefined();
+    expect(store.snapshot()[".context/search/index/manifest.json"]).toBeUndefined();
 
     await chain(store, stubD1().client);
 
@@ -361,12 +361,12 @@ describe("a projection pass the control plane runs itself", () => {
      *
      * Closing it properly means an atomic multi-statement batch, which is a
      * change to `apps/mcp`'s D1 client and to the reasoning `lib/d1.ts` sets
-     * out for refusing multi-statement requests. Pinned here so that it is a
-     * known cost with a test naming it, rather than something a later reader
-     * discovers as a surprise — and so that a fix flips this assertion instead
-     * of finding nothing to update.
+     * out for refusing multi-statement requests. Pinned here as a known cost,
+     * so that a fix flips this assertion instead of finding nothing to update.
      */
     const store = bucket(1);
+    // Index built first (the first manifest is create-only, so two passes building it are out of step).
+    await projectSearchIndex(store, stubD1().client);
     const d1 = stubD1();
     await Promise.all([
       projectSearchIndex(store, d1.client),

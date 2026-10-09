@@ -134,7 +134,7 @@ export async function runCommsSubDocumentChecks(check) {
   }
 
   /* ---------------------------------------------------------------------- */
-  /* Non-channel notes are unchanged                                        */
+  /* Non-channel notes are indexed as chunks                                 */
   /* ---------------------------------------------------------------------- */
 
   {
@@ -142,11 +142,11 @@ export async function runCommsSubDocumentChecks(check) {
     const content = `# Plan\n\n${"y".repeat(NOTE_INDEX_CHAR_CAP + 500)}tail-word`;
     check("an ordinary path is not recognised as a channel day", !isChannelDayIndexPath(path));
     const subs = subDocumentsFor(path, content);
-    check("an ordinary note yields exactly one sub-document", subs.length === 1);
-    check("that sub-document's key is the note's own path", subs[0].key === path && subs[0].anchor === null);
+    check("an ordinary note yields its chunks, each naming the note", subs.length > 1 && subs.every((sub) => sub.notePath === path && sub.anchor === null));
+    check("each chunk's key is the note's path with its chunk number", subs.every((sub) => sub.key === `${path}#c${sub.chunk}`));
     check(
-      "and it keeps the existing whole-note cap — no independent per-message split for a note with no messages",
-      subs[0].content.length === NOTE_INDEX_CHAR_CAP && !subs[0].content.includes("tail-word")
+      "and text past the old whole-note window is indexed: the tail word is in the last chunk",
+      subs[subs.length - 1].content.includes("tail-word")
     );
   }
 

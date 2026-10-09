@@ -618,7 +618,8 @@ async function maintainedRun({ disableGraph, total, defer = true }) {
   return s;
 }
 const searchState = (b) =>
-  [...b.objects].filter(([k]) => k.startsWith(".context/search/")).map(([k]) => k).sort();
+  // Shard revisions are named by a digest of their bytes, which carry real timestamps.
+  [...b.objects].filter(([k]) => k.startsWith(".context/search/")).map(([k]) => k.replace(/(shards\/\d{3})-[0-9a-f]{16}/, "$1-H")).sort();
 
 test("maintainNow: the search sync's results and budget use are unchanged when graph work runs", async () => {
   const on = await maintainedRun({ disableGraph: false, total: 200 });
@@ -627,7 +628,7 @@ test("maintainNow: the search sync's results and budget use are unchanged when g
   assert.equal(off.graphOps, 1, "disabled graph stopped at its first op");
   assert.equal(on.spentAtGraph, off.spentAtGraph, "the sync spent the same before the graph started");
   assert.deepEqual(searchState(on.b), searchState(off.b));
-  const docmap = (s) => s.b.objects.get(".context/search/v2/docmap.json")?.body;
+  const docmap = (s) => s.b.objects.get(".context/search/index/docmap.json")?.body;
   assert.ok(docmap(on));
   assert.equal(docmap(on), docmap(off));
 });

@@ -1,43 +1,17 @@
-import {
-  MANIFEST_KEY,
-  DOCMAP_KEY,
-  MANIFEST_PARSE_BYTE_CAP,
-  SHARD_PARSE_BYTE_CAP,
-  V3_MANIFEST_KEY,
-  V3_DOCMAP_KEY,
-} from "./constants.js";
-import { parseManifest, parseManifestV4, parseDocmap, parseShard } from "./serialize.js";
-import { shardKey } from "./placement.js";
-import { DEFAULT_FORMAT, formatsEqual, usesV3 } from "../format.js";
-
-// -- layouts (CONTRACT-v3.md) ------------------------------------------------
-
-/** Today's index: fixed keys, one per shard id. */
-export const V2_LAYOUT = Object.freeze({
-  namespace: "v2",
-  manifestKey: MANIFEST_KEY,
-  docmapKey: DOCMAP_KEY,
-  shardKeyFor: (id) => shardKey(id),
-});
-
-/** Any non-default format: the manifest names each shard's exact key; `null` is nothing stored. */
-export const V3_LAYOUT = Object.freeze({
-  namespace: "v3",
-  manifestKey: V3_MANIFEST_KEY,
-  docmapKey: V3_DOCMAP_KEY,
-  shardKeyFor: (id, manifest) => manifest?.shards?.[id]?.key ?? null,
-});
+import { MANIFEST_KEY, DOCMAP_KEY, MANIFEST_PARSE_BYTE_CAP, SHARD_PARSE_BYTE_CAP } from "./constants.js";
+import { parseManifest, parseDocmap, parseShard } from "./serialize.js";
+import { segmenterSelfTest } from "../text.js";
 
 /** What a `null` shard key reads as: a shard holding nothing. */
 const EMPTY_SHARD_TEXT = JSON.stringify({ version: 3, generatedAt: null, docs: [], terms: [] });
 
-async function readManifestAt(store, budget, reserve, cap, key, parse) {
+async function readManifestAt(store, budget, reserve, cap) {
   if (!budget.take(reserve)) return null;
-  const stored = await store.get(key);
+  const stored = await store.get(MANIFEST_KEY);
   if (!stored) return null;
   const bytes = await stored.arrayBuffer();
   if (bytes.byteLength > cap) return null;
-  return parse(new TextDecoder().decode(bytes), cap);
+  return parseManifest(new TextDecoder().decode(bytes), cap);
 }
 
 // -- reading one shard -----------------------------------------------------
@@ -54,10 +28,9 @@ async function readManifestAt(store, budget, reserve, cap, key, parse) {
  * ready index now, and the maintenance that makes it ready runs behind the
  * response.
  *
- * One op (two when a non-default format is configured and its v3 index is
- * not served). The result carries `layout` and `format`, so callers never
- * re-decide which namespace they are reading. `null` for every way the manifest can fail to arrive — absent,
- * refused, oversized, corrupt, no budget — because to this caller they mean the
+ * One op. `null` for every way the manifest can fail to arrive, absent,
+ * refused, oversized, corrupt, another `INDEX_FORMAT_VERSION`, no segmenter,
+ * no budget, because to this caller they mean the
  * same thing: there is nothing here to answer from, say so and let the surface
  * decide what to do about it.
  *
@@ -69,28 +42,9 @@ async function readManifestAt(store, budget, reserve, cap, key, parse) {
  */
 export async function loadIndexManifest(store, budget, reserve, byteCap = MANIFEST_PARSE_BYTE_CAP) {
   const cap = Number.isFinite(byteCap) ? byteCap : MANIFEST_PARSE_BYTE_CAP;
-  // The dual read (CONTRACT-v3.md). Only a configured, usable, non-default
-  // format looks under `v3/` at all, and v3 is served only when it is built for
-  // exactly that format; every other outcome, a read failure included, serves
-  // v2 exactly as before.
-  const format = store?.searchIndexFormat;
-  if (usesV3(format)) {
-    let v3 = null;
-    try {
-      v3 = await readManifestAt(store, budget, reserve, cap, V3_LAYOUT.manifestKey, parseManifestV4);
-    } catch {
-      v3 = null;
-    }
-    if (v3 && v3.built && formatsEqual(v3.format, format)) {
-      v3.layout = V3_LAYOUT;
-      return v3;
-    }
-  }
-  const v2 = await readManifestAt(store, budget, reserve, cap, V2_LAYOUT.manifestKey, parseManifest);
-  if (v2 === null) return null;
-  v2.layout = V2_LAYOUT;
-  v2.format = DEFAULT_FORMAT;
-  return v2;
+  // A runtime that cannot tokenize serves no index (see `segmenterSelfTest`).
+  if (!segmenterSelfTest()) return null;
+  return readManifestAt(store, budget, reserve, cap);
 }
 
 /**
@@ -125,7 +79,7 @@ export async function loadDocmapPaths(store, budget, reserve, given) {
   const manifest = given ?? (await loadIndexManifest(store, budget, reserve));
   if (manifest === null) return null;
   if (!budget.take(reserve)) return null;
-  const stored = await store.get(manifest.layout.docmapKey);
+  const stored = await store.get(DOCMAP_KEY);
   if (!stored) return null;
   const bytes = await stored.arrayBuffer();
   if (bytes.byteLength > MANIFEST_PARSE_BYTE_CAP) return null;
@@ -157,7 +111,7 @@ export async function loadDocmapPaths(store, budget, reserve, given) {
  * @param {number} reserve store ops kept back for the caller's later work
  * @param {number} id shard id
  * @param {number} [byteCap]
- * @param {object} [manifest] the loaded manifest, whose `layout` names the key; v2 when absent
+ * @param {object} [manifest] the loaded manifest, whose `shards` name the keys
  * @returns {Promise<ReturnType<typeof emptyShard>|null>}
  */
 export async function loadShard(store, budget, reserve, id, byteCap = SHARD_PARSE_BYTE_CAP, manifest) {
@@ -187,9 +141,9 @@ export async function loadShard(store, budget, reserve, id, byteCap = SHARD_PARS
  */
 export async function fetchShardBytes(store, budget, reserve, id, byteCap = SHARD_PARSE_BYTE_CAP, manifest) {
   const cap = Number.isFinite(byteCap) ? byteCap : SHARD_PARSE_BYTE_CAP;
-  // The key comes from the manifest's layout; v2 when the caller passed none.
-  // A v3 shard with no stored revision is empty, and costs no op to say so.
-  const key = (manifest?.layout ?? V2_LAYOUT).shardKeyFor(id, manifest);
+  // The key comes from the manifest. A shard with no stored revision is empty,
+  // and costs no op to say so.
+  const key = manifest?.shards?.[id]?.key ?? null;
   if (key === null) return new TextEncoder().encode(EMPTY_SHARD_TEXT).buffer;
   if (!budget.take(reserve)) return null;
   try {

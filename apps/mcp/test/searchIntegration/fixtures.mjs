@@ -19,9 +19,9 @@ import {
   parseManifest,
   parseShard,
   serializeManifest,
-  shardKey,
   syncShardedIndex,
 } from "../../src/search/shards.js";
+import { shardKeyIn } from "../searchShards/shardKeys.mjs";
 import { searchIndex } from "../../src/search/query.js";
 import { CONTROL_PLANE_ORIGIN, GATEWAY_SECRET, createControlPlaneStub } from "../controlPlaneStub.mjs";
 import { createWorkerCtx } from "../workerCtx.mjs";
@@ -203,33 +203,34 @@ export function storedManifest(bucket) {
   return raw ? parseManifest(raw.body) : null;
 }
 
-/** Every doc path the stored v2 index holds, across every shard it names. */
+/** Every note path the stored index holds, across every shard it names. */
 export function indexedPaths(bucket) {
   const manifest = storedManifest(bucket);
   if (!manifest) return null;
   const paths = [];
   for (let id = 0; id < manifest.shardCount; id += 1) {
-    const raw = bucket.objects.get(shardKey(id));
+    const key = shardKeyIn(bucket, id);
+    const raw = key ? bucket.objects.get(key) : null;
     const shard = raw ? parseShard(raw.body) : null;
-    if (shard) paths.push(...shard.docs.keys());
+    if (shard) for (const doc of shard.docs.values()) if (!paths.includes(doc.notePath)) paths.push(doc.notePath);
   }
   return paths;
 }
 
-/** Every v2 object gone, which is what "nothing has indexed this bucket" means. */
-export function removeV2Index(bucket) {
+/** Every index object gone, which is what "nothing has indexed this bucket" means. */
+export function removeIndex(bucket) {
   for (const key of [...bucket.objects.keys()]) {
-    if (key.startsWith(".context/search/v2/")) bucket.remove(key);
+    if (key.startsWith(".context/search/index/")) bucket.remove(key);
   }
 }
 
 /**
- * The v2 sync run to convergence, standing in for the many searches a real
+ * The sync run to convergence, standing in for the many searches a real
  * context would spend getting there. The fixtures below use it wherever they
  * need the *whole* bucket indexed before a worker search asks a question about
  * ranking or about counts.
  */
-export async function convergeV2(store) {
+export async function converge(store) {
   let pass = null;
   for (let attempt = 0; attempt < 12; attempt += 1) {
     pass = await syncShardedIndex(store, { budget: createSearchBudget(300) });
@@ -251,7 +252,7 @@ export {
   parseManifest,
   parseShard,
   serializeManifest,
-  shardKey,
+  shardKeyIn,
   syncShardedIndex,
   searchIndex,
   CONTROL_PLANE_ORIGIN,

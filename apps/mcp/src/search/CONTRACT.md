@@ -39,7 +39,7 @@ because that one is stored rather than derived at query time.
 
 ## What is indexed of a note
 
-**The first `NOTE_INDEX_CHAR_CAP` characters of the source, and no more.** The
+**The first `CHUNK.cap` (64,000) characters, as chunks (CONTRACT-REVISIONS.md).** The
 cut is by characters of raw text before tokenization, so `len` and every `tf`
 are consistent with what was actually indexed rather than with the file — and
 `extractFields` runs on the sliced text, so a heading past the cut is not a
@@ -49,7 +49,6 @@ This is a real, user-visible loss of recall, not an implementation detail: a
 term deep inside a long note does not match, though `read_note` returns the
 whole file. `toolSearchNotes` says so on a miss, because a search that is
 silently partial is a search that tells an agent the thing is not written down.
-The cap's own comment in `maintain.js` carries why the number is what it is.
 
 ## In-memory shape
 
@@ -189,26 +188,28 @@ The index never gates correctness: a search with no usable index falls back to
 the bounded scan, and the scan is itself capped below the subrequest budget so
 it degrades instead of throwing `Too many subrequests`.
 
-# The sharded index — format contract (v2)
+# The sharded index: format contract
 
 v1's single object has a hard ceiling: it must be parsed whole, so
 `INDEX_PARSE_BYTE_CAP` bounds it, and a workspace whose capped index exceeds that
 bound plateaus at partial coverage forever — measured live at roughly a
 thousand docs of contact-heavy vocabulary. v2 removes the whole-object parse:
 many small shards, each always under its own cap, streamed at query time so
-peak memory is one shard. Opt-in formats (v3, `.context/search/v3/`): [`CONTRACT-v3.md`](./CONTRACT-v3.md).
+peak memory is one shard. Layout, manifest version, tokenizer, chunking and
+anchors: [`CONTRACT-REVISIONS.md`](./CONTRACT-REVISIONS.md), which wins on any
+conflict (the `.context/search/v2/` paths below are no longer used).
 
 ## Objects
 
-- `.context/search/v2/manifest.json` — **the query surface**, and the pass's single
-  commit point. Carries `{version: 3, shardCount, generatedAt, stats, filters,
-  freshness}` where `stats` is an array of per-shard `{docCount, lenTotals:
+- `.context/search/index/manifest.json`, **the query surface**, and the pass's single
+  commit point. Carries `{version: 5, shardCount, generatedAt, stats, filters,
+  freshness, shards}` where `stats` is an array of per-shard `{docCount, lenTotals:
   {title, headings, tags, body}}`, `filters` is an array of `shardCount` base64
   Bloom filters over each shard's own vocabulary (or `null`, which every reader
   must treat as "read that shard"), and `freshness` is
   `{listedAt, pending, truncated}` — what the last pass that listed the bucket
   found. A query reads this object and no other bookkeeping.
-- `.context/search/v2/docmap.json` — **the diff surface**, read by maintenance and by
+- `.context/search/index/docmap.json`, **the diff surface**, read by maintenance and by
   nothing else. `{version: 3, shardCount, docsByShard}`, where `docsByShard` is
   an array of `shardCount` arrays of `[path, version]` pairs (the same
   listing-derived token v1 stores). Serialized as arrays of pairs throughout —
@@ -226,13 +227,13 @@ peak memory is one shard. Opt-in formats (v3, `.context/search/v3/`): [`CONTRACT
   **This was inside the manifest, and moving it is why a query got fast.** One
   `[path, version]` pair per note in the bucket is ~900KB at eight thousand
   notes, downloaded by every search to learn a shard count it could have had in
-  five. Manifests are read at version 2 (diff inline, no filters, no freshness)
-  or 3, and written at 3, so an upgrade is seamless and a **rollback rebuilds**
-  — expensive, correct, and what a disposable derivative is for. Writing the
+  five. A manifest is read only at the current `INDEX_FORMAT_VERSION`; any
+  other version is read as absent and the index is **rebuilt**, expensive,
+  correct, and what a disposable derivative is for. Writing the
   diff into both objects to keep an older reader happy would be one list
   authored twice, and the direction that fails is two copies disagreeing about
   what a shard holds.
-- `.context/search/v2/shard-<nnn>.json` — `nnn` is the zero-padded decimal shard id.
+- `.context/search/index/shards/<nnn>-<hex16>.json`, `nnn` is the zero-padded decimal shard id and `hex16` the start of the body's SHA-256 (a revision; the manifest's `shards` names it).
   Written as `{version: 3, generatedAt, docs, terms}` over only its docs, where
   `docs` is a sorted array of `[path, meta]` pairs and each posting in `terms`
   is `[docIndex, tf]` — the doc's position in that `docs` array, not its path.
@@ -332,8 +333,7 @@ seconds to a fraction of one, and it is a rule rather than a tuning: the
 subrequest budget bounds what a search may *spend* and cannot see what a person
 *waits for*.
 
-Per pass, budget-bounded exactly as v1: GET manifest → GET docmap (the diff;
-skipped for a v2 manifest, which carries it inline) → list notes → diff against
+Per pass, budget-bounded exactly as v1: GET manifest → GET docmap (the diff) → list notes → diff against
 `docsByShard` → group stale docs by shard → for each shard with stale docs (in
 shard-id order): GET shard (skip if the manifest says it has no docs yet), fetch
 stale notes in waves, addDoc/removeDoc, write the shard (byte-capped,

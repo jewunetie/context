@@ -3,9 +3,9 @@ import { buildTermFilter } from "../filter.js";
 import { addDoc, removeDocsForNote } from "../indexer.js";
 import { indexVolumeOf } from "../commsIndex.js";
 import { createSearchBudget, defaultIsIndexable, exceedsUtf8Bytes } from "../maintain.js";
-import { V2_WRITER } from "./revisions.js";
+import { INDEX_WRITER as writer } from "./revisions.js";
+import { segmenterSelfTest } from "../text.js";
 import {
-  LEGACY_V1_KEY,
   SHARD_PARSE_BYTE_CAP,
   MANIFEST_PARSE_BYTE_CAP,
   INDEX_VOLUME_PER_SHARD,
@@ -37,10 +37,10 @@ import {
 } from "./maintenance.js";
 
 /**
- * Bring `.context/search/v2/` as close to the bucket as one budget allows, and hand back
+ * Bring `.context/search/index/` as close to the bucket as one budget allows, and hand back
  * what was built (CONTRACT.md § "The sharded index … Maintenance"). One pass
- * over one namespace, chosen by `writer`; `syncShardedIndex` (`syncDual.js`)
- * decides which namespaces a pass covers. See CONTRACT-v3.md "The writer".
+ * over the one index (`revisions.js`). A runtime whose `Intl.Segmenter` fails
+ * its self-test writes nothing: there is no second tokenizer to fall back to.
  *
  * GET the manifest, list the notes, diff the listing against `docsByShard`,
  * group what changed by shard, and then per shard in id order: read it, fetch
@@ -104,7 +104,7 @@ import {
  *   spent: number,
  * }>} `shards` holds only what this pass loaded or built.
  */
-export async function syncPass(
+export async function syncShardedIndex(
   store,
   {
     budget,
@@ -206,14 +206,12 @@ export async function syncPass(
      * the version of every note in it, which only a listing has.
      */
     only = null,
-    listing = null, // a listing this pass's caller already paid for (`syncDual.js`); returned as `listing`
-    // Anchor text (v3 with `format.anchors` only, `anchors.js`): the privacy
+    // Anchor text (`anchors.js`): the privacy
     // engine bound to this context, for admission, and link targets whose
     // anchor text changed (`{ path }` or `{ name }`), re-indexed by this pass.
     visibilityOf,
     refresh = null,
-  } = {},
-  writer = V2_WRITER // which namespace this pass writes; chosen by `syncShardedIndex` (`syncDual.js`)
+  } = {}
 ) {
   const targeted = only instanceof Map;
   const shardCap = Number.isFinite(requestedShardCap) ? requestedShardCap : SHARD_PARSE_BYTE_CAP;
@@ -221,7 +219,9 @@ export async function syncPass(
   const ops = typeof budget === "object" && budget ? budget : createSearchBudget(budget);
   const shards = new Map();
 
-  if (!ops.take(reserve)) {
+  // No working segmenter means no tokenizer, so nothing is written and nothing
+  // is served (`loadIndexManifest`): the workspace stays in its not-ready state.
+  if (!segmenterSelfTest() || !ops.take(reserve)) {
     return {
       manifest: emptyManifest(1),
       shards,
@@ -239,9 +239,8 @@ export async function syncPass(
   }
   // Not wrapped in a `try`: an unreadable manifest object is a storage failure
   // rather than a corrupt derivative — a revoked key or a 500 — and the caller
-  // catches it and falls back to the bounded scan, exactly as it does for v1.
+  // catches it and falls back to the bounded scan.
   const storedManifest = await store.get(writer.manifestKey);
-  const manifestExisted = Boolean(storedManifest);
   const manifestEtag = typeof storedManifest?.etag === "string" && storedManifest.etag ? storedManifest.etag : null;
   let manifest = null;
   if (storedManifest) {
@@ -252,18 +251,11 @@ export async function syncPass(
       null;
   }
 
-  // A stored manifest that arrived with its diff inline is a v2 one, and this
-  // pass is its migration: the diff has to be written out to `DOCMAP_KEY` even
-  // if nothing about the index changes, or the v3 manifest this pass writes
-  // would point at a docmap that does not exist and the next pass would
-  // re-index the whole bucket.
-  const migratingFromV2 = Boolean(manifest && manifest.docmapLoaded);
-
-  if (targeted && (!manifest || migratingFromV2)) {
-    // Nothing to add to, or an index this pass would have to migrate — both a
-    // listing's job. Reported as a pass that did nothing, which it did.
+  if (targeted && !manifest) {
+    // Nothing to add to: a listing's job. Reported as a pass that did nothing,
+    // which it did.
     return {
-      manifest: manifest || emptyManifest(1),
+      manifest: emptyManifest(1),
       shards,
       pending: 0,
       listingTruncated: false,
@@ -278,17 +270,15 @@ export async function syncPass(
     };
   }
 
-  // The diff, where the manifest is v3 and did not bring it. One op, spent
+  // The diff, which the manifest does not bring. One op, spent
   // before the listing rather than after it, because everything the listing
   // decides — which notes are stale, which are gone — is decided *against* this
   // map. A docmap that cannot be read or does not match the shard count leaves
   // the maps empty, which makes every listed note look stale: the whole bucket
   // is re-indexed into the shards it already lives in. Slow and correct, and it
   // converges, which is the direction an unknown falls everywhere in this file.
-  let externalDocmapExisted = false;
-  if (manifest && !manifest.docmapLoaded && ops.take(reserve)) {
+  if (manifest && ops.take(reserve)) {
     const storedDocmap = await store.get(writer.docmapKey);
-    externalDocmapExisted = Boolean(storedDocmap);
     if (storedDocmap) {
       const bytes = await storedDocmap.arrayBuffer();
       const docsByShard =
@@ -310,14 +300,7 @@ export async function syncPass(
     ? manifest.stats.reduce((count, entry) => count + (entry.docCount > 0 ? 1 : 0), 0)
     : 0;
   const perShard = Number.isFinite(walkReserve) ? Math.max(0, Math.floor(walkReserve)) : 0;
-  // If the first pass had no room to retire v1, it deliberately left the
-  // recoverable docmap cache absent as the retry signal. A later pass holding
-  // that signal keeps both physical marker operations through its writes.
-  const legacyCleanupNeeded = !writer.v3 && // v1 is retired by the v2 writer only
-    (!manifestExisted || Boolean(manifest && !migratingFromV2 && !externalDocmapExisted));
-  const legacyCleanupReserve = manifestExisted && legacyCleanupNeeded ? 2 : 0;
-  const postCleanupReserve = reserve + perShard * occupiedShards;
-  const callerReserve = postCleanupReserve + legacyCleanupReserve;
+  const callerReserve = reserve + perShard * occupiedShards;
   const backfillCap = Number.isFinite(backfillOps) ? Math.max(0, Math.floor(backfillOps)) : Infinity;
   let fetchedNotes = 0;
 
@@ -328,7 +311,7 @@ export async function syncPass(
   // all, and re-sharding is deleting the manifest.
   const listed = targeted
     ? writtenEntries(only, isIndexable, manifest)
-    : listing || (await listNoteObjects(store, ops, callerReserve, isIndexable));
+    : await listNoteObjects(store, ops, callerReserve, isIndexable);
   const { entries, regionComplete, truncated } = listed;
 
   let manifestChanged = false;
@@ -338,7 +321,7 @@ export async function syncPass(
   // diff moves only when a shard's documents do, and rewriting a megabyte of
   // it to record that nothing happened is a standing cost on a converged
   // bucket.
-  let docmapChanged = migratingFromV2;
+  let docmapChanged = false;
 
   // What this bucket's notes will take up in the index, from the listing
   // alone — the number the sizing was missing. See `indexVolumeOf`: an
@@ -346,7 +329,7 @@ export async function syncPass(
   // is, and a channel-day note is worth its bytes, because its documents are
   // a set rather than one.
   let listedVolume = 0;
-  for (const [path, listed] of entries) listedVolume += indexVolumeOf(path, listed.size, writer.format);
+  for (const [path, listed] of entries) listedVolume += indexVolumeOf(path, listed.size);
   // Both derived from the one injected cap, so a test that shrinks the shard
   // shrinks the sizing with it and the two cannot be driven apart — the same
   // argument `shardByteCap` itself makes about read and write.
@@ -383,7 +366,7 @@ export async function syncPass(
   // again, one shard at a time, for a bundled note that fits in none of the
   // ones there are — so `shardCount` is read only after it has run.
   const countBeforePlacement = manifest.shardCount;
-  const placement = placeUnclaimed(manifest, entries, claimedShard, volumeCap, writer.format);
+  const placement = placeUnclaimed(manifest, entries, claimedShard, volumeCap);
   if (manifest.shardCount > countBeforePlacement) {
     manifestChanged = true;
     docmapChanged = true;
@@ -409,13 +392,13 @@ export async function syncPass(
   const touchedPaths = new Set();
   const removedPaths = new Set();
 
-  // Anchor text (`anchors.js`), for a v3 format that has it. Work that only
+  // Anchor text (`anchors.js`). Work that only
   // re-reads a note's anchors (`anchorOnly`: a doc whose anchors were not
   // read when it was indexed, marked ANCHORS_UNREAD in its version, or a link
   // target the graph says changed) goes after every other note in its shard,
   // pays for its anchor reads before its fetch, and is never `pending`: it
-  // does not hold back `built`, so it cannot stall a build at a low budget.
-  const anchors = writer.format?.anchors === true ? anchorPassFor(store, { visibilityOf, entries, claimedShard }) : null;
+  // does not hold back a build, so it cannot stall one at a low budget.
+  const anchors = anchorPassFor(store, { visibilityOf, entries, claimedShard });
   const anchorOnly = (listed, recorded) => ({ ...listed, version: unmarked(recorded), anchorOnly: true });
   const anchorWork = new Set(); // every anchor-only path this pass was asked for, in any shard
   const staleByShard = new Map();
@@ -424,7 +407,8 @@ export async function syncPass(
     const id = claimedShard.has(path) ? claimedShard.get(path) : placement.get(path);
     const recorded = manifest.docsByShard[id].get(path);
     if (recorded === listed.version) continue;
-    const retry = anchors !== null && recorded === listed.version + ANCHORS_UNREAD;
+    const retry = recorded === listed.version + ANCHORS_UNREAD;
+    if (retry && !anchors.readable) continue;
     pushInto(staleByShard, id, [path, retry ? anchorOnly(listed, recorded) : listed]);
     if (retry) anchorWork.add(path);
     queued.add(path);
@@ -563,7 +547,9 @@ export async function syncPass(
       if (!listed) continue;
       const existing = existingVersions.get(path);
       if (existing === listed.version) continue;
-      work.push([path, anchors && existing === listed.version + ANCHORS_UNREAD ? anchorOnly(listed, existing) : listed]);
+      const unread = existing === listed.version + ANCHORS_UNREAD;
+      if (unread && !anchors.readable) continue;
+      work.push([path, unread ? anchorOnly(listed, existing) : listed]);
     }
 
     // The graph manifest once per pass, and each note's previous anchor field
@@ -575,7 +561,7 @@ export async function syncPass(
       // that the read would cost the build a note fetch (the stall class), and
       // the notes are indexed unread and re-read later instead.
       const oneNote = callerReserve + MANIFEST_WRITE_RESERVE + SHARD_WRITE_RESERVE + 1 + ANCHOR_READS;
-      if (work.length > 0 && !anchors.reader.loaded && ops.remaining > oneNote && ops.take(oneNote)) {
+      if (anchors.readable && work.length > 0 && !anchors.reader.loaded && ops.remaining > oneNote && ops.take(oneNote)) {
         await anchors.reader.load(() => true);
       }
     }
@@ -716,7 +702,7 @@ export async function syncPass(
             notePath: sub.notePath,
             anchor: sub.anchor,
             comms: sub.comms,
-            tokenizer: writer.tokenizer, chunk: sub.chunk, partial: sub.partial,
+            chunk: sub.chunk, partial: sub.partial,
             ...(field && { anchors: field }),
           });
           // No `computeRanks`: the link graph is global and v2 never holds
@@ -843,7 +829,7 @@ export async function syncPass(
     // before the manifest is what makes that the only direction the two can
     // disagree in. It is skipped where there is no op for it, which leaves the
     // next pass re-fetching what this one indexed — expensive and correct.
-    const body = writer.serializeManifest(manifest, { pending, truncated, targeted });
+    const body = writer.serializeManifest(manifest);
     if (exceedsUtf8Bytes(body, manifestCap)) {
       // The same both-directions rule as a shard. Nothing is lost — the shards
       // were written — but the diff cannot record it, so the next pass re-does
@@ -852,9 +838,8 @@ export async function syncPass(
       manifestOverflow = true;
     } else if (ops.remaining > 0) {
       ops.take(0);
-      // Conditional on the etag read at the top. Where no manifest existed v2
-      // writes unconditionally and v3 create-only if the store can (see
-      // `revisions.js`). A `null` back means somebody else synced first:
+      // Conditional on the etag read at the top, create-only where no manifest
+      // existed and the store can (see `revisions.js`). A `null` back means somebody else synced first:
       // serve the query from what was built and skip. A lost write is one extra
       // sync later; a retry loop is this query's budget spent on plumbing.
       // Only after every shard this pass stored has landed: each was awaited.
@@ -876,33 +861,16 @@ export async function syncPass(
       // bookkeeping for the *next* pass, and a caller that lost a snippet read
       // to it would have paid for that pass out of its own answer.
       committed = written !== null;
-      // Do the v1 retirement before the recoverable docmap cache. If
-      // the first pass spends its final two physical operations on the docmap,
-      // a missing docmap is the bounded retry signal for the next pass.
-      // A logical delete reads the current object and then writes a
-      // conditional tombstone. Reserve both physical operations so the v1
-      // object is not left visible because the marker write exhausted budget.
-      let legacyCleanupSettled = !legacyCleanupNeeded;
-      if (written !== null && legacyCleanupNeeded && ops.take(postCleanupReserve + 1)) {
-        // Deletion is idempotent, including an already-retired marker. Leave
-        // the docmap absent on refusal so a later pass can retry cleanup.
-        try {
-          await store.delete(LEGACY_V1_KEY);
-          legacyCleanupSettled = true;
-        } catch {
-          // Nothing depends on it being gone.
-        }
-      }
       // A logical put of a new docmap also needs its marker check plus the
       // provider write. Keep both outside the caller's snippet reserve; if
       // they do not fit, the manifest-ahead/docmap-behind state self-heals on
       // the next pass as described above.
       if (
-        written !== null && legacyCleanupSettled && docmapChanged &&
-        ops.remaining > postCleanupReserve + 1
+        written !== null && docmapChanged &&
+        ops.remaining > callerReserve + 1
       ) {
         const docmap = serializeDocmap(manifest);
-        if (!exceedsUtf8Bytes(docmap, manifestCap) && ops.take(postCleanupReserve + 1)) {
+        if (!exceedsUtf8Bytes(docmap, manifestCap) && ops.take(callerReserve + 1)) {
           await store.put(writer.docmapKey, docmap);
         }
       }
@@ -943,14 +911,16 @@ export async function syncPass(
     shed: [...shedPaths],
     oversizedShards,
     spent: ops.spent,
-    listing: listed, // what it diffed against: a listing, or a write's own entries; absent if it returned early
   };
 }
 
 /** The anchor-text state of one pass: every note it knows, and the reader. */
 function anchorPassFor(store, { visibilityOf, entries, claimedShard }) {
   const paths = new Set([...entries.keys(), ...claimedShard.keys()]);
-  return { paths, reader: anchorReader(store, { visibilityOf, paths }) };
+  // A pass without `visibilityOf` (a write's, or a miss's refresh) cannot read
+  // anchors, so it does not retry notes marked ANCHORS_UNREAD: only a pass
+  // that can read them would change anything.
+  return { paths, readable: typeof visibilityOf === "function", reader: anchorReader(store, { visibilityOf, paths }) };
 }
 
 /** One document per note in `shard`, the one holding its anchor field where any does (`uploaded`, `anchors`). */

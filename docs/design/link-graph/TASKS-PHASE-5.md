@@ -1,5 +1,7 @@
 # Link graph: Phase 5 tasks
 
+_Historical. Phase 5 is done: the tokenizer, chunking and anchor text shipped without switches, and graph ranking, the dual v2/v3 namespaces and the benchmark harness were removed. The task text below describes the plan as it was drafted. See RESULTS.md and `docs/decisions/link-graph.md` "Phase 5 outcome"._
+
 Part of the task breakdown for [PLAN.md](./PLAN.md); global constraints and Phases 0 to 2 are in [TASKS.md](./TASKS.md). Split out so each file stays under the repository's review threshold.
 
 ## Phase 5 tasks

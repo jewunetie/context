@@ -97,3 +97,16 @@ Moved to [A shed index must say so to the caller it happened to, not only to the
 ### With no connection, search reads the copy on the device, and says so
 
 Moved to [With no connection, search reads the copy on the device, and says so](./search/offline-search.md#with-no-connection-search-reads-the-copy-on-the-device-and-says-so).
+
+### The index has one format: one tokenizer, chunked notes, anchor text, revisioned shards
+
+The index in `.context/search/index/` has no switches. Ordinary notes are
+indexed as 1,000-character chunks up to 64,000 characters, with one tokenizer
+and a low-weight field of the link text that points at the note. Shards are
+content-addressed revisions named by a manifest of `INDEX_FORMAT_VERSION` 5;
+any other version is read as absent and rebuilt. Until the first pass commits,
+search answers from the bounded literal scan and builds the index behind the
+response. Details: `apps/mcp/src/search/CONTRACT-REVISIONS.md`. Where the
+sections above and in `./search/` speak of the opening 2,048 characters or of
+`.context/search/v2/`, this entry supersedes them for the gateway index.
+

@@ -1,5 +1,7 @@
 # Search baseline (Phase 0)
 
+_The harness named below was removed after Phase 5 and lives in git history at `7a31b985`; the commands here no longer run on this branch. RESULTS.md has the later numbers._
+
 Measured 2026-10-04 on the branch that adds the harness, before any tuning. Re-run with:
 
 ```sh

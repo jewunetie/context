@@ -23,6 +23,8 @@ O1 to O3. Nothing here is built yet.
 
 **Goal.** Reproducible measurements of today's bucket search and Fast Search, and the format contracts later phases build on. No product behavior changes.
 
+_Status: done. The harness this phase built (`apps/mcp/bench/`, `pnpm bench:search`) was removed after Phase 5; it lives in git history at `7a31b985`. RESULTS.md keeps the numbers._
+
 - **Data model.** Benchmark fixture sets under `apps/mcp/bench/fixtures/` (synthetic only): 100, 1,000 and 10,000 notes; long notes past 2,048 and 64,000 characters; bundled messages; duplicate basenames; dense hubs; Chinese, Japanese and code-heavy notes; mixed private/team visibility. Judged query sets (JSON: query, relevant paths, query class).
 - **API.** A bench runner script (`pnpm bench:search`) that runs B0 (current bucket search) and B5 (Fast Search projection against a local D1) over the fixtures with injected store latency, reporting Recall@10, nDCG@10, MRR, p50/p95/p99 cold and warm, and subrequests per query. A language census over fixtures and, on request, an owner's own workspace (counts by script; nothing leaves the machine).
 - **Files.** `apps/mcp/bench/` (new), `docs/design/link-graph/BASELINE.md` (results and the recorded P3 thresholds), a staging check that `Intl.Segmenter` segments Chinese in the deployed Worker.
@@ -73,11 +75,13 @@ O1 to O3. Nothing here is built yet.
 
 **Goal.** Close the coverage gap and measure graph value against full-coverage lexical search.
 
-- **Data model.** Chunk sub-documents `path#c<n>` with `notePath` (reusing `commsIndex.js`'s sub-document fields), the 64,000-character cap with a `partial` coverage flag; tokenizer v2 terms; shard revisions referenced by exact key/digest in the conditionally published manifest (architecture section 12.6).
-- **API.** `chunkNote(path, text, { target, max })` (headings, then paragraphs, then sentences); `tokenizeV2(text)` and `porter2(word)` in `search/text.js` (Porter2 in its own module, `search/porter2.js`) behind an index format version; rank fusion of lexical and graph candidate lists with bounded boosts. Indexer, query parser and the app's local search switch tokenizer together.
-- **Files.** `apps/mcp/src/search/text.js`, `search/indexer.js`, `search/commsIndex.js` (generalized), `search/shards/*` (revisioned shards), `search/visible.js`, `apps/mobile/features/home/localSearch.ts`, bench reports.
-- **Tests.** Porter2 against Snowball's published input/output word pairs (the full official vocabulary when available locally, otherwise a checked-in sample of it); chunking boundaries and caps; results deduplicated to notes; tokenizer v2 cases (Chinese, Japanese, Thai, accents, identifiers) identical between indexer and query; publication coherence under concurrent writers; the full ablation matrix B0 to B5 run and reported, with B2 versus B1 as the graph-value comparison. Tokenizer v2 and graph boosts stay off unless they win on the held-out set.
-- **PR.** "Phase 5: full-note chunked search, tokenizer v2, and graph-assisted ranking (measured)".
+_Status: done and settled. Shipped, always on and without a switch: the tokenizer (Porter2, `Intl.Segmenter` words, CJK pieces, identifier splitting), chunked notes (1,000-character target, 64,000 per note) and anchor text. Evaluated and removed: query-time graph boost (`SEARCH_GRAPH_BOOST` variants b2 to b4) and personalized PageRank, because the 10,000-note rule failed and the cost was 2 to 6 times the requests for 0.01 to 0.04 recall on the realistic sets. Index format versions, the dual v2/v3 namespaces and the benchmark harness are gone too. Numbers: RESULTS.md. Code and harness: git history at `7a31b985`._
+
+- **Data model (shipped).** Chunk sub-documents `path#c<n>` with `notePath`, the 64,000-character cap with a `partial` coverage flag; shard revisions referenced by exact key and digest in the conditionally published manifest (`INDEX_FORMAT_VERSION` 5, `apps/mcp/src/search/CONTRACT-REVISIONS.md`).
+- **API (shipped).** `chunkNote(path, text, { target, max })` (headings, then paragraphs, then sentences); `termsOf` and `porter2(word)` in `search/text.js` (Porter2 in `search/porter2.js`). Indexer, query parser and the app's local search use the one tokenizer.
+- **Files.** `apps/mcp/src/search/text.js`, `search/indexer.js`, `search/commsIndex.js`, `search/shards/*`, `search/visible.js`, `search/anchors.js`, `apps/mobile/features/home/localSearch.ts`.
+- **Tests.** Porter2 against Snowball's published word pairs; chunking boundaries and caps; results deduplicated to notes; tokenizer cases (Chinese, Japanese, Thai, accents, identifiers) identical between indexer and query; publication coherence under concurrent writers; a frozen digest of a whole build.
+- **PR.** "Phase 5: full-note chunked search, tokenizer, and anchor text (measured); graph ranking evaluated and removed".
 
 ## Phase 6: default-search replacement
 

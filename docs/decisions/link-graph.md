@@ -429,15 +429,9 @@ hidden, large, moving or recent.
   the withheld label, at every budget"; `graphRetrieve.test.mjs`, "privacy
   invariance: hidden notes change nothing but the withheld graph bit, at
   tight and generous budgets".
-  The search variant `ppr` (`SEARCH_GRAPH_BOOST`, `src/graph/ppr.js`) adds
-  no residual of its own: its random walk reads only visible postings and
-  catalog-resolved links, counts out-degree, hubs and the node cap over
-  visible data, orders by score then path, and is withheld whole (lexical
-  results plus the label) whenever any read, posting chain or the read cap
-  does not finish. Tests: `searchGraphPpr.test.mjs`, "walk privacy: hidden
-  notes leave every score identical, float for float", "ppr privacy: hidden
-  notes leave a team caller's answer equal at every budget, tight and
-  generous" and its multi-shard twin.
+  Query-time graph ranking of `search_notes` (the `SEARCH_GRAPH_BOOST`
+  variants and personalized PageRank) was evaluated and removed; see "Phase 5
+  outcome" below. It adds no residual here.
 - **Text hits all or none.** Search's cost depends on how many index shards
   are occupied, which grows with hidden notes, so a strict caller gets text
   hits only when the budget covers every occupied shard; a strict caller can
@@ -488,3 +482,34 @@ byte for byte" and "a team answer does not vary with hidden notes";
 `apps/mobile/__tests__/relatedPanel.test.ts`, "loading never says there are no
 related notes", "the incomplete state shows its notice and no empty sentence"
 and "a failed call is unavailable, not empty, and can be retried".
+
+### Phase 5 outcome: the index got better words, the graph did not get a ranking role
+
+Phase 5 measured whether the link graph should change `search_notes` ranking
+at query time. It should not, and the code for it is gone
+(`docs/design/link-graph/RESULTS.md` has the numbers; the code and the harness
+are in git history at `7a31b985`).
+
+- **Shipped, always on, no switch:** the shipped tokenizer (Porter2,
+  `Intl.Segmenter` words, CJK pieces, identifier splitting), chunked notes
+  (1,000 characters, 64,000 per note) and anchor text. Anchor text is the only
+  link signal in search: the graph records each link's display text and source
+  title on its posting entries, and the sync adds them to the target's
+  document as a low-weight field. A source is admitted only when its
+  visibility is at least as wide as the target's, a caller who cannot see
+  every source gets the document without the field, and an encrypted target
+  gets none. Details: `apps/mcp/src/search/CONTRACT-REVISIONS.md`.
+- **Removed:** the graph-boost variants b2, b3 and b4 (`SEARCH_GRAPH_BOOST`),
+  personalized PageRank (`ppr`), rank fusion of graph lists into search
+  results and the "link-based ranking was unavailable" label. At 10,000 notes
+  the boost failed the rule (recall +0.04 for 2.3 times the requests and twice
+  the warm p95); PageRank cost 2.9 to 6 times the requests of the anchors arm
+  for +0.02 to +0.04 recall on the realistic sets.
+- **Kept:** everything else the graph does. `retrieveCandidates` serves
+  `related_notes` and link suggestions with its scope, `excludeLinked` and
+  move-job rules; the index-assisted move repair, the console link panel,
+  reconcile, rebuild, cutover and GC are unchanged.
+- **What reversing it costs:** re-adding a ranking role means a new experiment
+  against the anchors arm, not a switch to flip; the removed code is a
+  starting point, not a ready feature.
+

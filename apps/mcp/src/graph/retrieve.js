@@ -47,8 +47,8 @@ const EXPLICIT = new Set(["links_here", "linked_from_here"]);
 // Body words too common to say what a note is about; shorter ones are dropped by length.
 const STOP = new Set("that this with from have were will would there their what when which about into than then them they been also some more such only other your just like over each must should could does".split(" "));
 
-/** Lowercased runs of letters and digits, two characters or longer. */
-const words = (text) => (String(text ?? "").toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter((w) => w.length >= 2);
+/** Runs of letters and digits, two characters or longer, as written (the query parser splits camelCase and identifiers). */
+const words = (text) => (String(text ?? "").match(/[\p{L}\p{N}]+/gu) ?? []).filter((w) => w.length >= 2);
 
 /** Arch 8.3: segments of A's and B's directories outside their common prefix. */
 export function directoryDistance(a, b) {
@@ -91,10 +91,16 @@ export function seedQuery(seed, intent) {
   };
   for (const t of words(title)) add(t);
   for (const t of words(headings)) add(t);
-  const counts = new Map();
-  for (const t of words(body)) if (t.length >= 4 && !STOP.has(t) && !/^\d+$/.test(t)) counts.set(t, (counts.get(t) ?? 0) + 1);
+  const counts = new Map(); // lowercase word -> [count, first spelling]
+  for (const t of words(body)) {
+    const low = t.toLowerCase();
+    if (low.length < 4 || STOP.has(low) || /^\d+$/.test(low)) continue;
+    const seen = counts.get(low);
+    if (seen) seen[0] += 1;
+    else counts.set(low, [1, t]);
+  }
   // Map order is first occurrence and sort is stable, so ties keep it.
-  for (const [t] of [...counts].sort((a, b) => b[1] - a[1])) add(t);
+  for (const [, [, t]] of [...counts].sort((a, b) => b[1][0] - a[1][0])) add(t);
   return [...picked.values()].join(" ");
 }
 

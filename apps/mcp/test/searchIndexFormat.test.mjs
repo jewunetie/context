@@ -10,16 +10,17 @@
  * ## Sabotage record
  *
  * Run as temporary local edits and reverted. Counts are failing tests in this
- * file.
+ * file, measured on the file as committed.
  *
- *   `parseManifest` accepts a manifest of the previous version (4)            2
+ *   `parseManifest` accepts a manifest of the previous version (4)            3
  *   `parseManifest` accepts a newer manifest version                          1
  *   `parseManifest` skips the `shards` length check                           1
  *   `parseManifest` accepts a key outside the shard prefix                    1
  *   null shard key fetched from the store instead of read as empty            1
  *   `loadIndexManifest` skips the segmenter self-test                         1
  *   `syncShardedIndex` skips the segmenter self-test                          1
- *   a stored manifest of another version is not replaced by the next pass     1
+ *   a stored manifest of another version is not replaced (conditional put
+ *   on its etag removed; needs a store with create-only writes)               1
  */
 
 import assert from "node:assert/strict";
@@ -105,7 +106,7 @@ test("manifest: another version, malformed or foreign shapes are refused", () =>
   assert.equal(parseManifest(JSON.stringify({ ...valid, version: 4, format: { tokenizer: 2, chunk: null }, built: true })), null);
   assert.equal(parseManifest(JSON.stringify({ ...valid, version: INDEX_FORMAT_VERSION + 1 })), null);
   assert.equal(parseManifest(JSON.stringify({ ...valid, version: 3 })), null);
-  assert.equal(parseManifest(manifestText({ shards: [null] })), null);
+  assert.equal(parseManifest(JSON.stringify({ ...valid, shards: [valid.shards[0]] })), null, "one entry for two shards");
   assert.equal(parseManifest(manifestText({ shards: [{ key: 7, digest: "d" }, null] })), null);
   assert.equal(parseManifest(manifestText({ shards: [{ key: `${SHARD_PREFIX}x`, digest: 1 }, null] })), null);
   // A key outside the shard prefix is not a shard this layout owns.
@@ -177,6 +178,7 @@ test("every key the index produces is plumbing", () => {
 
 test("a stored manifest of another version is replaced by the next pass, not stalled behind", async () => {
   const bucket = memoryBucket();
+  bucket.capabilities = { conditionalWrite: true, conditionalCreate: true };
   for (let i = 0; i < 3; i += 1) await bucket.put(`notes/n${i}.md`, `# Note ${i}\n\nitem${i} words here\n`);
   // What the previous index format left at this key: version 4 with a format and a built flag.
   const stale = JSON.stringify({ ...JSON.parse(manifestText()), version: 4, format: { tokenizer: 2, chunk: null }, built: true });

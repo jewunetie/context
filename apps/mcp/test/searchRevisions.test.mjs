@@ -12,17 +12,20 @@
  * ## Sabotage record
  *
  * Run as temporary local edits and reverted. Counts are failing tests in this
- * file.
+ * file, measured on the file as committed.
  *
- *   shard written to one fixed key per shard id, unconditionally             9
- *   revision put not awaited (manifest published before its shards)          3
- *   manifest write ignores its etag (unconditional)                          2
- *   `parseManifest` accepts a null shard key whose stats hold documents      1
- *   chunking indexes whole notes instead of `chunkNote` chunks               1
- *   revision put without the create-only precondition                        2
- *   the tokenizer drops the CJK two-character pieces                         1
+ *   shard written to one fixed key per shard id                               7
+ *   revision put not awaited (manifest published before its shards)           3
+ *   manifest write ignores its etag (unconditional)                           2
+ *   `parseManifest` accepts a null shard key whose stats hold documents       1
+ *   chunking indexes whole notes instead of `chunkNote` chunks                1
+ *   revision put without the create-only precondition                         2
+ *
+ * Not observable here: dropping the CJK two-character pieces fails nothing,
+ * because the segmenter already yields every query word this file asks for
+ * (a piece-only query cannot be typed: the query side drops one-character
+ * words). The pieces are pinned in tokenizer.test.mjs.
  */
-
 
 import assert from "node:assert/strict";
 import { test } from "node:test";

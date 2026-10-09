@@ -38,7 +38,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 
-import { generateCorpus } from "../bench/fixtures.js";
+import { generateCorpus } from "./fixtures/searchCorpus.js";
 import { porter2 as porter2Module } from "../src/search/porter2.js";
 import { porter2, segmenterSelfTest, stem, termsOf, tokenize, tokenizeV2 } from "../src/search/text.js";
 

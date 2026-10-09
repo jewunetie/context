@@ -58,7 +58,7 @@ import { createSearchBudget } from "../src/search/maintain.js";
 import { searchIndexedNotes } from "../src/search/visible.js";
 import { indexWrittenNotes } from "../src/search/writeProjection.js";
 import { sha256Hex } from "../src/ingestion/inbox.js";
-import { generateCorpus } from "../bench/fixtures.js";
+import { generateCorpus } from "./fixtures/searchCorpus.js";
 import { memoryBucket } from "./store/fixtures.mjs";
 
 const TOKENIZER_2 = { tokenizer: 2, chunk: null };

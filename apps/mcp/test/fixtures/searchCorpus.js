@@ -1,34 +1,23 @@
 /**
- * Synthetic, deterministic benchmark corpora with judged queries
- * (docs/design/link-graph/PLAN.md, Phase 0).
+ * Synthetic, deterministic search corpora with judged queries, used by the
+ * search unit and frozen-digest tests.
  *
  * `generateCorpus({ size, seed })` returns `{ notes, queries }`:
  *
  * - `notes`: `{ path, text, visibility }`, `visibility` being "private" or
  *   "team". Exactly `size` notes.
  * - `queries`: `{ query, relevant, kind }`, `relevant` being the paths a
- *   correct search returns. `kind` is the query class the per-class table in
- *   BASELINE.md groups by.
+ *   correct search returns.
  *
  * The judged notes are a fixed set planted into every size, so the same
- * questions are asked of 100, 1,000 and 10,000 notes and only the haystack
- * grows. Filler is drawn from made-up words (`fz` plus a number) that no query
- * uses, so a filler note is never accidentally relevant.
- *
- * `generateHeldOut({ size, seed })` is the held-out set (Task 37, ruling
- * OPEN-64): the same classes with different planted words, frozen before any
- * tuning, plus two classes seed 1 lacks (OPEN-65): `linked` (note A holds the
- * term and links note B, which does not; both are relevant) and `crosschunk`
- * (two words in one long note more than the largest chunk apart, with one-word
- * decoys as `multi` has, so ranking shows a per-chunk coverage penalty and not
- * just recall). Its code class includes an acronym-led identifier
- * (`HTTPServer` queried as `server`, OPEN-50). Constants may be compared on
- * seed 1; a switch decision is made on this set only.
- *
- * Every value is fake, as everywhere else in this repository.
+ * questions are asked of any size and only the haystack grows. Filler is drawn
+ * from made-up words (`fz` plus a number) that no query uses, so a filler note
+ * is never accidentally relevant. `generateLinks({ size, seed })` is the
+ * link-heavy set (500 notes or more). Every value is fake, as everywhere else
+ * in this repository.
  */
 
-import { renderChannelDayNote } from "../../../packages/communications/src/note.js";
+import { renderChannelDayNote } from "../../../../packages/communications/src/note.js";
 
 /** xorshift32: the same seed gives the same corpus, with no dependency. */
 function rng(seed) {
@@ -93,34 +82,7 @@ const CODE = [
   { text: "`parseHttpHeader` rejects folded lines.", query: "http header" },
 ];
 
-/** The held-out set's words: no query word is shared with the tables above. */
-const FAMILIES_HELDOUT = [
-  { note: ["calibrated the sensor", "a calibration run"], query: "calibrating" },
-  { note: ["negotiated terms", "negotiations stalled"], query: "negotiating" },
-  { note: ["optimized the loop", "an optimization pass"], query: "optimizing" },
-  { note: ["compressed images", "the compression ratio"], query: "compressing" },
-  { note: ["validated inputs", "validation errors"], query: "validating" },
-  { note: ["scheduled jobs", "schedules slip"], query: "scheduling" },
-  { note: ["cheerfully agreed", "a cheerfulness score"], query: "cheerful" },
-  { note: ["predicted demand", "predictions held"], query: "predicting" },
-];
-
-const CJK_HELDOUT = [
-  { text: "服务器备份每天凌晨运行。", query: "备份", lang: "zh" },
-  { text: "请把预算报告发给财务部。", query: "预算", lang: "zh" },
-  { text: "大阪の出張報告を書きました。", query: "出張", lang: "ja" },
-  { text: "新しいデザインを検討しています。", query: "デザイン", lang: "ja" },
-];
-
-const CODE_HELDOUT = [
-  { text: "Call `loadInventoryItems(storeId)` on start.", query: "inventory items" },
-  { text: "The column `shipping_address_line` is text.", query: "shipping address" },
-  { text: "Set `CACHE_TTL_SECONDS` in the worker config.", query: "cache ttl" },
-  { text: "`HTTPServer` closes idle sockets.", query: "server" },
-];
-
 const SEED_ONE = { tag: "qz", families: FAMILIES, cjk: CJK, code: CODE };
-const HELD_OUT = { tag: "qx", families: FAMILIES_HELDOUT, cjk: CJK_HELDOUT, code: CODE_HELDOUT };
 
 const pad = (n, width = 5) => String(n).padStart(width, "0");
 
@@ -236,40 +198,10 @@ function fillerNote(next, i) {
   return { path: `${folder}/${i % 10 === 0 ? `sub-${i % 3}/` : ""}${base}.md`, text: `# Note ${i}\n\n${filler(next, 120)}${link}\n` };
 }
 
-/** The held-out set's two link-shaped classes (ruling OPEN-65). */
-function linkShaped(next, tag) {
-  const planted = [];
-  // linked: A holds the term and links B by a basename nothing else has.
-  for (let i = 0; i < 4; i += 1) {
-    const a = `1-projects/linked-${i}.md`;
-    const b = `2-areas/${tag}target-${i}.md`;
-    planted.push({
-      notes: [
-        { path: a, text: `# Linked ${i}\n\nThe ${tag}linked${i} plan. See [[${tag}target-${i}]]. ${filler(next, 100)}\n` },
-        { path: b, text: `# Target ${i}\n\n${filler(next, 120)}\n` },
-      ],
-      query: { query: `${tag}linked${i}`, relevant: [a, b], kind: "linked" },
-    });
-  }
-  // crosschunk: two words more than 6,000 characters (the largest chunk max) apart.
-  for (let i = 0; i < 3; i += 1) {
-    const both = `3-resources/cross-${i}.md`;
-    planted.push({
-      notes: [
-        { path: both, text: `# Cross ${i}\n\nFirst ${tag}crossa${i}.\n\n${longFiller(next, 7_000)}\n\nThen ${tag}crossb${i}.\n` },
-        { path: `3-resources/cross-${i}-a.md`, text: `# Cross decoy A ${i}\n\nonly ${tag}crossa${i}. ${filler(next, 100)}\n` },
-        { path: `3-resources/cross-${i}-b.md`, text: `# Cross decoy B ${i}\n\nonly ${tag}crossb${i}. ${filler(next, 100)}\n` },
-      ],
-      query: { query: `${tag}crossa${i} ${tag}crossb${i}`, relevant: [both], kind: "crosschunk" },
-    });
-  }
-  return planted;
-}
-
 /**
- * The link-heavy set (`--set links`): classes where links decide the answer,
+ * The link-heavy set classes where links decide the answer,
  * or must not. Every basename is `ql-...`, unique, so a bare link names one
- * note; the tag `ql` is shared with neither seed 1 (`qz`) nor the held-out set.
+ * note; the tag `ql` is shared with neither seed 1 (`qz`).
  */
 function linkHeavy(next) {
   const planted = [];
@@ -343,7 +275,7 @@ function linkHeavy(next) {
   return planted;
 }
 
-/** The link-heavy set (`--set links`); needs 500 notes or more. @param {{ size: number, seed?: number }} options */
+/** The link-heavy set; needs 500 notes or more. @param {{ size: number, seed?: number }} options */
 export function generateLinks({ size, seed = 3 }) {
   const next = rng(seed);
   return assemble(next, linkHeavy(next), size);
@@ -353,12 +285,6 @@ export function generateLinks({ size, seed = 3 }) {
 export function generateCorpus({ size, seed = 1 }) {
   const next = rng(seed);
   return assemble(next, judged(next, SEED_ONE), size);
-}
-
-/** @param {{ size: number, seed?: number }} options */
-export function generateHeldOut({ size, seed = 2 }) {
-  const next = rng(seed);
-  return assemble(next, [...judged(next, HELD_OUT), ...linkShaped(next, HELD_OUT.tag)], size);
 }
 
 function assemble(next, planted, size) {

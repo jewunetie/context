@@ -29,7 +29,7 @@ import { test } from "node:test";
 import { syncShardedIndex } from "../src/search/shards.js";
 import { searchIndexedNotes } from "../src/search/visible.js";
 import { createSearchBudget } from "../src/search/maintain.js";
-import { generateCorpus } from "../bench/fixtures.js";
+import { generateCorpus } from "./fixtures/searchCorpus.js";
 import { memoryBucket } from "./store/fixtures.mjs";
 
 const FROZEN_DIGEST = "b4c7a5768dd2017fce5428556dafe706f84922905d365442dae9393ff17ab385";

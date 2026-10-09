@@ -17,7 +17,7 @@ import { syncShardedIndex } from "../src/search/shards.js";
 import { searchIndexedNotes } from "../src/search/visible.js";
 import { createSearchBudget } from "../src/search/maintain.js";
 import { indexFormatFor } from "../src/search/format.js";
-import { generateLinks } from "../bench/fixtures.js";
+import { generateLinks } from "./fixtures/searchCorpus.js";
 import { memoryBucket } from "./store/fixtures.mjs";
 import { V3_MANIFEST_KEY } from "../src/search/shards/constants.js";
 

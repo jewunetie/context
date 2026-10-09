@@ -21,7 +21,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { generateCorpus } from "../bench/fixtures.js";
+import { generateCorpus } from "./fixtures/searchCorpus.js";
 import { chunkNote } from "../src/search/chunk.js";
 
 const CAP = 64000;

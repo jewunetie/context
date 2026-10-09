@@ -128,3 +128,21 @@ A number glued to a unit ("16GB", "3.5mm") also yields the number and the unit, 
 A drawing over the 64,000-character cap is indexed as a digest of its parsed labels and links, with
 bounded parsing (4.2 million characters) and collection, instead of a cut mid-payload.
 
+
+### Cleaning up the old search objects
+
+The single-index change left orphans in each workspace bucket: `.context/search/v2/`,
+`.context/search/v3/` (staging) and the legacy `.context/search-v1.json`. A human removes them,
+one workspace at a time, only after confirming that workspace's new index is complete:
+
+```
+CONTEXT_S3_ENDPOINT=... CONTEXT_S3_BUCKET=... CONTEXT_S3_ACCESS_KEY_ID=... CONTEXT_S3_SECRET_ACCESS_KEY=... \
+  node apps/mcp/scripts/cleanupOldSearchIndexes.mjs            # dry run: counts and bytes per prefix
+  node apps/mcp/scripts/cleanupOldSearchIndexes.mjs --delete   # removes them
+```
+
+It is a dry run unless `--delete` is passed. It refuses, exits non-zero and deletes nothing unless
+`.context/search/index/manifest.json` loads at the current `INDEX_FORMAT_VERSION` and its freshness
+record is complete (`indexIsBehind` false). It deletes only those three targets, through the same
+`withLogicalDelete` store stack the gateway uses, and never touches notes, `.context/graph/`,
+`.context/moves/` or the live index. Pinned by `apps/mcp/test/cleanupOldSearchIndexes.test.mjs`.

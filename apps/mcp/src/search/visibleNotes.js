@@ -81,7 +81,9 @@ export async function searchVisibleNotes(store, scope, rules, overrides, query, 
   trace.set("budget", budget.remaining);
   trace.set("prefixed", Boolean(prefix));
   const activeLogicalMoves = await searchMoveJobs(store, prefix, budget);
-  const hasActiveLogicalMoves = activeLogicalMoves.some(
+  // Unknown move state counts as a move in flight: the labelled scan below
+  // withholds what it cannot place, never the index's stale source paths.
+  const hasActiveLogicalMoves = activeLogicalMoves === null || activeLogicalMoves.some(
     (job) =>
       noteUnderPrefix(job.source, prefix) ||
       noteUnderPrefix(prefix, job.source) ||

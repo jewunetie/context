@@ -141,7 +141,10 @@ async function moveSentinelActive(store, budget = null) {
     const reader = budget ? budgetedStore(store, budget, 0) : store;
     return (await reader.get(MOVE_SENTINEL_KEY)) !== null;
   } catch {
-    return false;
+    // Fail closed: a sentinel that cannot be read is a move that may be active.
+    // The markers then decide, so a hint that errors never lets a moving note
+    // through the index.
+    return true;
   }
 }
 
@@ -198,12 +201,16 @@ function clearLogicalMovesMaybeActive(store) {
   if (key) LOGICAL_MOVE_WORKSPACES.delete(key);
 }
 
+/**
+ * Active move jobs for a search, or null when the move state cannot be read:
+ * the caller then treats a move as active and serves no note it cannot place.
+ */
 export async function searchMoveJobs(store, prefix, budget = null) {
-  if (prefix) return loadMoveJobs(store);
+  if (prefix) return loadMoveJobsOrNull(store);
   const key = logicalMoveWorkspaceKey(store);
   if (!key || (!LOGICAL_MOVE_WORKSPACES.has(key) && !(await moveSentinelActive(store, budget)))) return [];
-  const jobs = await loadMoveJobs(store);
-  if (!jobs.length) await refreshMoveSentinel(store);
+  const jobs = await loadMoveJobsOrNull(store);
+  if (jobs !== null && !jobs.length) await refreshMoveSentinel(store);
   return jobs;
 }
 

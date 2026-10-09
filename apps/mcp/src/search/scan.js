@@ -31,6 +31,8 @@ export async function scanVisibleNotes(store, scope, rules, overrides, query, pr
   const moveJobs = prefix
     ? await searchMoveJobs(store, prefix)
     : await fallbackMoveJobs(store, prefix, budget);
+  // Unknown move state: nothing can be placed safely, so nothing is served.
+  if (moveJobs === null) return { hits: [], scannedCount: 0, totalCount: 0, totalIsFloor: true };
   const listed = moveJobs.length
     ? {
         keys: await listVisibleNoteKeysWithMoves(store, scope, rules, overrides, prefix),

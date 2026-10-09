@@ -468,6 +468,12 @@ export function withLogicalDelete(store, { logicalDelete = true } = {}) {
     },
 
     async list(options = {}) {
+      // `tombstonesBySize`: an object of exactly a marker's size is a marker,
+      // dropped without the read that would prove it. For listings of a prefix
+      // that only ever holds our own JSON (`.context/moves/`), where a finished
+      // item's tombstone would otherwise cost one raw read per listing, forever.
+      // A listing that reports no size still falls back to the read.
+      const { tombstonesBySize, ...listOptions } = options;
       const raw = beginRawOperation();
       const objects = [];
       const delimitedPrefixes = [];
@@ -476,10 +482,12 @@ export function withLogicalDelete(store, { logicalDelete = true } = {}) {
       // here used to fill a caller's limit after hiding markers, which silently
       // consumed its pagination budget and could drop a cursor's tail. An
       // empty filtered page is meaningful: callers must follow its cursor.
-      const page = await raw.list(options);
+      const page = await raw.list(listOptions);
       for (const listed of page.objects || []) {
         if (listed.size !== undefined && listed.size !== MARKER_BODY_BYTES) {
           objects.push(listed);
+        } else if (tombstonesBySize === true && listed.size === MARKER_BODY_BYTES) {
+          continue;
         } else {
           const object = await raw.get(listed.key);
           const inspected = await inspect(object, listed.key);

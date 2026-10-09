@@ -198,16 +198,22 @@ a reviewer.
   moves read_note answers through (fix round 3; a sentinel gate tried in
   round 2 could be removed by a racing refresh before a new move's marker
   landed). A finished move's marker delete is a logical-delete tombstone that
-  nothing removes, so every call pays unbudgeted reads that grow with move
-  history: an indexed move one per historical move, and related_notes two
-  (one in the seed lookup, which resolves the path through read_note's move
-  overlay, and one in the retrieval). Measured on the test fixture through
-  the logical-delete wrapper (a warm call; the first call on a note also
-  creates its collaboration state): related_notes makes 20 raw ops with no
-  move history, the seed lookup's collaboration read included; after the
-  first move, 22 plus 2 per past move (24, 26 and 32 at 1, 2 and 5 moves),
-  the 2 extra being the active-move sentinel's own tombstone, read by both
-  job reads. The answer does not change with move history. The tests are `relatedNotesTool.test.mjs`, "one active move plus
+  nothing removes, and the wrapper's listing used to read each one to prove it
+  was a tombstone, so every call paid one unbudgeted read per historical move
+  (related_notes two): on the Workers Free plan (50 subrequests) a read was
+  20 ops with no history and 71 after 50 moves, related_notes 11 and 113, a
+  plain write 15 and 66. Pre-existing issue 7 fixed the cost without dropping
+  a marker: nothing is reclaimed, so an unfinished move, a rollback, a pending
+  removal and a stale reader all still find their marker. The move-marker
+  listing passes `tombstonesBySize`, and `withLogicalDelete.list` drops an
+  object of exactly a tombstone's size without reading it (a real marker is a
+  pretty-printed job, several times that size; a listing that reports no size
+  still reads). History now costs one listing page per thousand moves and
+  nothing per move: 20, 11 and 15 ops at 0 and at 50 moves
+  (`moveMarkerCost.test.mjs`). The tombstones themselves stay in the bucket;
+  reclaiming them would need a physical delete the wrapper deliberately lacks
+  and a grace period for readers that listed before the move finished. The
+  answer does not change with move history. The tests are `relatedNotesTool.test.mjs`, "one active move plus
   100 finished ones: the answer at the default budget is the no-history
   answer, the moving note withheld" and "a refresh racing a new move's first
   sentinel never lets related_notes show the moving note", and

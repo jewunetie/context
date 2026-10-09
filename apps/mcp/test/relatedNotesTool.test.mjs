@@ -354,7 +354,9 @@ test("one active move plus 100 finished ones: the answer at the default budget i
     // The retrieval's job read is read_note's own, once more: the seed lookup,
     // then the same reads for the candidates.
     const lookup = (await moveOps("read_note")).ops;
-    assert.ok(lookup.length > 100);
+    // Issue 7: a finished move's tombstone is no longer read on every listing,
+    // so the job reads are one listing and the one live marker (it was 100+).
+    assert.ok(lookup.length >= 2 && lookup.length <= 4, lookup.join());
     assert.deepEqual(after.ops, [...lookup, ...lookup]);
   } finally {
     env.REL_BUCKET = plain;

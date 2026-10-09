@@ -27,6 +27,16 @@ export function moveProgressFromText(text) {
 }
 const LOGICAL_MOVE_WORKSPACES = new Set();
 
+/**
+ * Finished moves leave a logical-delete tombstone under `.context/moves/` that
+ * nothing removes. Listing it as the wrapper does by default reads every one,
+ * so a request's cost grew by one subrequest per move ever made. A marker
+ * written here is a pretty-printed job, several times the size of a tombstone,
+ * so the listing drops tombstones by size and the cost is the live markers plus
+ * one listing page per thousand keys.
+ */
+const MARKER_LISTING = { tombstonesBySize: true };
+
 export function moveJobKey(id) {
   if (typeof id !== "string" || !/^[a-z0-9][a-z0-9-]{12,80}$/i.test(id)) return null;
   return `${MOVE_JOB_PREFIX}${id}.json`;
@@ -87,7 +97,7 @@ export function moveJobActive(job) {
 export async function loadMoveJobsOrNull(store) {
   const jobs = [];
   try {
-    for (const { key } of await listAllKeys(store, MOVE_JOB_PREFIX)) {
+    for (const { key } of await listAllKeys(store, MOVE_JOB_PREFIX, MARKER_LISTING)) {
       if (!key.endsWith(".json")) continue;
       const object = await getWithLegacyFallback(store, key);
       if (!object) continue;
@@ -116,13 +126,14 @@ export async function loadMoveJobs(store) {
  * or the listing fails (OPEN-25: fail closed). Every marker is read, whatever
  * the sentinel says, so the answer is the set of jobs read_note's overlay
  * (`loadMoveJobs`) sees; the sentinel is only `searchMoveJobs`' hint. A
- * finished move's marker is a logical-delete tombstone that is never removed,
- * so this costs one unbudgeted read per historical move, as read_note does.
+ * finished move's marker is a logical-delete tombstone that is never removed;
+ * the listing drops tombstones by size without reading them (`MARKER_LISTING`),
+ * so history costs one listing page per thousand moves and nothing per move.
  */
 export async function activeMoveJobsOrNull(store) {
   const jobs = [];
   try {
-    for (const { key } of await listAllKeys(store, MOVE_JOB_PREFIX)) {
+    for (const { key } of await listAllKeys(store, MOVE_JOB_PREFIX, MARKER_LISTING)) {
       if (!key.endsWith(".json")) continue;
       const object = await getWithLegacyFallback(store, key);
       if (!object) continue;

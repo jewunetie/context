@@ -557,7 +557,10 @@ test("move jobs are read once per call, not once per section: 50 finished moves 
   await suggest(withLogicalDelete(one), { committed: BASE[SEED], sections: [SECTIONS[0]] });
   const two = counting(raw);
   const block = await suggest(withLogicalDelete(two), { committed: BASE[SEED], sections: SECTIONS });
-  assert.ok(one.moveOps.length > 50, `${one.moveOps.length}`);
+  // Non-vacuous: the tombstones are there. Issue 7: they no longer cost a read
+  // each, so one call's move-marker ops do not grow with the history.
+  assert.ok([...raw.objects.keys()].filter((k) => k.startsWith(".context/moves/job-")).length >= 50);
+  assert.ok(one.moveOps.length <= 3, `${one.moveOps.length}`);
   assert.deepEqual(two.moveOps, one.moveOps);
   assert.equal(block.status, "ready");
 });

@@ -46,12 +46,12 @@ function nextListCursor(page, seen) {
   return cursor;
 }
 
-export async function listAllKeys(store, prefix) {
+export async function listAllKeys(store, prefix, listOptions = {}) {
   const keys = [];
   const seen = new Set();
   let cursor;
   do {
-    const page = await store.list({ prefix: prefix || undefined, cursor, limit: 1000 });
+    const page = await store.list({ prefix: prefix || undefined, cursor, limit: 1000, ...listOptions });
     for (const o of page.objects) {
       keys.push({ key: o.key, size: o.size, uploaded: o.uploaded, etag: o.etag });
     }

@@ -516,7 +516,11 @@ export async function syncShardedIndex(
 
     // Skipped where the manifest says the shard holds nothing: there is no
     // object to read, and a GET to prove it is a subrequest spent on a 404.
-    const hasStored = manifest.docsByShard[id].size > 0;
+    // The docmap is the diff surface and can be absent or unreadable while the
+    // shard is not: the manifest's own count decides whether an object exists.
+    // Trusting the docmap alone started a write's pass from an empty shard and
+    // wrote away every other doc it held.
+    const hasStored = manifest.docsByShard[id].size > 0 || (manifest.stats[id]?.docCount || 0) > 0;
     const loaded = hasStored
       ? await loadShard(store, ops, callerReserve + MANIFEST_WRITE_RESERVE, id, shardCap, manifest)
       : null;

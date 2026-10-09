@@ -8,7 +8,7 @@ import {
   applyMoveOverlay,
   loadMoveJobs,
   loadMoveJobsOrNull,
-  movedSourceFor,
+  movedSourcesFor,
   noteUnderPrefix,
 } from "../moves/jobs.js";
 import { canSee, isPlumbing } from "../privacy/engine.js";
@@ -57,13 +57,9 @@ export async function getVisibleMovedNote(store, scope, rules, overrides, path, 
   // Fail closed: an unreadable move state answers like a note that cannot be
   // read, and says nothing about why.
   if (jobs === null) return { object: null, physicalPath: path };
-  if (jobs.some((job) => path.startsWith(`${job.source}/`))) {
-    return { object: null, physicalPath: path };
-  }
-  for (let index = jobs.length - 1; index >= 0; index -= 1) {
-    const job = jobs[index];
-    const source = movedSourceFor(job, path);
-    if (!source) continue;
+  const sources = movedSourcesFor(jobs, path);
+  if (sources === null) return { object: null, physicalPath: path };
+  for (const source of sources) {
     if (!canSee(source, scope, rules, overrides)) return { object: null, physicalPath: path };
     const destinationObject = await fetchOne(store, path);
     if (destinationObject) return { object: destinationObject, physicalPath: path, logicalMove: true };

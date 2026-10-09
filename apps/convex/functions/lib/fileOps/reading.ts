@@ -9,6 +9,7 @@ import { isEncryptedNote } from "../noteEncryption";
 import { type Visibility, canSee } from "../privacy";
 import { type Clearance } from "../clearance";
 import { forwardPath, readForwarding } from "../../../../mcp/src/forwarding.js";
+import { loadMoveJobsOrNull, movedSourcesFor } from "../../../../mcp/src/moves/jobs.js";
 import {
   eligible as collaborationEligible,
   readDocument as readCollaborationDocument,
@@ -62,8 +63,9 @@ export async function readFile(
 ): Promise<FileContents> {
   const path = requirePath(options.path);
   const state = await loadPrivacyState(store);
+  const moves = moveState(store);
   if (options.forward !== "onMiss") {
-    return await readVisibleFile(store, state, path, options.clearance);
+    return await readVisibleFile(store, state, moves, path, options.clearance);
   }
 
   /*
@@ -84,13 +86,19 @@ export async function readFile(
     re-asked there and a forward can never widen what a caller reaches.
   */
   try {
-    return await readVisibleFile(store, state, path, options.clearance);
+    return await readVisibleFile(store, state, moves, path, options.clearance);
   } catch (error) {
     if (!(error instanceof FileOpError) || error.code !== "FILE_NOT_FOUND") throw error;
     const forwarded = forwardPath(await readForwarding(store), path);
     if (forwarded === path) throw error;
-    return await readVisibleFile(store, state, forwarded, options.clearance);
+    return await readVisibleFile(store, state, moves, forwarded, options.clearance);
   }
+}
+
+/** The in-flight logical moves, read at most once per call; null when they cannot be read. */
+function moveState(store: FileStore): () => Promise<unknown[] | null> {
+  let pending: Promise<unknown[] | null> | undefined;
+  return () => (pending ??= loadMoveJobsOrNull(store));
 }
 
 /**
@@ -101,12 +109,45 @@ export async function readFile(
 async function readVisibleFile(
   store: FileStore,
   state: PrivacyState,
+  moves: () => Promise<unknown[] | null>,
   path: string,
   clearance: Clearance,
 ): Promise<FileContents> {
-  if (!canSee(path, clearance.scope, state.rules, state.overrides, clearance.names)) throw notFound();
+  const visible = (key: string) => canSee(key, clearance.scope, state.rules, state.overrides, clearance.names);
+  if (!visible(path)) throw notFound();
 
-  const object = await store.get(path);
+  /*
+    THE SAME MOVE OVERLAY read_note APPLIES. A note caught mid-move answers at
+    its destination while the bytes may still sit at the source, and a path
+    under a moving source reads nothing. Where the move would carry a note into
+    a path the caller cannot see, the source is not served either. An unreadable
+    move state fails closed, as `notFound()`. The decision itself is the
+    gateway's `movedSourcesFor`, so the two surfaces cannot drift.
+  */
+  const jobs = await moves();
+  const sources = jobs === null ? null : movedSourcesFor(jobs, path);
+  if (sources === null) throw notFound();
+  let object: Awaited<ReturnType<FileStore["get"]>> = null;
+  let physicalPath = path;
+  let logicalMove = false;
+  if (sources.length === 0) {
+    object = await store.get(path);
+  } else {
+    for (const source of sources) {
+      if (!visible(source)) throw notFound();
+      object = await store.get(path);
+      if (object !== null) {
+        logicalMove = true;
+        break;
+      }
+      object = await store.get(source);
+      if (object !== null) {
+        physicalPath = source;
+        logicalMove = true;
+        break;
+      }
+    }
+  }
   if (object === null) throw notFound();
 
   const described = describeFile(path, state.rules, state.overrides);
@@ -118,9 +159,9 @@ async function readVisibleFile(
   // refuses to put it in a textarea.
   const encrypted = isEncryptedNote(text);
   let collaboration: { documentId: string; update: string; text: string; etag: string; rawEtag: string } | null = null;
-  if (!encrypted && collaborationSupported(store) && collaborationEligible(path, text)) {
+  if (!logicalMove && !encrypted && collaborationSupported(store) && collaborationEligible(path, text)) {
     try {
-      collaboration = await readCollaborationDocument(store, path);
+      collaboration = await readCollaborationDocument(store, physicalPath);
     } catch {
       throw new FileOpError(
         "STORAGE_UNSAFE",
@@ -204,6 +245,7 @@ export async function readFiles(
   if (options.paths.length === 0) return [];
 
   const state = await loadPrivacyState(store);
+  const moves = moveState(store);
   const results: BatchRead[] = [];
   let bytes = 0;
   let spent = false;
@@ -228,7 +270,7 @@ export async function readFiles(
               // race to make one note's collaboration document.
               let pending = reading.get(requested);
               if (!pending) {
-                pending = readVisibleFile(store, state, requirePath(requested), options.clearance);
+                pending = readVisibleFile(store, state, moves, requirePath(requested), options.clearance);
                 reading.set(requested, pending);
               }
               return { note: await pending };

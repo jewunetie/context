@@ -47,6 +47,24 @@ export function movedSourceFor(job, destinationKey) {
   return item?.source || null;
 }
 
+/**
+ * The overlay's whole decision for one path, apart from privacy: the sources
+ * `path` is the logical destination of, newest move first, or null when `path`
+ * lies under a moving source (it reads nothing until the move finishes). The
+ * caller asks `canSee` of each source before serving it, and tries `path` then
+ * the source. Shared by read_note and the console read so the two cannot
+ * disagree about where a half-moved note lives.
+ */
+export function movedSourcesFor(jobs, path) {
+  if (jobs.some((job) => path.startsWith(`${job.source}/`))) return null;
+  const sources = [];
+  for (let index = jobs.length - 1; index >= 0; index -= 1) {
+    const source = movedSourceFor(jobs[index], path);
+    if (source) sources.push(source);
+  }
+  return sources;
+}
+
 export function moveJobActive(job) {
   return (
     job &&

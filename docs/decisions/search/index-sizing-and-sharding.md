@@ -95,12 +95,11 @@ Three parts, and each answers something the one before it cannot:
 
 - **The count follows the volume.** `indexVolumeOf(path, size)` reads the
   listing's own `size` — R2, S3 and Dropbox all report one, so this costs no
-  store op — and answers what that note can take up in the index: at most one
-  `NOTE_INDEX_CHAR_CAP` window for an ordinary note however large the file is,
+  store op — and answers what that note can take up in the index: at most the
+  64,000-character chunk cap for an ordinary note however large the file is,
   and `1.25 x` its bytes for a bundled one, whose documents are a set. The
-  target is `NOTES_PER_SHARD * NOTE_INDEX_CHAR_CAP`, which is the note rule's
-  own number written the other way round, so **over ordinary notes the volume
-  term can never win and no existing index is re-sharded by this.** The 1.25 is
+  target is `NOTES_PER_SHARD * NOTE_INDEX_CHAR_CAP`, so
+  **a large ordinary note (up to the 64,000 cap) can raise the count, not only a bundled one.** The 1.25 is
   measured, not chosen: the mailbox above serializes to 2.97 bytes of index per
   byte of note against ~2.4 per indexed character for ordinary notes.
 - **The count may grow after the manifest is created**, which it never could

@@ -36,7 +36,7 @@ here is what a tidy-up would break:
 - **The index is sharded (v2) because the single object hit a real ceiling.**
   A workspace in the mid-thousands of notes built a capped index that could never
   be parsed within the Worker's 128MB, so coverage plateaued forever —
-  measured live. `.index/v2/` holds a manifest plus fnv1a32-sharded objects,
+  measured live. `.context/search/index/` holds a manifest plus fnv1a32-sharded objects,
   each under its own parse cap; the query streams shards one at a time and
   computes every statistic over the caller's visible docs, and PageRank is
   deliberately neutral (a global link graph needs every shard in memory,
@@ -209,7 +209,7 @@ Measured on the 7,961-note fixture at 60ms per store operation:
 
 The manifest carried a `[path, version]` pair per note — ~900KB at eight
 thousand notes — and every search downloaded all of it to learn a shard count.
-That surface is `.index/v2/docmap.json` now, read by maintenance and by nothing
+That surface is `.context/search/index/docmap.json` now, read by maintenance and by nothing
 else, and what took its place is the two things a query genuinely cannot ask a
 listing for: the routing filters and the freshness record.
 

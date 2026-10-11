@@ -48,7 +48,7 @@ path. Four consequences are load-bearing:
   one operation and the chain stops the moment a pass moves nothing, so it
   cannot become the loop `DEFERRED_SYNC_FLOOR` warns about.
 - **While the control plane says the projection is still filling, a pass runs
-  on every search** — buying its census from `.index/v2/docmap.json` rather
+  on every search** — buying its census from `.context/search/index/docmap.json` rather
   than from a listing. Tying it to the R2 sync alone starves it: an index that
   converges in one pass then needs none for `INDEX_RECONCILE_INTERVAL_MS`, so
   the backfill would advance once a minute at best and a failed pass would
@@ -202,10 +202,10 @@ cannot see.
 shards a term could be in, and then every note it quotes, because its snippets
 are cut from live text. This reads one manifest and one row set per tier — two
 requests for a personal connection, one for a team one — and quotes the chunk
-it already stored. It also has recall the shard index cannot: `NOTE_INDEX_CHAR_CAP`
-exists because a shard is parsed whole into a 128MB heap, so the R2 index knows
-only a note's opening 2,048 characters, and the projection has a row per chunk
-and no such ceiling. A term deep inside a long saved session is findable here
+it already stored. It also has recall the shard index cannot: a shard is parsed whole
+into a 128MB heap, so the R2 index knows only a note's first 64,000 characters
+(1,000-character chunks), and the projection has a row per chunk and no such
+ceiling. A term deep inside a long saved session is findable here
 and is not findable there.
 
 **The residual, named rather than discovered.** A note deleted from the bucket

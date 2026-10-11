@@ -90,6 +90,7 @@
     "apps/desktop/test/sessionOrder.test.mjs": "The session-ordering checks (drain urgency, payload order, the drain timer) read as one argument; it grew only by retargeting reads to the modules split out of main/index.ts.",
     "apps/mcp/src/search/shards/sync.js": "syncShardedIndex is one orchestration function moved verbatim with its comments; its interior was not restructured in this move.",
     "apps/mcp/test/controlPlaneStub/controlPlane.mjs": "createControlPlaneStub is one closure over in-memory Maps that every route shares; splitting it means threading that state across modules.",
+    "apps/mcp/test/graphSuggest.test.mjs": "One suite for suggestLinks over one shared fixture (projected notes plus a converged one-shard index) and one sabotage record counted against it; splitting it would copy the fixture and scatter the record.",
     "apps/mcp/test/presence/route.test.mjs": "One try/finally scenario sharing a bucket, env, rooms and control plane across every route check.",
     "apps/mcp/test/searchProjection/serve.test.mjs": "One harness-based scenario (serving search from the projection) whose checks build on each other in order.",
     "apps/mobile/__tests__/meetingsConvexWriter.test.ts": "One writer's contract end to end: the sentences it refuses with, the transcript-contamination guard, and the premise that a meeting writes through the same authorized action every note save uses. Splitting it would put that premise in a file that does not hold the writer it is a premise for.",

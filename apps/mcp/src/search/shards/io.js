@@ -66,6 +66,33 @@ export async function loadIndexManifest(store, budget, reserve, byteCap = MANIFE
  * @returns {Promise<{ paths: string[], freshness: ReturnType<typeof emptyManifest>["freshness"] } | null>}
  */
 export async function loadDocmapPaths(store, budget, reserve, given) {
+  const found = await loadDocmap(store, budget, reserve, given);
+  if (found === null) return null;
+  const paths = new Set();
+  for (const docs of found.docsByShard) {
+    for (const path of docs.keys()) paths.add(path);
+  }
+  return { paths: [...paths].sort(), freshness: found.manifest.freshness };
+}
+
+/**
+ * The manifest and the docmap, with the docmap still split by shard.
+ *
+ * `loadDocmapPaths` flattens this for link resolution. The console's map
+ * (`workspaceGraph` in the control plane) needs it unflattened: knowing which
+ * shard holds which note is what lets it read only the shards holding a note
+ * its caller may see, one at a time, never the whole index at once. Same two
+ * ops, and the same `null` for every way either object fails to arrive. A
+ * manifest the caller already read is passed as `given` and is not read again,
+ * so a caller holding one reads exactly one manifest per call.
+ *
+ * @param {import("../../store/index.js").ContextStore} store
+ * @param {ReturnType<typeof createSearchBudget>} budget
+ * @param {number} reserve store ops kept back for the caller's later work
+ * @param {object} [given] a manifest the caller already read, so it is not read twice
+ * @returns {Promise<{ manifest: ReturnType<typeof emptyManifest>, docsByShard: Map<string, string>[] } | null>}
+ */
+export async function loadDocmap(store, budget, reserve, given) {
   const manifest = given ?? (await loadIndexManifest(store, budget, reserve));
   if (manifest === null) return null;
   if (!budget.take(reserve)) return null;
@@ -75,11 +102,7 @@ export async function loadDocmapPaths(store, budget, reserve, given) {
   if (bytes.byteLength > MANIFEST_PARSE_BYTE_CAP) return null;
   const docsByShard = parseDocmap(new TextDecoder().decode(bytes), manifest.shardCount);
   if (docsByShard === null) return null;
-  const paths = new Set();
-  for (const docs of docsByShard) {
-    for (const path of docs.keys()) paths.add(path);
-  }
-  return { paths: [...paths].sort(), freshness: manifest.freshness };
+  return { manifest, docsByShard };
 }
 
 /**

@@ -30,6 +30,7 @@ import {
   maintainSearchIndex,
   movePath,
   notePathIndex,
+  workspaceGraph,
   projectSearchIndex,
   readFile,
   readFiles,
@@ -52,6 +53,10 @@ import {
 } from "../fileOps";
 import { ensureFolderVisibility } from "../fileOps/visibility";
 import { relatedNotes } from "../fileOps/related";
+import { visiblePathsOf } from "../fileOps/visiblePaths";
+import { readRoutineRuns } from "../fileOps/routineRuns";
+import { listFolderIcons, setFolderIcon } from "../fileOps/folderIcons";
+import { addBuiltInFolder } from "../fileOps/builtInFolders";
 import {
   type FormNotifyMaterial,
   ensureFormResponseFiles,
@@ -66,7 +71,7 @@ import {
   readStorageLayoutState as readStorageLayoutStateOp,
 } from "../../../../mcp/src/storageLayout.js";
 import { resolveContextPlugins, setPluginEnabled } from "../../../../mcp/src/plugins/enablement.js";
-import { type FileOperation, IDLE_PROJECTION, type OperationResult } from "./operationTypes";
+import { type FileOperation, IDLE_MEANING, IDLE_PROJECTION, type OperationResult } from "./operationTypes";
 import {
   deleteWebsiteRelease,
   deleteWebsiteReleasePages,
@@ -154,6 +159,8 @@ export async function executeOperation(
    * happens next.
    */
   onFormNotify?: (material: FormNotifyMaterial & { responseId: string }) => void,
+  /** Diagnostic identifier for scheduled search projection logs only. */
+  workspaceId?: string,
 ): Promise<OperationResult> {
   /**
    * One change, in the activity file, if it is one worth mentioning.
@@ -478,11 +485,12 @@ export async function executeOperation(
         const manifest = await syncManifestOp(store, {
           clearance,
           ...(operation.cursor === undefined ? {} : { cursor: operation.cursor }),
+          ...(operation.folder === undefined ? {} : { folder: operation.folder }),
         });
         return { kind: "manifest", ...manifest };
       }
       case "readMany": {
-        const results = await readFiles(store, { paths: operation.paths, clearance });
+        const results = await readFiles(store, { paths: operation.paths, clearance, plain: operation.plain === true });
         return {
           kind: "notes",
           results: results.map((result) =>
@@ -552,19 +560,20 @@ export async function executeOperation(
         );
         return { kind: "searchResults", ...results };
       }
-      case "notePaths": {
-        const found = await notePathIndex(store, clearance);
-        return { kind: "notePaths", paths: found?.paths ?? null };
-      }
-      case "related":
-        return { kind: "related", ...(await relatedNotes(store, { path: operation.path, clearance })) };
+      case "notePaths":
+        return { kind: "notePaths", paths: (await notePathIndex(store, clearance))?.paths ?? null };
+      case "related": return { kind: "related", ...(await relatedNotes(store, { path: operation.path, clearance })) };
+      case "workspaceGraph":
+        return { kind: "workspaceGraph", ...(await workspaceGraph(store, clearance, { compact: operation.compact === true })) };
+      case "visiblePaths":
+        return { kind: "visiblePaths", paths: await visiblePathsOf(store, clearance, operation.paths) };
       case "projectIndex": {
         // Scope-blind, exactly like `maintainIndex` below: the tier a note is
         // copied at comes from `privacy.md` per note, never from whoever
         // scheduled the pass. A projection built per caller would be one
         // database per membership.
         if (projection === null) return IDLE_PROJECTION;
-        const pass = await projectSearchIndex(store, projection);
+        const pass = await projectSearchIndex(store, projection, { workspaceId });
         return {
           kind: "indexProjected",
           projected: pass.projected,
@@ -578,6 +587,8 @@ export async function executeOperation(
           failureDetail: pass.failureDetail ?? null,
         };
       }
+      case "projectMeaning": case "sweepTree": case "touchTree": case "treeState": case "treeChanges": case "folderNotes": case "chaosScore": // run by the barrier (`meaningPass.ts`, `treeTableOps.ts`)
+        return IDLE_MEANING;
       case "maintainIndex": {
         // Scope-blind on purpose: an index describes the bucket, and building
         // it per caller would mean one index per membership. What is scoped is
@@ -712,6 +723,8 @@ export async function executeOperation(
         const created = await createFolder(store, { path: operation.path, clearance, now });
         return { kind: "folderCreated", ...created };
       }
+      case "addBuiltInFolder":
+        return { kind: "folderCreated", ...(await addBuiltInFolder(store, { role: operation.role, clearance, now })) };
       case "removeNewFolder":
         return { kind: "deleted", ...(await removeNewFolder(store, { path: operation.path, clearance })) };
       case "move": {
@@ -733,6 +746,8 @@ export async function executeOperation(
       }
       case "organizer":
         return { kind: "organizerResult", output: await runOrganizerOperation(store, clearance, operation, now, actor) };
+      case "routineRuns":
+        return { kind: "routineRuns", runs: await readRoutineRuns(store, { path: operation.path, clearance }) };
       case "readActivity": {
         // The filter is `readActivity`'s, and it takes the caller's clearance
         // rather than deciding anything here: one viewing layer, used by the
@@ -919,6 +934,13 @@ export async function executeOperation(
       }
       case "emojiList":
         return { kind: "emojiList", emoji: await listCustomEmoji(store) };
+      case "folderIconsRead":
+      case "folderIconSet": {
+        const icons = operation.kind === "folderIconsRead"
+          ? await listFolderIcons(store, { clearance })
+          : await setFolderIcon(store, { path: operation.path, icon: operation.icon, clearance });
+        return { kind: "folderIcons", icons: Object.entries(icons).map(([path, icon]) => ({ path, icon })) };
+      }
       case "emojiRead":
         return { kind: "emojiImage", ...(await readCustomEmoji(store, operation.name)) };
       case "emojiStore": {

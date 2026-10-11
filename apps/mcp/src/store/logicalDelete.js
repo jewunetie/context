@@ -467,6 +467,36 @@ export function withLogicalDelete(store, { logicalDelete = true } = {}) {
       return null;
     },
 
+    /**
+     * Physically remove up to `limit` tombstones under `prefix` whose listing
+     * time is before `olderThan` (ms). The only place a marker is ever deleted,
+     * for a prefix of our own JSON such as `.context/moves/` whose finished
+     * items would otherwise pile up. One listing page plus a read and a delete
+     * per tombstone, each charged through `take()` (false stops the walk).
+     * A candidate must list at exactly the marker size AND read back as a
+     * marker, so a live object is never removed; an entry with no readable
+     * listing time is never removed. Returns how many were removed.
+     */
+    async reclaimTombstones(prefix, { olderThan, limit, take }) {
+      if (typeof prefix !== "string" || !prefix.endsWith("/") || !Number.isFinite(olderThan) || !(limit > 0)) return 0;
+      if (!take()) return 0;
+      const page = await store.list({ prefix, limit: 1000 });
+      let removed = 0;
+      for (const listed of page.objects || []) {
+        if (removed >= limit) break;
+        if (!listed.key.startsWith(prefix) || !listed.key.endsWith(".json") || listed.size !== MARKER_BODY_BYTES) continue;
+        const at = listed.uploaded instanceof Date ? listed.uploaded.getTime() : Date.parse(listed.uploaded);
+        if (!Number.isFinite(at) || at >= olderThan) continue;
+        if (!take()) break;
+        const object = await store.get(listed.key);
+        if (!object || !isSafeMarkerBody(await object.text())) continue;
+        if (!take()) break;
+        await store.delete(listed.key);
+        removed += 1;
+      }
+      return removed;
+    },
+
     async list(options = {}) {
       // `tombstonesBySize`: an object of exactly a marker's size is a marker,
       // dropped without the read that would prove it. For listings of a prefix

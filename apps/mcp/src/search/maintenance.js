@@ -32,6 +32,8 @@ import { GC_BUDGET_FLOOR, collectShardRevisions } from "./shards/gc.js";
 import { reconcileGraph } from "../graph/reconcile.js";
 import { refreshAnchorTargets } from "./anchors.js";
 import { graphView } from "../graph/mode.js";
+import { MOVE_TOMBSTONE_GRACE_MS } from "../moves/limits.js";
+import { reclaimMoveTombstones } from "../moves/jobs.js";
 
 /** Ops the graph leaves, with anchor text on, for the refresh pass: v3 manifest and docmap reads, manifest write. */
 const ANCHOR_REFRESH_RESERVE = 3;
@@ -266,11 +268,11 @@ async function maintainNow(store, budget, isIndexable, found, visibilityOf, opti
   // hook already spends nothing, and this skips reconciliation and GC too.
   const inline = options.backfillOps !== undefined;
   const graphOff = store.writeEnrichBudget === 0;
+  let reconciled = null;
   if (!inline && !graphOff && synced?.manifest && budget.remaining >= graphPassFloor(store)) {
     // The graph leaves enough for the refresh pass below to record what it
     // cannot do on the manifest (anchors.js).
     const graphBudget = keepBack(budget, ANCHOR_REFRESH_RESERVE);
-    let reconciled = null;
     try {
       const freshness = synced.manifest.freshness;
       // Its own logical view, billed to this budget alone (graphView).
@@ -299,6 +301,20 @@ async function maintainNow(store, budget, isIndexable, found, visibilityOf, opti
     }
   } catch {
     // Unreferenced revisions only cost storage; the next pass tries again.
+  }
+  // Finished moves' tombstones, once the grace has passed AND a complete
+  // listing since then shows nothing pending in the index or the graph. Off
+  // with the graph kill switch and on the inline path, like the graph pass.
+  try {
+    const freshness = synced?.manifest?.freshness;
+    if (!inline && !graphOff && reconciled?.pending === 0 && freshness?.pending === 0 && !freshness.truncated) {
+      await reclaimMoveTombstones(store, {
+        olderThan: Date.now() - MOVE_TOMBSTONE_GRACE_MS,
+        take: () => budget.take(GC_BUDGET_FLOOR),
+      });
+    }
+  } catch {
+    // Tombstones only cost a listing page per thousand; the next pass tries again.
   }
 }
 

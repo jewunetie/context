@@ -210,9 +210,8 @@ a reviewer.
   pretty-printed job, several times that size; a listing that reports no size
   still reads). History now costs one listing page per thousand moves and
   nothing per move: 20, 11 and 15 ops at 0 and at 50 moves
-  (`moveMarkerCost.test.mjs`). The tombstones themselves stay in the bucket;
-  reclaiming them would need a physical delete the wrapper deliberately lacks
-  and a grace period for readers that listed before the move finished. The
+  (`moveMarkerCost.test.mjs`). Reclaiming them is described under "Move
+  tombstones are reclaimed after a grace" below. The
   answer does not change with move history. The tests are `relatedNotesTool.test.mjs`, "one active move plus
   100 finished ones: the answer at the default budget is the no-history
   answer, the moving note withheld" and "a refresh racing a new move's first
@@ -530,3 +529,12 @@ the docmap. This is by design (owner decision): the panel is the same answer
 `related_notes` gives, labelled possibly incomplete, and the editor keeps the
 tree so links never stop working while the index builds. Backlinks cannot
 disagree, because the editor shows none.
+
+### Move tombstones are reclaimed after a grace
+
+A finished move leaves a logical-delete tombstone under `.context/moves/` and nothing removed it, so history cost one listing page per thousand moves forever. Maintenance now removes them.
+- The fence does not need the tombstone. `persistMoveJob` refuses a finished job and an absent one alike, and creates nothing, so a stale pass after a reclaim gets "not found" and writes nothing.
+- The grace is `MOVE_TOMBSTONE_GRACE_MS`, 7 days: far longer than one pass or queue redelivery holds a marker it read. The age is the listing time of the tombstone (the marker body carries none).
+- A pass reclaims only when it also found nothing pending in the index (`freshness.pending` 0, not truncated) and in the graph (`reconcileGraph` pending 0). The graph kill switch (`WRITE_ENRICH_SUBREQUEST_BUDGET=0`), the inline path and a budget at its floor skip it.
+- At most `MOVE_RECLAIM_PER_PASS` (5) per pass: one listing page plus a read and a delete each, charged to the pass budget. A candidate must list at exactly the marker size and read back as a tombstone, so a live job of any status, the sentinel and any other key are never touched.
+- `withLogicalDelete.reclaimTombstones` is the only physical delete of a marker. Not verified: how long a Worker invocation or queue consumer may run; 7 days does not depend on it. Tests: `moveTombstoneReclaim.test.mjs`.

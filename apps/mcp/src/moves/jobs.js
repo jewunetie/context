@@ -8,7 +8,7 @@
 import { budgetedStore } from "../search/budget.js";
 import { deleteWithLegacyFallback, getWithLegacyFallback } from "../storageLayout.js";
 import { listAllKeys } from "../notes/storage.js";
-import { MOVE_JOB_PREFIX, MOVE_JOB_VERSION, MOVE_SENTINEL_KEY } from "./limits.js";
+import { MOVE_JOB_PREFIX, MOVE_JOB_VERSION, MOVE_RECLAIM_PER_PASS, MOVE_SENTINEL_KEY } from "./limits.js";
 
 /** Counts only: never forward a marker's paths or provider text to the control plane. */
 export function moveProgressFromText(text) {
@@ -292,4 +292,15 @@ export async function persistMoveJob(store, job) {
   job.generation = next.generation;
   job.updated_at = next.updated_at;
   return true;
+}
+
+/**
+ * Reclaim finished moves' tombstones older than `olderThan` (ms), at most
+ * MOVE_RECLAIM_PER_PASS, under `.context/moves/` only. Live markers (any
+ * status), the sentinel and every other key are untouched: a candidate must be
+ * marker-sized and read back as a tombstone. `take` charges the caller's budget.
+ */
+export async function reclaimMoveTombstones(store, { olderThan, take }) {
+  if (typeof store?.reclaimTombstones !== "function") return 0;
+  return store.reclaimTombstones(MOVE_JOB_PREFIX, { olderThan, limit: MOVE_RECLAIM_PER_PASS, take });
 }

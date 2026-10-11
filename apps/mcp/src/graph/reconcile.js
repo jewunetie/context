@@ -82,9 +82,13 @@ const capped = (budget, keep) => ({
 // `gcFailures`: consecutive passes whose GC page failed. `gcCursor`: where
 // the GC listing of `collect` resumes (rebuild.js). `sweepCensusAt`: the
 // listing time of the census this sweep started on, "" when unknown or when
-// any pass of it ran on an incomplete census (Task 13).
+// any pass of it ran on an incomplete census (Task 13). `removalPending`: a node
+// whose note is gone is still in the graph (owner ruling: health reads behind
+// until it is removed); `removalSkipped`: this audit listing passed one over,
+// so the flag survives the listing's wrap.
 const freshCursor = () => ({
   sweepCursor: "", sweepStartedAt: "", sweepCensusAt: "", auditCursor: "", sweepPending: false, turn: 0,
+  removalPending: false, removalSkipped: false,
   recheck: false, auditWrapped: false, gcFailures: 0, gcCursor: "",
 });
 
@@ -115,6 +119,8 @@ async function readCursor(store, budget, gen) {
         auditWrapped: value.auditWrapped === true,
         gcFailures: Number.isInteger(value.gcFailures) && value.gcFailures > 0 ? value.gcFailures : 0,
         gcCursor: typeof value.gcCursor === "string" ? value.gcCursor : "",
+        removalPending: value.removalPending === true,
+        removalSkipped: value.removalSkipped === true,
       }
     : freshCursor();
   return { cursor, etag: got.etag ?? null };
@@ -254,7 +260,7 @@ async function auditCurrentNode(store, budget, ctx, path, node, from) {
 }
 
 /** -1 when the node is finished, else the membership index to resume from. */
-async function auditNode(store, budget, ctx, key, out, from) {
+async function auditNode(store, budget, ctx, key, out, from, cursor) {
   if (!budget.take()) return from;
   const got = await store.get(key);
   if (!got) return -1;
@@ -278,7 +284,10 @@ async function auditNode(store, budget, ctx, key, out, from) {
   if (node.coverage === "excluded" && node.observedSourceVersion === null && isCurrent(node, null)) return -1;
   // Absent from a complete census: removed only on an authoritative not-found.
   const state = await removeIfGone(store, budget, path, ctx);
-  if (state === "stop" || state === "budget") return from;
+  if (state === "kept") return -1;
+  // Resumed here next pass, so only a skipped one outlives this listing.
+  if (state === "stop" || state === "budget") return (cursor.removalPending = true), from;
+  if (state === "pending" || state === "stale") cursor.removalPending = cursor.removalSkipped = true;
   tally(out, state);
   return -1;
 }
@@ -342,7 +351,7 @@ async function audit(store, budget, ctx, cursor, out) {
     const from = k === at.k ? at.e : 0;
     let resume = -1;
     if (NODE_KEY.test(rel)) {
-      resume = await auditNode(store, budget, ctx, keys[k], out, from);
+      resume = await auditNode(store, budget, ctx, keys[k], out, from, cursor);
     } else {
       const m = PAGE_KEY.exec(rel);
       if (m) resume = await auditPage(store, budget, ctx, keys[k], m[1], m[2], from);
@@ -354,7 +363,7 @@ async function audit(store, budget, ctx, cursor, out) {
   }
   const next = listed.truncated && typeof listed.cursor === "string" && listed.cursor ? listed.cursor : null;
   cursor.auditCursor = next ? JSON.stringify([next, 0, 0]) : "";
-  if (!next) cursor.auditWrapped = true;
+  if (!next) Object.assign(cursor, { auditWrapped: true, removalPending: cursor.removalSkipped, removalSkipped: false });
 }
 
 /** One GC page on what `budget` has left; a GC failure never stops the pass. */
@@ -430,7 +439,7 @@ export async function reconcileGraph(store, budget, { census, censusComplete, ce
   if (wrapped) {
     if (censusComplete) {
       // Ready only when the whole wrap found nothing pending.
-      const state = cursor.sweepPending ? "behind" : "ready";
+      const state = cursor.sweepPending || cursor.removalPending ? "behind" : "ready";
       // Always written, so a wrap with no provable time clears an older one. A
       // stored time later than this pass's census (a hostile or skewed
       // cursor) is not provable either.

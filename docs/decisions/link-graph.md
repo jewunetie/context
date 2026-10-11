@@ -74,9 +74,15 @@ a reviewer.
   no graph: it returns text hits and the seed's own links
   (`linked_from_here`, which need no graph read), never backlinks or shared
   targets or URLs, labelled possibly incomplete. The console's panel calls the same `retrieveCandidates`
-  through Convex, whose environment has no such switch: it reads the
-  graph whatever the gateway's budget says, and only the docmap filter
-  above keeps its candidates to notes the index lists. The tests are
+  through Convex, which has its own switch (owner decision): the Convex
+  environment variable of the same name, `WRITE_ENRICH_SUBREQUEST_BUDGET`,
+  read by the gateway's own rule (`writeEnrichBudgetFor`: floor, clamp, so
+  "0.5" and "-1" count as 0) as 0 makes `related.ts` hand `retrieveCandidates` a store view with
+  `writeEnrichBudget` 0, so the panel behaves as the gateway does. The two
+  variables are set separately; turning the graph off everywhere means
+  setting both. The tests are
+  `relatedNotes.test.ts` "WRITE_ENRICH_SUBREQUEST_BUDGET=0 skips the graph:
+  own links kept, links_here gone, labelled incomplete",
   `graphRetrieve.test.mjs` "the kill switch (writeEnrichBudget 0) skips the
   graph: no graph op, labelled possibly incomplete" and
   `relatedNotesTool.test.mjs` "with the kill switch on, a move makes no
@@ -85,9 +91,19 @@ a reviewer.
   OPEN-20). They go through `recordChange`, which has no body, so the write
   hook does not run for them. The same holds for referrers that a move
   rewrote and for form responses. Reconciliation shares the maintenance
-  invocation with search, runs only when `GRAPH_PASS_FLOOR` budget is left
-  after the search sync (controller ruling OPEN-21), and never changes the
-  search sync's results or budget use.
+  invocation with search, runs only when the store's pass floor
+  (`graphPassFloor`, `search/pacing.js`) is left after the search sync
+  (controller ruling OPEN-21), and never changes the search sync's results or
+  budget use. The floor is 11 (`GRAPH_PASS_FLOOR`) on a plain store, and on a
+  store behind the logical-delete wrapper (every gateway store) it is 26
+  conditional and 18 best-effort (owner decision after the Phase 2 final
+  review): the smallest budgets above which a deleted-note markers scenario
+  (300 notes, 150 deleted, paged bucket, search charge installed) converges
+  in every measured cell; below them a removal repeats every pass. Below the
+  floor the pass is skipped at no extra cost. A node whose note is gone but is
+  still in the graph keeps the sweep pending (owner ruling), so health reads
+  `behind` from the pass whose audit meets it until it is removed; a skipped
+  pass leaves that state as last published.
 - **A path leaves the graph only after a direct read of the note returns
   not-found** (controller ruling OPEN-15). That read is triggered either by a
   complete census that omits the path, or by a removal hint from the search
@@ -331,11 +347,21 @@ did before Phase 3:
 
 Every visible note with collaboration state is read too, as the scan reads it:
 its accepted text may never have reached the `.md`, and the postings describe
-stored bodies only. **Owner decision point (Task 14 re-review):** every
-collaborative read creates a head, so after one scanned move every eligible
-note in a collaborative workspace is a candidate and the index saves little
-there. Including every head is the cheapest complete rule; the lever is
-upstream (a move-time read of a note with no head need not create one).
+stored bodies only. Including every head is the cheapest complete rule, and
+it stays cheap because a move creates no heads (owner decision, Phase 3
+follow-up): `rewriteReferences` reads through collaboration only when the
+note already has a head, and otherwise rewrites the stored `.md` directly,
+since no head means no pending text. Before this, every move-time read
+created a head, so after one move every eligible note was a candidate. The
+cost is one head GET per note read, plus one more after each direct
+rewrite. The direct rewrite is conditional on the etag read (a refusal, or
+no etag on a conditional store, fails the note), and a head that appeared
+before it landed, or a head that does not parse, also fails the note: a
+collaboration session started from the old text could re-put its revision
+over the .md, which no etag covers. Tests: `moveIndexedReferrers.test.mjs`
+"a move on a fresh workspace creates no collaboration heads" and "a later
+move still takes the index path and reads only the moved note and its
+referrers"; the pending-edit tests (R1, R1b) keep the collaboration path.
 
 **What reversing it costs.** Trusting `complete` alone, recording the wall
 clock, or recording the wrapping census lets a referrer edited after its sweep

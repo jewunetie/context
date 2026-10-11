@@ -69,11 +69,17 @@ export async function suggestAfterWrite(store, scope, rules, overrides, write, b
   try {
     const deadline = now() + SUGGEST_DEADLINE_MS;
     if (write.before === undefined) return { status: "skipped", basedOnEtag: write.etag, candidates: [] };
+    // Owner decision (2026-10-07): the owner's share links, one control-plane
+    // call per write, for "shared publicly" labels. Started now so it overlaps
+    // the retrieval inside the deadline and runs past it only when slower than
+    // the whole pass. Scope `private` is the owner's alone; a teammate makes
+    // no call. Absent or failing, there are no public labels.
+    const publicLinks = scope === "private" && typeof store.links?.list === "function" ? Promise.resolve().then(() => store.links.list()).catch(() => null) : null;
     const { sections } = detectChangedSections(write.before, write.committed);
     // The audience is the note's after this write, which may just have set its
     // override (persistExactVisibility writes storage, not this map). Set as
     // persistExactVisibility sets it, so the fold reads it the same way.
-    // lean: share links are not part of the audience (owner decision pending, Task 22); a team note with a link gets team candidates.
+    // Share links label the block; they do not narrow the audience (owner decision, 2026-10-07).
     const after = new PrivacyOverrides(overrides ?? []);
     if (write.visibility === visibilityOf(write.path, rules)) after.delete(write.path);
     else after.set(write.path, write.visibility);
@@ -88,6 +94,7 @@ export async function suggestAfterWrite(store, scope, rules, overrides, write, b
         audience: { rules, overrides: after },
         canSeeKey: (key) => canSee(key, scope, rules, after),
         isIndexable: defaultIsIndexable,
+        publicLinks,
       },
       budget,
       { deadline, now },

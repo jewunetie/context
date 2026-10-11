@@ -124,15 +124,44 @@ see; a team source only candidates every team reader can see; a group-scoped
 source only candidates a reader holding just that group can see; anything not
 provably as broad is withheld (AGENT-LINKS 13.7). The rule is applied inside
 retrieval's `canSeeKey`, so a withheld note never takes a ranked slot.
-**Owner decision open: share links.** A team note with an active unlisted
-share link still gets team candidates, whose paths an agent could then write
-into a link-readable page. Share state is not in the bucket: it is a
-control-plane call (`store.links.list()`), outside the store budget, answered
-only for the owner, listing folder links that cover whole subtrees, and absent
-on deployments without a control plane. Closing it needs the owner to decide
-whether to spend that call per write, what non-owners get, and whether folder
-links count. Until then it is a `lean:` comment at the audience rule in
-`afterWrite.js`.
+**Share links and labels (owner decision, 2026-10-07).** Share links do not
+narrow the audience; they label the block. A block with candidates opens with
+the written note's own visibility (`this note is team.`) and gives each
+candidate its visibility in brackets: `private`, `team` or the `@group`. The
+words "shared publicly" are added only on the owner's writes (scope
+`private`, which only the owner holds): `suggestAfterWrite` makes one
+control-plane call, `store.links.list()`, started after the encrypted/drawing
+skip so it overlaps retrieval inside the 250 ms deadline and runs past it only
+when slower than the whole pass. A note is labelled when an active link with
+audience `anyone` opens it or a folder above it, and the note is team-visible
+(a link opens only what the team can read, so a private or group note under a
+linked folder is not labelled). A `name` or `email` share (a specific person,
+who may be outside the workspace) gives "shared outside team" under the same
+rules: owner's writes only, team-visible notes, the note or a folder above it;
+when an `anyone` link also covers the note, only "shared publicly" is shown
+(owner decision, 2026-10-07). `members` links let in nobody beyond the team and
+are not labelled. A listing that fails, answers `null`, is not an
+array, or is absent (no control plane) gives no public labels; nothing is
+guessed. A teammate's write makes no call and its block never carries the
+label, so it learns nothing new: candidate and note visibility are rule
+lookups on notes it can already read. Measured cost per write: store ops are
+identical with and without the listing (`writeSuggestions.test.mjs`, "owner
+write: one link listing ..."); one control-plane POST on an owner write, zero
+on a teammate's.
+
+**Both directions.** Each candidate line hints "link to it from this note";
+it adds ", or back from it" when the writer may edit the candidate (the
+write_note destination rule with no read: the owner may edit any path
+`writesOneRule` accepts, a team connection only team-visible notes) and every
+reader of the candidate can read the written note (the audience rule reversed,
+so a back-link never shows a narrower note's path to wider readers; ratified
+by the owner, 2026-10-07). The guidance
+changed from "do not rewrite a note just to add links" to "you may add a link
+back where the relationship is real" in `suggest.js` GUIDANCE,
+`mcp/instructions.js` and the `write_note` description; `linkGuidance.test.mjs`
+checks the new phrase and the absence of the old one. The longest label (a
+66-character group name) with both hints still fits the 4 KiB cap
+(`graphSuggest.test.mjs`).
 
 **What a strict caller can learn from the block.** A strict caller is any
 scope but exactly `private`. Suggestions use the same retrieval as

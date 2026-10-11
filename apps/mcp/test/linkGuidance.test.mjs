@@ -9,6 +9,8 @@
  * Run as temporary local edits and reverted:
  *   the sentence removed from the write_note description     1 (description)
  *   the bullet removed from INSTRUCTIONS_BODY                1 (instructions)
+ *   the retired sentence put back in the description          1 (description)
+ *   the new back-link phrase dropped from the description     1 (description)
  */
 
 import assert from "node:assert/strict";
@@ -26,9 +28,11 @@ const PHRASES = [
   "optional leads, not verified relationships",
   "read enough of a candidate to confirm it",
   "skip topic-only matches",
-  "do not rewrite a note just to add links",
+  "add a link back where the relationship is real",
 ];
-const missing = (text) => PHRASES.filter((p) => !flat(text).includes(p));
+// Owner decision (2026-10-07): the old prohibition is gone everywhere.
+const RETIRED = "do not rewrite a note just to add links";
+const missing = (text) => [...PHRASES.filter((p) => !flat(text).includes(p)), ...(flat(text).includes(RETIRED) ? [`retired: ${RETIRED}`] : [])];
 
 let restore;
 let env;

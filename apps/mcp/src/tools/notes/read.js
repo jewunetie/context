@@ -18,6 +18,7 @@ export async function toolListNotes(store, scope, rules, overrides, prefixArg) {
   const prefix = prefixArg ? normalizePath(prefixArg) : "";
   if (prefixArg && prefix === null) return toolError("invalid prefix");
   const visible = await listVisibleNoteKeysWithMoves(store, scope, rules, overrides, prefix);
+  if (visible === null) return toolText("(the note listing is unavailable right now, try again shortly)");
   if (!visible.length) return toolText("(no visible notes under that prefix)");
   const lines = visible
     .sort((a, b) => a.key.localeCompare(b.key))

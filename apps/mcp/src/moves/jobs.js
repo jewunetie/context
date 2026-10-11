@@ -247,8 +247,10 @@ export function applyMoveOverlay(keys, jobs) {
   return [...out.values()];
 }
 
+/** True when `path` is under a moving source, or when the move state cannot be read (fail closed: the write is refused as an active move is). */
 export async function pathUnderActiveMovedSource(store, path) {
-  const jobs = await loadMoveJobs(store);
+  const jobs = await loadMoveJobsOrNull(store);
+  if (jobs === null) return true;
   return jobs.some((job) => noteUnderPrefix(path, job.source));
 }
 

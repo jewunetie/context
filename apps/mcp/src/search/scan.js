@@ -39,6 +39,7 @@ export async function scanVisibleNotes(store, scope, rules, overrides, query, pr
         truncated: false,
       }
     : await listScannableNoteKeys(bounded, prefix);
+  if (listed.keys === null) return { hits: [], scannedCount: 0, totalCount: 0, totalIsFloor: true };
   // `isPlumbing` explicitly, not as a side effect of which lister ran.
   // `canSee` answers *true* for `privacy.md` at private scope — deliberately,
   // because the manifest is the owner's to read — so the manifest reached a

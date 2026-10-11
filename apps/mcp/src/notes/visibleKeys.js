@@ -6,7 +6,6 @@
 
 import {
   applyMoveOverlay,
-  loadMoveJobs,
   loadMoveJobsOrNull,
   movedSourcesFor,
   noteUnderPrefix,
@@ -24,8 +23,14 @@ export async function listAllNoteKeys(store) {
   );
 }
 
+/**
+ * Visible note keys with moves applied, or null when the move state cannot be
+ * read: any note could then be mid-move into or out of a hidden location, so
+ * none is listed. The answer does not depend on what is hidden.
+ */
 export async function listVisibleNoteKeysWithMoves(store, scope, rules, overrides, prefix) {
-  const jobs = await loadMoveJobs(store);
+  const jobs = await loadMoveJobsOrNull(store);
+  if (jobs === null) return null;
   const raw = prefix ? await listAllKeys(store, prefix) : await listAllNoteKeys(store);
   let keys = raw;
   if (prefix && jobs.some((job) => noteUnderPrefix(job.destination, prefix) || noteUnderPrefix(prefix, job.destination))) {

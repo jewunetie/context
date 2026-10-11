@@ -75,6 +75,10 @@ export async function toolEvaluateLists(
       overrides,
       block.config.from,
     );
+    if (visible === null) {
+      lists.push({ line: block.line, error: "this list cannot be evaluated right now" });
+      continue;
+    }
     if (visible.length > MAX_LIST_CANDIDATES) {
       lists.push({
         line: block.line,

@@ -13,7 +13,7 @@ import { extractFields } from "../search/indexer.js";
 // 2: bare URLs and autolinks are url occurrences. 3: occurrences carry their
 // display text and the record its title (anchor text, search/anchors.js).
 export const PARSER_VERSION = 3;
-export const RESOLVER_VERSION = 1;
+export const RESOLVER_VERSION = 2; // 2: bare names and basenames are keyed loosely (main's [[Eve]] finds eve.md)
 
 // Anchor-text caps (CONTRACT-REVISIONS.md "Anchor text"). A display text is cut to
 // ANCHOR_TEXT_CHARS, one posting entry keeps at most ANCHOR_TEXTS_PER_ENTRY
@@ -62,7 +62,8 @@ export const baseName = (path) => path.slice(path.lastIndexOf("/") + 1).replace(
  */
 function classify(occurrence, fromPath) {
   let name = null;
-  const spy = { get(n) { name = n; return undefined; } };
+  const spy = new Map(); // empty and iterable: resolveLink's loose fallback walks it
+  spy.get = (n) => { name = n; return undefined; };
   const path = resolveLink(occurrence, fromPath, spy);
   return { path, name };
 }

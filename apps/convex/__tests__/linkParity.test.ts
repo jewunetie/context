@@ -98,6 +98,7 @@ const CORPUS = [
   "parens https://en.wikipedia.org/wiki/Foo_(bar) and (see https://example.com/f))",
   "code `https://example.com/x` and\n```\nhttps://example.com/y\n```\nhttps://example.com/z",
   "secret https://example.com/cb#access_token=abc and [x](https://example.com/x) xhttps://no <https://>",
+  "loose names [[Eve]], [[Love Thy Neighbor]], [[Unique_Name]] and [[OVERVIEW]]",
 ];
 
 const NAMES = [
@@ -109,12 +110,15 @@ const NAMES = [
   "2-products/x/overview.md",
   "1-projects/a note with spaces.md",
   "1-projects/persistence/assets/diagram.png",
+  "2-areas/people/eve.md",
+  "1-projects/love-thy-neighbor.md",
 ];
 
 const RENAMES: [string, string][] = [
   ["2-products/context-lc/overview.md", "2-products/contextlc/readme.md"],
   ["1-projects/persistence/sibling.md", "4-archive/2026/sibling.md"],
   ["3-resources/unique-name.md", "3-resources/renamed-name.md"],
+  ["2-areas/people/eve.md", "2-areas/people/eve-adams.md"],
 ];
 
 /** Every place the referring note might be, including two it was moved to. */

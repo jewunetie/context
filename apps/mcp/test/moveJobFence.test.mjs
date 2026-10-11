@@ -125,10 +125,18 @@ test("a store with no conditional write: two writers past the check, one wins an
 // Real passes over a real move. B reads the job, then stalls before touching the
 // objects; A advances the move twice; B then fails (its source is gone) and
 // tries to record that against the generation it read.
-function moveWorld() {
+// A finished move rewrites links under the context's privacy manifest, and a
+// context without one is "privacy state unavailable": the rewrite pauses.
+const MANIFEST =
+  "---\nrole: privacy-manifest\nversion: 1\n---\n\n" +
+  "<!-- BEGIN BRAIN PRIVACY RULES -->\n\n```yaml\ndefault_visibility: private\n\n" +
+  "folder_defaults:\n  1-projects: team\n\nnote_overrides:\n```\n\n<!-- END BRAIN PRIVACY RULES -->\n";
+
+async function moveWorld() {
   const raw = memoryBucket();
   raw.capabilities = { conditionalWrite: true, conditionalCreate: true, conditionalDelete: true };
   const store = withLogicalDelete(raw);
+  await raw.put("privacy.md", MANIFEST);
   return { raw, store };
 }
 async function seedMove(store, raw) {
@@ -143,7 +151,7 @@ async function seedMove(store, raw) {
 const audits = (raw) => [...raw.objects.keys()].filter((key) => key.startsWith(".context/audit/")).length;
 
 test("a stale pass cannot regress an advancing move, and the move still completes exactly once", async () => {
-  const { raw, store } = moveWorld();
+  const { raw, store } = await moveWorld();
   await seedMove(store, raw);
   let open;
   const gate = new Promise((resolve) => (open = resolve));
@@ -158,13 +166,18 @@ test("a stale pass cannot regress an advancing move, and the move still complete
   assert.match((await toolMaterializeMove(store, "private", ID, 2)).content[0].text, /copying/);
   assert.match((await toolMaterializeMove(store, "private", ID, 2)).content[0].text, /needs_cleanup/);
   const advanced = await stored(store);
-  assert.deepEqual([advanced.status, advanced.generation], ["needs_cleanup", 2]);
+  // Three writes: the copy pass, the write-ahead before the first retirement, the clean-up pass.
+  assert.deepEqual([advanced.status, advanced.generation], ["needs_cleanup", 3]);
 
   open();
   await stale;
   assert.deepEqual(await stored(store), advanced, "the stale pass left the stored job as the advancing pass wrote it");
 
-  const finish = (await toolMaterializeMove(store, "private", ID, 2)).content[0];
+  // Clean-up now hands over to the reference rewrite, which takes passes of its own.
+  let finish = (await toolMaterializeMove(store, "private", ID, 2)).content[0];
+  for (let pass = 0; pass < 10 && !/complete/.test(finish.text); pass += 1) {
+    finish = (await toolMaterializeMove(store, "private", ID, 2)).content[0];
+  }
   assert.match(finish.text, /complete/);
   assert.equal(finish.isError, undefined);
   assert.equal(await stored(store), null);
@@ -176,11 +189,11 @@ test("a stale pass cannot regress an advancing move, and the move still complete
 });
 
 test("two passes started together: the move completes once, nothing is lost, and a third pass finds nothing to do", async () => {
-  const { raw, store } = moveWorld();
+  const { raw, store } = await moveWorld();
   await seedMove(store, raw);
   const results = await Promise.all([toolMaterializeMove(store, "private", ID, 100), toolMaterializeMove(store, "private", ID, 100)]);
   // A loser may be paused or told to continue; a follow-up pass settles it.
-  for (let pass = 0; pass < 3 && (await stored(store)) !== null; pass += 1) await toolMaterializeMove(store, "private", ID, 100);
+  for (let pass = 0; pass < 10 && (await stored(store)) !== null; pass += 1) await toolMaterializeMove(store, "private", ID, 100);
   assert.equal(await stored(store), null, "the move finished");
   for (const name of ["a", "b", "c"]) {
     assert.equal(await (await store.get(`1-projects/y/${name}.md`)).text(), `# ${name}\n`);
@@ -191,14 +204,19 @@ test("two passes started together: the move completes once, nothing is lost, and
 });
 
 test("two passes that both reach completion: the clean-up and the audit record run once", async () => {
-  const { raw, store } = moveWorld();
+  const { raw, store } = await moveWorld();
   // Every source is already retired and copied; both passes go straight to finishing.
   const objects = ["a", "b", "c"].map((name) => ({ source: `1-projects/x/${name}.md`, destination: `1-projects/y/${name}.md` }));
   for (const { destination } of objects) await store.put(destination, "# moved\n");
   const copied = objects.map(({ source }) => source);
   await store.put(moveJobKey(ID), JSON.stringify(job("needs_cleanup", { objects, copied, total_objects: 3, copied_objects: 3 })));
   const results = await Promise.all([toolMaterializeMove(store, "private", ID, 100), toolMaterializeMove(store, "private", ID, 100)]);
-  assert.equal(results.filter((r) => /physical storage sync: complete/.test(r.content[0].text)).length, 1);
+  // The reference rewrite follows the clean-up in passes of its own; the move is complete once.
+  const texts = results.map((r) => r.content[0].text);
+  for (let pass = 0; pass < 10 && (await stored(store)) !== null; pass += 1) {
+    texts.push((await toolMaterializeMove(store, "private", ID, 100)).content[0].text);
+  }
+  assert.equal(texts.filter((text) => /physical storage sync: complete/.test(text)).length, 1);
   assert.equal(audits(raw), 1);
   assert.equal(await stored(store), null);
 });

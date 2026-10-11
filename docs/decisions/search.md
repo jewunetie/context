@@ -146,3 +146,18 @@ It is a dry run unless `--delete` is passed. It refuses, exits non-zero and dele
 record is complete (`indexIsBehind` false). It deletes only those three targets, through the same
 `withLogicalDelete` store stack the gateway uses, and never touches notes, `.context/graph/`,
 `.context/moves/` or the live index. Pinned by `apps/mcp/test/cleanupOldSearchIndexes.test.mjs`.
+### The map's graph is read per shard at request time, and stored nowhere
+
+Moved to [The map's graph is read per shard at request time, and stored nowhere](./search/workspace-map.md#the-maps-graph-is-read-per-shard-at-request-time-and-stored-nowhere).
+
+### Every search is timed, and the time is all that is kept
+
+Moved to [Every search is timed, and the time is all that is kept](./search/search-timings.md#every-search-is-timed-and-the-time-is-all-that-is-kept).
+
+### Search by meaning is on for every workspace, free and Premium, and an owner can turn it off
+
+Moved to [Search by meaning is on for every workspace, free and Premium, and an owner can turn it off](./search/meaning-search.md#search-by-meaning-is-on-for-every-workspace-free-and-premium-and-an-owner-can-turn-it-off).
+
+### Notes reach the index two ways, and a map in the bucket says which are in
+
+Moved to [Notes reach the index two ways, and a map in the bucket says which are in](./search/meaning-search.md#notes-reach-the-index-two-ways-and-a-map-in-the-bucket-says-which-are-in).

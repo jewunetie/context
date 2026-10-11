@@ -22,9 +22,13 @@ import {
   emojiImageValidator,
   emojiListValidator,
   emojiRemovedValidator,
+  folderIconsValidator,
   emojiStoredValidator,
   listingValidator,
   manifestValidator,
+  treeChangesValidator,
+  folderNotesValidator,
+  chaosScoreValidator,
   movedValidator,
   notesValidator,
   privacyResetValidator,
@@ -55,7 +59,10 @@ import {
   forwardedValidator,
   indexMaintainedValidator,
   indexProjectedValidator,
+  meaningProjectedValidator,
   notePathsValidator,
+  workspaceGraphValidator,
+  visiblePathsValidator,
   searchResultsValidator,
 } from "./searchValidators";
 
@@ -99,7 +106,29 @@ export const relatedValidator = v.object({
 });
 
 export const operationResultValidator = v.union(
+  v.object({
+    kind: v.literal("routineRuns"),
+    runs: v.array(v.object({ at: v.number(), outcome: v.string(), text: v.string() })),
+  }),
   v.object({ kind: v.literal("websiteReleaseWritten"), pages: v.number() }),
+  v.object({ kind: v.literal("treeKept"), complete: v.boolean() }),
+  treeChangesValidator,
+  folderNotesValidator,
+  chaosScoreValidator,
+  v.object({
+    kind: v.literal("treeState"),
+    status: v.union(
+      v.literal("ready"),
+      v.literal("filling"),
+      v.literal("empty"),
+      v.literal("unsupported"),
+      v.literal("unreachable"),
+    ),
+    rows: v.union(v.number(), v.null()),
+    sweptAt: v.union(v.number(), v.null()),
+    dirty: v.boolean(),
+    error: v.union(v.string(), v.null()),
+  }),
   v.object({
     kind: v.literal("websiteReleasePages"),
     results: v.array(
@@ -138,6 +167,7 @@ export const operationResultValidator = v.union(
   emojiImageValidator,
   emojiStoredValidator,
   emojiRemovedValidator,
+  folderIconsValidator,
   pluginInventoryValidator,
   pluginManagedInstallsValidator,
   contextPluginsValidator,
@@ -150,9 +180,12 @@ export const operationResultValidator = v.union(
   searchResultsValidator,
   notePathsValidator,
   relatedValidator,
+  workspaceGraphValidator,
+  visiblePathsValidator,
   forwardedValidator,
   indexMaintainedValidator,
   indexProjectedValidator,
+  meaningProjectedValidator,
   googleSyncRunValidator,
   googleForwardSyncValidator,
   formResultValidator,
@@ -188,9 +221,9 @@ export const operationValidator = v.union(
    */
   v.object({ kind: v.literal("forward"), paths: v.array(v.string()) }),
   /** The offline mirror's manifest, one page of it. See `syncManifest`. */
-  v.object({ kind: v.literal("manifest"), cursor: v.optional(v.string()) }),
+  v.object({ kind: v.literal("manifest"), cursor: v.optional(v.string()), folder: v.optional(v.string()), source: v.optional(v.literal("tree")) }),
   /** Several `read`s against one load of `privacy.md`. See `readFiles`. */
-  v.object({ kind: v.literal("readMany"), paths: v.array(v.string()) }),
+  v.object({ kind: v.literal("readMany"), paths: v.array(v.string()), plain: v.optional(v.boolean()) }),
   v.object({
     kind: v.literal("writeWebsiteRelease"),
     releaseId: v.string(),
@@ -238,6 +271,10 @@ export const operationValidator = v.union(
   v.object({ kind: v.literal("notePaths") }),
   /** Notes related to one note, at the caller's clearance. See `lib/fileOps/related.ts`. */
   v.object({ kind: v.literal("related"), path: v.string() }),
+  /** The console map's notes and links. See `workspaceGraph` in `lib/fileOps/graph.ts`. */
+  v.object({ kind: v.literal("workspaceGraph"), compact: v.optional(v.boolean()) }),
+  /** The subset of these this scope may see now. See `lib/fileOps/visiblePaths.ts`. */
+  v.object({ kind: v.literal("visiblePaths"), paths: v.array(v.string()) }),
   /**
    * Bring the search index a pass further. Scheduled, never called by a client
    * — there is no public action that reaches this variant.
@@ -269,6 +306,25 @@ export const operationValidator = v.union(
    * stopped being `backfilling`, or a projection that reached `ready`.
    */
   v.object({ kind: v.literal("projectIndex"), passes: v.optional(v.number()) }),
+  /** A search-by-meaning catch-up pass; scheduled only, like `projectIndex`. */
+  v.object({ kind: v.literal("projectMeaning"), passes: v.optional(v.number()) }),
+  /** The tree table's sweep and re-check (`treeTableOps.ts`); scheduled only. */
+  v.object({ kind: v.literal("sweepTree"), passes: v.optional(v.number()) }),
+  /** The tree table's health for the staff panel; no bucket is opened. */
+  v.object({ kind: v.literal("treeState") }),
+  v.object({
+    kind: v.literal("touchTree"),
+    paths: v.array(v.string()),
+    files: v.array(v.string()),
+    audiences: v.array(v.string()),
+    left: v.optional(v.array(v.object({ path: v.string(), audiences: v.array(v.string()) }))),
+  }),
+  /** What changed since a device's last sync (`treeChanges.ts`). */
+  v.object({ kind: v.literal("treeChanges"), since: v.number(), after: v.optional(v.string()), privacy: v.optional(v.string()) }),
+  /** A folder List's notes from the tree's properties table (`folderNotes.ts`). */
+  v.object({ kind: v.literal("folderNotes"), folder: v.string(), subfolders: v.boolean(), cursor: v.optional(v.string()) }),
+  /** The chaos score for this reader (`chaosOps.ts`). */
+  v.object({ kind: v.literal("chaosScore"), folder: v.optional(v.string()) }),
   v.object({ kind: v.literal("googleGmailBackfill"), runId: v.id("googleSyncRuns") }),
   /**
    * Advance one connected Google account from its own cursor. Scheduled by
@@ -318,6 +374,9 @@ export const operationValidator = v.union(
   }),
   v.object({ kind: v.literal("readImage"), leaf: v.string() }),
   v.object({ kind: v.literal("emojiList") }),
+  v.object({ kind: v.literal("folderIconsRead") }),
+  v.object({ kind: v.literal("addBuiltInFolder"), role: v.string() }),
+  v.object({ kind: v.literal("folderIconSet"), path: v.string(), icon: v.union(v.string(), v.null()) }),
   v.object({ kind: v.literal("emojiRead"), name: v.string() }),
   v.object({
     kind: v.literal("emojiStore"),
@@ -544,6 +603,8 @@ export const operationValidator = v.union(
   v.object({ kind: v.literal("readStorageLayout") }),
   /** `activity.md`, filtered to what this caller may see. See `activity.ts`. */
   v.object({ kind: v.literal("readActivity") }),
+  /** A routine's recent runs, read by the routine note's path. See `fileOps/routineRuns.ts`. */
+  v.object({ kind: v.literal("routineRuns"), path: v.string() }),
   /**
    * Auto-organize's trips through the barrier. See `lib/organizer/sweepOps.ts`.
    * JSON in and out: the suggestions are the engine's shape, and the engine

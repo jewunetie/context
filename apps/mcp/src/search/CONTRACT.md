@@ -151,38 +151,27 @@ constants are pinned; the corpus they are computed against is per-caller.**
   Being redundant, it is also unreachable by any end-to-end test, so it is a
   separate function with its own checks rather than an inline filter.
 
-## Maintenance (maintain.js) — the sync loop
+## Maintenance (shards/sync.js)
 
-On each search call, under one subrequest budget (callers pass it; the worker
-free tier allows 50 per invocation, so search defaults to ≤ 40 total, and a
-paid-plan deployment raises it with `SEARCH_SUBREQUEST_BUDGET` in the
-environment — clamped, and unparseable values fall back to the default,
-because a typo'd var must not take search down or unbounded):
+The v1 single-object sync loop (`syncIndex` in `maintain.js`, reading and
+writing `.context/search/search-v1.json`) was removed; nothing reads, writes or
+deletes that object any more. The sharded pass in `shards/sync.js` is the only
+sync, and `maintain.js` keeps only the shared helpers (budget counter, wave
+runner, note filter, size caps). The pass format is in
+[`CONTRACT-REVISIONS.md`](./CONTRACT-REVISIONS.md).
 
-1. `store.get(".context/search/search-v1.json")` → parse (null ⇒ empty index). An
-   object larger than `INDEX_PARSE_BYTE_CAP` is **refused unparsed** and
-   treated exactly like a corrupt one: `JSON.parse` of a many-MB index
-   inflates several-fold in a 128MB heap, and an index big enough to kill the
-   invocation kills it before any pass can shrink it.
-2. One bounded listing of note keys (paths + etags where the store reports
-   them; the R2/S3 listings do).
-3. Diff: keys whose etag differs or is absent from `docs` ⇒ stale; `docs`
-   entries absent from the listing ⇒ removed.
-4. Re-fetch and re-index as many stale notes as the remaining budget allows
-   (removals are free); recompute ranks; conditional `put` with the etag read
-   in step 1 — on conflict, **serve the query from what was built and skip the
-   write**: a lost write is one extra sync later, a retry loop is budget spent
-   on plumbing. The same cap applies here, in UTF-8 bytes, and it is the same
-   number: **an index that would exceed it is not written at all.** A cap on
-   one side only is not a smaller cap, it is a loop — the write stores an
-   object the read then refuses, so the next pass rebuilds from empty and the
-   index never converges.
-5. Answer from the (possibly still partial) index and report honestly:
-   `pending > 0` means results carry the same kind of floor language the
-   census and orient already use. `pending` describes *the answer*, not the
-   object: a pass that refused its own write can still report `pending: 0`,
-   because the index it answered from was complete in memory even though
-   nothing was persisted.
+On each search call the pass runs under one subrequest budget (callers pass it;
+the worker free tier allows 50 per invocation, so search defaults to <= 40
+total, and a paid-plan deployment raises it with `SEARCH_SUBREQUEST_BUDGET` in
+the environment, clamped, and unparseable values fall back to the default,
+because a typo'd var must not take search down or unbounded). It lists the note
+keys, diffs by etag, re-indexes as many stale notes as the remaining budget
+allows, and writes conditionally; on a conflict it serves the query from what
+was built and skips the write. `pending > 0` means results carry the same kind
+of floor language the census and orient already use. `pending` describes *the
+answer*, not the object: a pass that refused its own write can still report
+`pending: 0`, because the index it answered from was complete in memory even
+though nothing was persisted.
 
 The index never gates correctness: a search with no usable index falls back to
 the bounded scan, and the scan is itself capped below the subrequest budget so

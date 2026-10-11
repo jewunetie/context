@@ -40,7 +40,7 @@ here is what a tidy-up would break:
   each under its own parse cap; the query streams shards one at a time and
   computes every statistic over the caller's visible docs, and PageRank is
   deliberately neutral (a global link graph needs every shard in memory,
-  which is the blowup v2 removes). CONTRACT.md § v2 pins the format.
+  which is the blowup v2 removes). CONTRACT-REVISIONS.md pins the format.
   **Shard postings are interned — `[docIndex, tf]` against the shard's own
   docs array, never `[path, tf]`** — because path-keyed postings repeat every
   doc's path once per unique term, which crossed the shard byte cap at about

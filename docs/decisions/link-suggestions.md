@@ -189,8 +189,9 @@ deployment is on Workers Paid.
   the write already pays about one read per finished move (44 to 95 over 50
   moves at budget 0), so on these figures a free-tier write passes 50 after
   about six finished moves at budget 0 and two at the default 8, with or
-  without suggestions. It needs a physical
-  delete or tombstone cleanup for `.context/moves/`.
+  without suggestions. The cleanup is provided by the reclaim of finished-move
+  tombstones after a 7 day grace (see link-graph.md); the figures above are
+  from before it.
 - **Hosted (10,000).** 84 ops at budget 80, growing about 2 per finished move
   (one for the write, one for suggestions; it was 3 before move jobs were read
   once per call), so on a straight-line extrapolation from these two points a

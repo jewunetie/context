@@ -1,7 +1,8 @@
 /**
  * The indexer half of the search format contract — everything that turns one
  * note's content into the shape CONTRACT.md pins, and everything that turns
- * that shape into (and back out of) the bytes stored at `.context/search/search-v1.json`.
+ * that shape into (and back out of) the bytes of a v1 index object (the
+ * `search-v1.json` sync loop is removed; shards own storage now).
  *
  * Scoring (`query.js`) and the sync loop (`maintain.js`) are separate modules;
  * this one owns field extraction, the in-memory Maps, and (de)serialization.

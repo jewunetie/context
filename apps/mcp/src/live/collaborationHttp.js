@@ -28,7 +28,7 @@ export const MAX_COLLABORATION_NOTE_BYTES = 4 * 1024 * 1024;
  * admitted.  The engine owns document identity, merge history and CAS
  * materialization in the customer's bucket.
  */
-export async function collaborationHead(store, path) {
+export async function collaborationHead(store, path, { strict = false } = {}) {
   if (!collaborationSupported(store) || !globalThis.crypto?.subtle) return null;
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(path));
   const hash = [...new Uint8Array(digest)]
@@ -38,10 +38,13 @@ export async function collaborationHead(store, path) {
   if (!object) return null;
   try {
     const head = JSON.parse(await object.text());
-    return head && typeof head === "object" ? head : null;
+    if (head && typeof head === "object") return head;
   } catch {
-    return null;
+    // fall through
   }
+  // `strict`: a head that exists but does not parse is not "no head".
+  if (strict) throw new Error("unreadable collaboration head");
+  return null;
 }
 
 export function collaborationIdentityFromRequest(body) {

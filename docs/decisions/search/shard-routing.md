@@ -232,3 +232,21 @@ Three consequences that a tidy-up would get wrong:
   what a disposable derivative is for, and it is cheaper than the alternative:
   writing the diff into both objects is one list authored twice, and the
   direction it fails is two copies disagreeing about what a shard holds.
+
+## Known residual: hidden notes can still move spend, hits and rank order
+
+When the index spans many shards, or the request budget is tight, what a caller
+cannot see can still change what they get. Routing filters and the corpus
+statistics (`N`, `avglen`, `df`) are built over every document, so a term that
+only hidden notes carry changes which shards are read: operations spent, the
+hit set at a tight budget (the budget can run out before the shards holding the
+visible matches) and, with long notes in the shards the hidden ones claim, the
+order of the top hits. With generous budgets and no length skew the answers
+were identical. Measured with a 12-shard index and 12 hidden notes; the
+pre-existing issues 4 and 5. It is recorded, not fixed: the planned fix is a
+separate index per visibility level (routing filters and statistics over only
+what that level can see), which is an index format change and its own piece of
+work. Cheaper variants (no Bloom routing for callers who cannot see everything,
+or statistics over matching visible shards only) were set aside because they
+cost up to 64 shard reads per search or change the ranking math without
+closing the spend and hit channels.

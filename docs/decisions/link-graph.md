@@ -519,3 +519,14 @@ are in git history at `7a31b985`).
   against the anchors arm, not a switch to flip; the removed code is a
   starting point, not a ready feature.
 
+## Known difference: the console link panel and the editor
+
+The editor resolves a note's outgoing links against the file tree plus the
+search docmap, so a note written a minute ago opens from a link at once. The
+link panel resolves them against the docmap only, and marks a link "not yet
+checked" when the index is behind or a move is active. Until the index catches
+up the two can disagree on a link to a note that is in the tree but not yet in
+the docmap. This is by design (owner decision): the panel is the same answer
+`related_notes` gives, labelled possibly incomplete, and the editor keeps the
+tree so links never stop working while the index builds. Backlinks cannot
+disagree, because the editor shows none.

@@ -30,6 +30,15 @@ Everything is under `.context/search/index/`:
   shard id, or `null` for nothing stored) and, when non-empty, `anchorRefresh`.
   It is the single commit point. A `null` key over a shard whose stats count
   documents is refused.
+  `freshness` is `{ listedAt, pending, truncated }` plus the optional
+  `listCursor`: a string naming the first top-level folder a budget-limited
+  listing did not finish, where the next listing pass resumes (absent or null
+  once a pass lists everything). It is an extra optional field with no version
+  bump: a reader that does not know it ignores it (the previous parser was
+  run against a manifest carrying one), and a manifest without it reads as
+  null. Only a pass that listed writes freshness; a write's targeted pass
+  keeps the stored record as it found it. A cursor that is neither a string
+  nor null refuses the manifest.
 - `docmap.json`: the diff surface, unchanged in shape.
 - `shards/<nnn>-<hex16>.json`: shard revisions, content addressed. A manifest
   naming a key outside this prefix, or one holding `..`, is refused.

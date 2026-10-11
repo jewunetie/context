@@ -79,3 +79,24 @@ test("the cursor survives the manifest's serialization, and a malformed one refu
   broken.freshness.listCursor = 7;
   assert.equal(parseManifest(JSON.stringify(broken), 1e9), null);
 });
+
+test("freshness.listCursor is an extra optional field: a manifest without it parses, an unknown sibling is ignored", async () => {
+  const store = await bucket();
+  await syncShardedIndex(store, { budget: createSearchBudget(50), isIndexable });
+  const stored = JSON.parse(store.objects.get(MANIFEST_KEY).body);
+  assert.equal(typeof stored.freshness.listCursor, "string");
+
+  // An older writer's manifest has no cursor.
+  const { listCursor, ...legacy } = stored.freshness;
+  const older = parseManifest(JSON.stringify({ ...stored, freshness: legacy }), 1e9);
+  assert.equal(older.freshness.listCursor, null);
+  assert.equal(older.freshness.pending, stored.freshness.pending);
+
+  // A reader ignores a freshness field it does not know, which is the property
+  // an older reader had when this one was added. Checked against the real
+  // previous parser (git show 54e80748~1:.../serialize.js) when it was added:
+  // it parsed this manifest and returned its pending count.
+  const newer = parseManifest(JSON.stringify({ ...stored, freshness: { ...stored.freshness, futureField: 1 } }), 1e9);
+  assert.equal(newer.freshness.pending, stored.freshness.pending);
+  assert.equal("futureField" in newer.freshness, false);
+});

@@ -813,10 +813,10 @@ export async function syncShardedIndex(
   };
   if (
     !targeted &&
-    manifest.freshness.listedAt !== freshness.listedAt ||
-    manifest.freshness.pending !== freshness.pending ||
-    manifest.freshness.truncated !== freshness.truncated ||
-    (manifest.freshness.listCursor ?? null) !== freshness.listCursor
+    (manifest.freshness.listedAt !== freshness.listedAt ||
+      manifest.freshness.pending !== freshness.pending ||
+      manifest.freshness.truncated !== freshness.truncated ||
+      (manifest.freshness.listCursor ?? null) !== freshness.listCursor)
   ) {
     manifest.freshness = freshness;
     manifestChanged = true;

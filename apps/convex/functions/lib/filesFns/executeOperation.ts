@@ -560,12 +560,9 @@ export async function executeOperation(
         );
         return { kind: "searchResults", ...results };
       }
-      case "notePaths": {
-        const found = await notePathIndex(store, clearance);
-        return { kind: "notePaths", paths: found?.paths ?? null };
-      }
-      case "related":
-        return { kind: "related", ...(await relatedNotes(store, { path: operation.path, clearance })) };
+      case "notePaths":
+        return { kind: "notePaths", paths: (await notePathIndex(store, clearance))?.paths ?? null };
+      case "related": return { kind: "related", ...(await relatedNotes(store, { path: operation.path, clearance })) };
       case "workspaceGraph":
         return { kind: "workspaceGraph", ...(await workspaceGraph(store, clearance, { compact: operation.compact === true })) };
       case "visiblePaths":

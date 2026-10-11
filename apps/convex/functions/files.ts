@@ -109,6 +109,7 @@ import {
 import {
   blendedResultsValidator,
   notePathsValidator,
+  workspaceGraphValidator,
   searchResultsValidator,
 } from "./lib/filesFns/searchValidators";
 import { operationResultValidator, operationValidator, relatedValidator } from "./lib/filesFns/operationValidators";
@@ -187,6 +188,7 @@ import {
 import {
   folderPathsHandler,
   notePathsHandler,
+  workspaceGraphHandler,
   searchContextHandler,
   searchContextsHandler,
 } from "./lib/filesFns/search";
@@ -222,6 +224,7 @@ export { DELETE_CONFIRMATION };
  * why.** Every caller states the least role its operation needs, and the ones
  * that ask for `member` are exactly the reads: `listFiles`, `readNote`,
  * `syncManifest`, `readNotes`, `searchContext`, `folderPaths`, `notePaths`,
+ * `workspaceGraph`,
  * and the per-context leg of `searchContexts`.
  * Everything that changes a byte asks for `editor` or `owner` and therefore
  * goes to `requireWorkspaceRole`, which knows nothing about the pin and throws
@@ -369,14 +372,14 @@ export const readNote = action({
 
 /** See `syncManifestHandler` in `lib/filesFns/noteReads.ts`. */
 export const syncManifest = action({
-  args: { workspaceId: v.id("workspaces"), cursor: v.optional(v.string()) },
+  args: { workspaceId: v.id("workspaces"), cursor: v.optional(v.string()), folder: v.optional(v.string()), source: v.optional(v.literal("tree")) },
   returns: manifestValidator,
   handler: async (ctx, args): Promise<Extract<OperationResult, { kind: "manifest" }>> => await syncManifestHandler(ctx, args),
 });
 
 /** See `readNotesHandler` in `lib/filesFns/noteReads.ts`. */
 export const readNotes = action({
-  args: { workspaceId: v.id("workspaces"), paths: v.array(v.string()) },
+  args: { workspaceId: v.id("workspaces"), paths: v.array(v.string()), plain: v.optional(v.boolean()) },
   returns: notesValidator,
   handler: async (ctx, args): Promise<Extract<OperationResult, { kind: "notes" }>> => await readNotesHandler(ctx, args),
 });
@@ -411,6 +414,14 @@ export const relatedNotes = action({
   args: { workspaceId: v.id("workspaces"), path: v.string() },
   returns: relatedValidator,
   handler: async (ctx, args): Promise<Extract<OperationResult, { kind: "related" }>> => await relatedNotesHandler(ctx, args),
+});
+
+/** See `workspaceGraphHandler` in `lib/filesFns/search.ts`. */
+export const workspaceGraph = action({
+  args: { workspaceId: v.id("workspaces"), compact: v.optional(v.boolean()) },
+  returns: workspaceGraphValidator,
+  handler: async (ctx, args): Promise<Extract<OperationResult, { kind: "workspaceGraph" }>> =>
+    await workspaceGraphHandler(ctx, args),
 });
 
 /** See `searchContextsHandler` in `lib/filesFns/search.ts`. */
@@ -810,7 +821,11 @@ export const markActivitySeen = mutation({
 
 /** See `listActivityHandler` in `lib/filesFns/noteReads.ts`. */
 export const listActivity = action({
-  args: { workspaceId: v.id("workspaces"), limit: v.optional(v.number()) },
+  args: {
+    workspaceId: v.id("workspaces"),
+    limit: v.optional(v.number()),
+    since: v.optional(v.number()),
+  },
   returns: v.array(activityEntryValidator),
   // Annotated rather than inferred, for the reason `runFileOperation` gives:
   // this action calls another function in the same deployment, and leaving the

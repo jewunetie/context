@@ -22,6 +22,7 @@ import {
   DOCMAP_KEY,
   MANIFEST_KEY,
   emptyManifest,
+  loadDocmap,
   loadDocmapPaths,
   serializeDocmap,
   serializeManifest,
@@ -73,6 +74,41 @@ export async function runSearchDocmapPathsChecks(check) {
       JSON.stringify(result?.paths) === JSON.stringify(["a.md", "b.md", "c.md"]),
     );
     check("docmap paths: costs exactly two budget ops (manifest, docmap)", budget.remaining === 8);
+  }
+
+  {
+    // One manifest read per call (graph retrieval, and the console map's
+    // `loadDocmap`, both built on this): a caller that already holds the
+    // manifest hands it in, and neither function fetches it again.
+    const manifest = manifestWith(2, [[["b.md", "v1"]], [["a.md", "v1"]]]);
+    const objects = { [MANIFEST_KEY]: serializeManifest(manifest), [DOCMAP_KEY]: serializeDocmap(manifest) };
+    const reads = [];
+    const store = {
+      async get(key) {
+        reads.push(key);
+        return createStore(objects).get(key);
+      },
+    };
+    const budget = createSearchBudget(10);
+    const paths = await loadDocmapPaths(store, budget, 0, manifest);
+    check(
+      "docmap paths: a manifest handed in is not read again (one op, docmap only)",
+      JSON.stringify(paths?.paths) === JSON.stringify(["a.md", "b.md"]) &&
+        JSON.stringify(reads) === JSON.stringify([DOCMAP_KEY]) &&
+        budget.remaining === 9,
+    );
+    reads.length = 0;
+    const found = await loadDocmap(store, createSearchBudget(10), 0, manifest);
+    check(
+      "docmap: a manifest handed in is not read again either",
+      found?.docsByShard.length === 2 && JSON.stringify(reads) === JSON.stringify([DOCMAP_KEY]),
+    );
+    reads.length = 0;
+    await loadDocmap(store, createSearchBudget(10), 0);
+    check(
+      "docmap: without one, the manifest is read exactly once, then the docmap",
+      JSON.stringify(reads) === JSON.stringify([MANIFEST_KEY, DOCMAP_KEY]),
+    );
   }
 
   {

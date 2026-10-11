@@ -8,6 +8,7 @@
  * ## Sabotage record
  *
  *   both functions back on loadMoveJobs ([] on failure)     3 here
+ *   scan: the null check after the move-aware list removed   1 here (TypeError)
  */
 
 import assert from "node:assert/strict";
@@ -16,6 +17,7 @@ import { test } from "node:test";
 import { moveJobKey } from "../src/moves/jobs.js";
 import { parsePrivacyManifest } from "../src/privacy/engine.js";
 import { listVisibleNoteKeysWithMoves } from "../src/notes/visibleKeys.js";
+import { scanVisibleNotes } from "../src/search/scan.js";
 import { toolListNotes } from "../src/tools/notes/read.js";
 import { toolWriteNote } from "../src/tools/notes/write.js";
 import { memoryBucket } from "./store/fixtures.mjs";
@@ -83,4 +85,29 @@ test("unreadable move state: a write is refused with the active-move answer, for
   assert.equal(await write(store, "1-projects/free.md"), expected);
   assert.equal(await write(store, "private/free.md"), await write(store, "1-projects/free.md"));
   assert.equal(await (async () => (await store.get("1-projects/free.md")))(), null);
+});
+
+// The scan reads the move state first (healthy, an active move), then the
+// move-aware list reads it again. Only the second read fails, so the scan's
+// own null branch is the one that answers.
+const failsOnSecondMoveList = (store) => {
+  let reads = 0;
+  return {
+    ...store,
+    list: (o) => (o?.prefix === ".context/moves/" && (reads += 1) > 1 ? Promise.reject(new Error("list failed")) : store.list(o)),
+  };
+};
+const scan = async (store) => {
+  await store.put(moveJobKey(ID), MOVING_JOB);
+  return scanVisibleNotes(failsOnSecondMoveList(store), "team", rules, overrides, "visible", "1-projects", null);
+};
+
+test("scan: a move-aware list that cannot read the move state serves nothing, and hidden notes change nothing", async () => {
+  const healthy = await world({ hidden: true });
+  await healthy.put(moveJobKey(ID), MOVING_JOB);
+  const control = await scanVisibleNotes(healthy, "team", rules, overrides, "visible", "1-projects", null);
+  assert.ok(control.hits.length > 0, "the fixture finds a note when the move state is readable");
+  const withHidden = await scan(await world({ hidden: true }));
+  assert.deepEqual(withHidden, { hits: [], scannedCount: 0, totalCount: 0, totalIsFloor: true });
+  assert.deepEqual(withHidden, await scan(await world({ hidden: false })));
 });

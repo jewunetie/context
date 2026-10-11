@@ -252,7 +252,26 @@ export async function pathUnderActiveMovedSource(store, path) {
   return jobs.some((job) => noteUnderPrefix(path, job.source));
 }
 
+/**
+ * Write a move job's progress, unless the stored job is already finished. A
+ * finished move (tombstoned, or no longer active) is a fence: a stale
+ * materializer pass that read the job earlier must not put an older state over
+ * it and bring the move back. The write is conditional on the stored version
+ * where the store supports it, so a job finished between the check and the put
+ * is not overwritten either. Returns whether the job was written.
+ */
 export async function persistMoveJob(store, job) {
+  const key = moveJobKey(job.id);
+  const stored = await getWithLegacyFallback(store, key);
+  if (!stored) return false;
+  let current;
+  try {
+    current = JSON.parse(await stored.text());
+  } catch {
+    return false;
+  }
+  if (!moveJobActive(current)) return false;
   job.updated_at = new Date().toISOString();
-  await store.put(moveJobKey(job.id), JSON.stringify(job, null, 2));
+  const onlyIf = store.capabilities?.conditionalWrite === true && stored.etag ? { onlyIf: { etagMatches: stored.etag } } : undefined;
+  return Boolean(await store.put(key, JSON.stringify(job, null, 2), onlyIf));
 }

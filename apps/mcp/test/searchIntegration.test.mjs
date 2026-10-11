@@ -30,25 +30,12 @@
  *    a conditional write somebody else won — none of them may quietly return
  *    fewer results than the answer implies.
  *
- * ## Which index each block drives, since there are now two
+ * ## Sabotage record note
  *
- * The gateway answers from the **sharded** index (CONTRACT.md § v2): a search
- * through the worker syncs `.context/search/v2/manifest.json` and its shards, and never
- * touches `.context/search/search-v1.json`. So every block here that goes through
- * `searchText` / `callTool` exercises v2 and reads its objects; the blocks that
- * call `syncIndex` directly — the plateau and byte-cap fixtures, the per-note
- * char cap, the parallel-wave backfill, the etag-less backend — are checks
- * about the v1 module, which is retained and unchanged, and they stay as they
- * were rather than being deleted for testing code the gateway no longer calls.
- *
- * The sabotage record below is in the same two halves. **Entries 1-6 were
- * measured against the v1 gateway path and are kept as the history of how those
- * channels were found, not as claims about the code running today** — the
- * numbers for v2 are re-measured in `searchV2Integration.test.mjs`, and one of
- * them inverts (dropping the visibility predicate now fails the *inference*
- * checks while `rankedVisibleTo` catches the content leak). Entries 7-9 are the
- * v1 byte cap and are about the module those blocks still drive, so they are
- * current.
+ * Every block here goes through the worker and exercises the sharded index.
+ * The v1 single-object module (`syncIndex`) was removed, with the blocks that
+ * drove it; entries below that name it, and entries 7-9 (its byte cap), are
+ * history of that module and not claims about running code.
  *
  * ## Sabotage record
  *

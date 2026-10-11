@@ -12,7 +12,6 @@ import {
   GATEWAY_SECRET,
   MANIFEST_KEY,
   PRIVACY_MANIFEST,
-  SEARCH_INDEX_KEY,
   SUBREQUEST_LIMIT,
   createBucket,
   createSearchBudget,
@@ -71,7 +70,6 @@ export async function runSearchIntegrationBrokenAndRecallChecks(check, harness) 
       "and a budget-cut walk reports its total as a floor",
       /of \d+\+ notes/.test(wide)
     );
-    broken.failGetKeys.delete(SEARCH_INDEX_KEY);
 
     /*
      * -- the reduced-recall note, in the RENDERED tool text --------------

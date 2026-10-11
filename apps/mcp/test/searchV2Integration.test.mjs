@@ -9,13 +9,10 @@
  * budget shared between a sync and a shard walk, the visibility predicate
  * handed to the collector, and the floor language a caller actually reads.
  *
- * Why v2 at all, in one measurement: v1 is a single object that must be parsed
- * whole, so `INDEX_PARSE_BYTE_CAP` bounds it, and a workspace whose capped index
- * crosses that bound plateaus at partial coverage **forever**, the write is
- * refused, the last readable object survives, and no number of passes ever
- * covers the rest. That is not an abstraction: block (c) below builds a bucket
- * whose v1 index genuinely cannot converge under a cap, then converges the
- * same bucket under v2 with the same cap per shard.
+ * Why shards at all: the removed single-object index had to be parsed whole,
+ * so a workspace past its byte cap plateaued at partial coverage forever.
+ * Block (c) below converges a bucket under a per-shard cap just above its
+ * largest shard.
  *
  * Four properties here are not visible in any output text, so this file stands
  * up its own instrumented bucket and counts store calls by key:
@@ -93,8 +90,7 @@
 import worker from "../src/index.js";
 import { R2Store } from "../src/store/r2.js";
 import { isLogicalDeleteMarker } from "../src/store/logicalDelete.js";
-import { SEARCH_INDEX_KEY, createSearchBudget, syncIndex } from "../src/search/maintain.js";
-import { parseIndex } from "../src/search/indexer.js";
+import { createSearchBudget } from "../src/search/maintain.js";
 import { MAX_RESULTS } from "../src/search/query.js";
 import {
   MANIFEST_KEY,
@@ -637,16 +633,15 @@ export async function runSearchV2IntegrationChecks(check) {
       occupied > 0 && occupied < 20 && shardGets === occupied
     );
 
-    // (c) THE WHOLE POINT: a bucket v1 cannot converge on, converged
+    // (c) a bucket converges under a byte cap, one shard at a time
     //
     // Driven at module level rather than through the worker, and deliberately:
-    // the byte caps are injectable parameters on the two sync functions and
-    // nothing in production passes them, so there is no way to reach this
+    // the shard byte cap is an injectable parameter and
+    // nothing in production passes it, so there is no way to reach this
     // through a tool call, and building twelve real megabytes of index would
     // take thousands of notes and minutes of wall clock. What the fixture
-    // proves is the shape, at a cap small enough to run: **one number, applied
-    // to v1's single object and to each v2 shard, is a plateau for one and a
-    // convergence for the other.**
+    // proves is the shape, at a cap small enough to run: a cap just above the
+    // largest shard still converges, one shard at a time.
     //
     // The distinct vocabulary per note is what makes the index grow with the
     // corpus rather than with its filler, the contact-heavy vocabulary of the
@@ -662,13 +657,8 @@ export async function runSearchV2IntegrationChecks(check) {
         }
       };
 
-      // Both indexes built once with no cap at all, to measure what a cap has
-      // to sit between: v1's whole object above it, v2's largest shard below.
-      const measureV1 = createBucket();
-      seedNotes(measureV1);
-      await syncIndex(new R2Store(measureV1), { budget: createSearchBudget(400) });
-      const wholeIndexBytes = byteLength(measureV1.objects.get(SEARCH_INDEX_KEY).body);
-
+      // The index built once with no cap at all, to measure the largest shard
+      // the cap has to sit above.
       const measureV2 = createBucket();
       seedNotes(measureV2);
       // Sixteen shards, chosen at creation as `chooseShardCount` would for a
@@ -686,22 +676,8 @@ export async function runSearchV2IntegrationChecks(check) {
         const stored = measureV2.objects.get(shardKeyIn(measureV2, id));
         if (stored) largestShardBytes = Math.max(largestShardBytes, byteLength(stored.body));
       }
-      // Halfway between the two, so the fixture is not one byte from either
-      // side of its own claim.
-      const cap = Math.floor((largestShardBytes + wholeIndexBytes) / 2);
-
-      const v1Bucket = createBucket();
-      seedNotes(v1Bucket);
-      const v1Store = new R2Store(v1Bucket);
-      // Five passes, unconditionally: v1's `pending` describes what it built in
-      // memory, not what it stored, so a refused write reports a clean pass and
-      // "run it until it says it is done" would stop after the first one.
-      let v1Pass = null;
-      for (let attempt = 0; attempt < 5; attempt += 1) {
-        v1Pass = await syncIndex(v1Store, { budget: createSearchBudget(400), byteCap: cap });
-      }
-      const v1Stored = v1Bucket.objects.get(SEARCH_INDEX_KEY);
-      const v1StoredDocs = v1Stored ? parseIndex(v1Stored.body)?.docs.size ?? 0 : 0;
+      // One byte above the largest shard: the tightest cap every shard fits.
+      const cap = largestShardBytes + 1;
 
       const v2Bucket = createBucket();
       seedNotes(v2Bucket);
@@ -717,16 +693,9 @@ export async function runSearchV2IntegrationChecks(check) {
       }
       const v2StoredDocs = indexedPaths(v2Bucket);
 
+      check("the fixture is honest: the cap sits above every shard", largestShardBytes > 0 && largestShardBytes < cap);
       check(
-        "the fixture is honest: one cap, above every v2 shard and below v1's single object",
-        largestShardBytes > 0 && largestShardBytes < cap && cap < wholeIndexBytes
-      );
-      check(
-        "under that cap v1 plateaus, the stored index never holds the corpus, however many passes run",
-        v1StoredDocs < 80 && v1Pass !== null
-      );
-      check(
-        "and v2 converges on the same bucket under the same number, one shard at a time",
+        "and v2 converges on the bucket under that cap, one shard at a time",
         v2Pass.pending === 0 &&
           v2StoredDocs.length === 80 &&
           new Set(v2StoredDocs).size === 80 &&

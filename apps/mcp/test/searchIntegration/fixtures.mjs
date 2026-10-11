@@ -7,11 +7,8 @@
 import worker from "../../src/index.js";
 import { R2Store } from "../../src/store/r2.js";
 import {
-  NOTE_INDEX_CHAR_CAP,
-  SEARCH_INDEX_KEY,
   createSearchBudget,
   defaultIsIndexable,
-  syncIndex,
 } from "../../src/search/maintain.js";
 import {
   MANIFEST_KEY,
@@ -29,8 +26,6 @@ import { createWorkerCtx } from "../workerCtx.mjs";
 /** Mirrors `SEARCH_SUBREQUEST_BUDGET` / `SEARCH_RESULT_LIMIT` in src/index.js. */
 export const SEARCH_SUBREQUEST_BUDGET = 40;
 export const SEARCH_RESULT_LIMIT = 10;
-/** Mirrors `MAX_RESULTS` in src/search/query.js, asserted below rather than trusted. */
-export const RANK_CAP = 50;
 /**
  * Every tool call reads `privacy.md` before it dispatches, and that read is not
  * the search's to spend. Counted separately so the budget assertions are about
@@ -194,9 +189,7 @@ export async function searchText(env, token, args) {
 /**
  * The gateway answers from the sharded index now, so "what did the worker
  * build" is a manifest plus its shard objects rather than one parsed blob —
- * which is what the three helpers below read. The v1 module checks further
- * down still drive `syncIndex` directly and read its object by key, because
- * they are checks about that module rather than about the gateway.
+ * which is what the three helpers below read.
  */
 export function storedManifest(bucket) {
   const raw = bucket.objects.get(MANIFEST_KEY);
@@ -242,11 +235,8 @@ export async function converge(store) {
 export {
   worker,
   R2Store,
-  NOTE_INDEX_CHAR_CAP,
-  SEARCH_INDEX_KEY,
   createSearchBudget,
   defaultIsIndexable,
-  syncIndex,
   MANIFEST_KEY,
   loadIndexManifest,
   parseManifest,

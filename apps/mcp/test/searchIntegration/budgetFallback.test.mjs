@@ -1,22 +1,15 @@
 /**
- * The subrequest budget as a deployment setting, and a backend whose
- * listings carry no etag at all. See searchIntegration.test.mjs for the
+ * The subrequest budget as a deployment setting. See searchIntegration.test.mjs for the
  * module overview and the sabotage-testing record.
  */
 
 import {
   BIG_TOKEN,
-  PRIVACY_MANIFEST,
   PRIVACY_MANIFEST_READ,
-  R2Store,
   SEARCH_SUBREQUEST_BUDGET,
-  createBucket,
-  createSearchBudget,
   indexedPaths,
   removeIndex,
-  searchIndex,
   searchText,
-  syncIndex,
 } from "./fixtures.mjs";
 
 export async function runSearchIntegrationBudgetFallbackChecks(check, harness) {
@@ -80,29 +73,6 @@ export async function runSearchIntegrationBudgetFallbackChecks(check, harness) {
         bigGarbageAgain.includes("still catching up") &&
         bigGarbageOps - PRIVACY_MANIFEST_READ <= SEARCH_SUBREQUEST_BUDGET &&
         big.ops - PRIVACY_MANIFEST_READ <= SEARCH_SUBREQUEST_BUDGET
-    );
-
-    // A backend whose listings carry no etag at all — Dropbox lists
-    // `server_modified` and `size` and nothing else. The diff has to converge
-    // on those two or the index is rebuilt from scratch on every single search,
-    // which is the failure this whole module exists to remove wearing a
-    // different hat.
-    const dropboxish = createBucket();
-    dropboxish.listEtags = false;
-    dropboxish.seed("privacy.md", PRIVACY_MANIFEST);
-    dropboxish.seed("1-projects/one.md", "# One\n\nA NARWHAL swims past.\n");
-    dropboxish.seed("1-projects/two.md", "# Two\n\nAnother NARWHAL entirely.\n");
-    const dropboxStore = new R2Store(dropboxish);
-    const firstPass = await syncIndex(dropboxStore, { budget: createSearchBudget(50) });
-    dropboxish.resetCounts();
-    const secondPass = await syncIndex(dropboxStore, { budget: createSearchBudget(50) });
-    check(
-      "a listing with no etag still converges, on the timestamp and size it does report",
-      firstPass.index.docs.size === 2 &&
-        secondPass.pending === 0 &&
-        dropboxish.counts.noteGets.length === 0 &&
-        dropboxish.counts.put === 0 &&
-        searchIndex(secondPass.index, "narwhal").length === 2
     );
 
 }

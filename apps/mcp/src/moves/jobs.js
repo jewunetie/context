@@ -116,16 +116,11 @@ export async function loadMoveJobsOrNull(store) {
   return jobs.sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));
 }
 
-/** Active move jobs; `[]` when the state cannot be read. Only for callers that never serve text on `[]`. */
-export async function loadMoveJobs(store) {
-  return (await loadMoveJobsOrNull(store)) ?? [];
-}
-
 /**
  * Active move jobs, or null when any marker cannot be read as an inactive one
  * or the listing fails (OPEN-25: fail closed). Every marker is read, whatever
  * the sentinel says, so the answer is the set of jobs read_note's overlay
- * (`loadMoveJobs`) sees; the sentinel is only `searchMoveJobs`' hint. A
+ * (`loadMoveJobsOrNull`) sees; the sentinel is only `searchMoveJobs`' hint. A
  * finished move's marker is a logical-delete tombstone that is never removed;
  * the listing drops tombstones by size without reading them (`MARKER_LISTING`),
  * so history costs one listing page per thousand moves and nothing per move.

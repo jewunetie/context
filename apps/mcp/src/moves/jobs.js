@@ -250,12 +250,23 @@ export async function pathUnderActiveMovedSource(store, path) {
 }
 
 /**
- * Write a move job's progress, unless the stored job is already finished. A
- * finished move (tombstoned, or no longer active) is a fence: a stale
- * materializer pass that read the job earlier must not put an older state over
- * it and bring the move back. The write is conditional on the stored version
- * where the store supports it, so a job finished between the check and the put
- * is not overwritten either. Returns whether the job was written.
+ * Write a move job's progress, unless the stored job is finished or another
+ * pass has advanced it. Returns whether the job was written; false means back
+ * off (the next pass re-reads the stored job and carries on).
+ *
+ * Two fences. A finished move (tombstoned, absent, or no longer active) is
+ * never written, so a stale pass cannot bring it back. And `job.generation` is
+ * the generation the pass read: the stored job must still carry it, so a pass
+ * that read the job before another pass advanced it cannot put its older state
+ * over the newer one. A job written before this field existed counts as 0.
+ *
+ * The put is conditional on the stored version where the store supports it, so
+ * a job advanced or finished between the check and the put is refused. Where it
+ * does not (conditionalWrite false), the put is unconditional, so the pass
+ * reads the job back and backs off when the stored text is not what it wrote;
+ * a write landing between that read and the other pass's put can still win.
+ * Progress is derived from the objects themselves on every pass, so a lost
+ * write costs a repeated step, never a wrong state.
  */
 export async function persistMoveJob(store, job) {
   const key = moveJobKey(job.id);
@@ -268,7 +279,17 @@ export async function persistMoveJob(store, job) {
     return false;
   }
   if (!moveJobActive(current)) return false;
-  job.updated_at = new Date().toISOString();
-  const onlyIf = store.capabilities?.conditionalWrite === true && stored.etag ? { onlyIf: { etagMatches: stored.etag } } : undefined;
-  return Boolean(await store.put(key, JSON.stringify(job, null, 2), onlyIf));
+  const generation = job.generation ?? 0;
+  if ((current.generation ?? 0) !== generation) return false;
+  const next = { ...job, generation: generation + 1, updated_at: new Date().toISOString() };
+  const body = JSON.stringify(next, null, 2);
+  const conditional = store.capabilities?.conditionalWrite === true && stored.etag;
+  if (!(await store.put(key, body, conditional ? { onlyIf: { etagMatches: stored.etag } } : undefined))) return false;
+  if (!conditional) {
+    const back = await getWithLegacyFallback(store, key);
+    if (!back || (await back.text()) !== body) return false;
+  }
+  job.generation = next.generation;
+  job.updated_at = next.updated_at;
+  return true;
 }

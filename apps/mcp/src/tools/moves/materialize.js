@@ -56,6 +56,13 @@ export async function materializeMoveInBackground(store, scope, id) {
   }
 }
 
+/**
+ * What a pass answers when `persistMoveJob` refused its progress: another pass
+ * advanced or finished the move. Not an error and not "complete", so the
+ * background loop and the queue run another pass, which re-reads the job.
+ */
+const superseded = (job) => toolText(`move ${job.id}: continuing in another pass\nthis_pass: 0`);
+
 export async function toolMaterializeMove(store, scope, idArg, batchSizeArg) {
   const key = moveJobKey(idArg);
   if (!key) return toolError("invalid move id");
@@ -138,7 +145,7 @@ export async function toolMaterializeMove(store, scope, idArg, batchSizeArg) {
     job.copied_objects = copied.size;
     job.total_objects = sources.length;
     if (copied.size < sources.length) {
-      await persistMoveJob(store, job);
+      if (!(await persistMoveJob(store, job))) return superseded(job);
       return toolText(
         `move ${job.id}: copying\ncopied: ${copied.size}/${sources.length}\nthis_pass: ${copiedThisPass}`
       );
@@ -175,7 +182,7 @@ export async function toolMaterializeMove(store, scope, idArg, batchSizeArg) {
     job.deleted_objects = sources.length - remainingSources.length;
     if (remainingSources.length > 0) {
       job.status = "needs_cleanup";
-      await persistMoveJob(store, job);
+      if (!(await persistMoveJob(store, job))) return superseded(job);
       return toolText(
         `move ${job.id}: needs_cleanup\ndeleted: ${job.deleted_objects}/${sources.length}\nthis_pass: ${deletedThisPass}`
       );
@@ -183,7 +190,10 @@ export async function toolMaterializeMove(store, scope, idArg, batchSizeArg) {
 
     job.status = "complete";
     job.deleted_objects = sources.length;
-    await persistMoveJob(store, job);
+    // Refused: another pass finished or advanced the move, and it runs the
+    // clean-up below. Running it twice would rewrite references and record the
+    // change twice.
+    if (!(await persistMoveJob(store, job))) return superseded(job);
     // The folder itself, where the backend has one. Same reason as the direct
     // folder move — on Dropbox the sources go and the directory stays, so the
     // move reads as a copy until this runs.

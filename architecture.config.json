@@ -68,6 +68,7 @@
     }
   ],
   "reviewed": {
+    "apps/mcp/src/tools/moves/materialize.js": "One move materializer: copy, retire, rewriting and the write-ahead persist share one job record and one generation fence, so splitting the stages would scatter the fence the move tests (moveJobFence.test.mjs) hold in one place.",
     "apps/mcp/src/links.js": "One link engine (parse, read, resolve, rewrite) whose twin is packages/shared/src/links.ts; linkParity.test.ts compares the two function by function, so splitting one copy would split the parity surface.",
     "packages/shared/src/links.ts": "The app's port of apps/mcp/src/links.js, kept function-for-function parallel so linkParity.test.ts can hold the two engines to identical answers; splitting it would break that mirror.",
     "apps/mobile/features/design/tokens/colors.ts": "The app's colour tokens as one table: each theme's values sit side by side, and the contrast and palette tests read the whole table, so splitting it would scatter one theme across files.",

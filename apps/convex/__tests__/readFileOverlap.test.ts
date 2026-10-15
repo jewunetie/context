@@ -1,12 +1,13 @@
 /**
- * Opening a note asks for it while `privacy.md` is still on its way.
+ * Opening a note is asked for only after `privacy.md` has answered.
  *
- * Owner, 2026-10-11: opening a note took seconds. `readFile` used to read
- * `privacy.md`, wait for it, and only then ask for the note: two bucket round
- * trips one after the other on every open. The note is now asked for at the
- * same moment — and `canSee` still decides, against the manifest, before a
- * byte of it is returned. These hold both halves: the overlap, and that it
- * changes nothing about who gets what.
+ * Owner, 2026-10-11, added an early GET of the note that overlapped
+ * `privacy.md`. Owner decision (option b, link-graph stack re-integration):
+ * that early GET is dropped on purpose. It made a hidden path cost one storage
+ * call and a missing one the same only by fetching a hidden note's bytes, and
+ * phase 5's rule is that those bytes are never fetched for a caller who may not
+ * read them (`moveOverlay.test.ts`, "a hidden path costs what an absent path
+ * costs"). These tests now pin the new order and that nothing leaves.
  */
 
 import { describe, expect, test } from "vitest";
@@ -52,38 +53,28 @@ async function capture(read: () => Promise<unknown>) {
   throw new Error("expected a refusal");
 }
 
-describe("readFile overlaps the note with privacy.md", () => {
-  test("the note is asked for before privacy.md has answered", async () => {
+describe("readFile asks for the note after privacy.md", () => {
+  test("the note is not asked for before privacy.md has answered", async () => {
     const store = await bucket();
     const held = holdPrivacy(store);
     const reading = readFile(store, { path: "1-projects/plan.md", clearance: TEAM });
     await Promise.resolve();
     expect(held.asked).toContain(PRIVACY_KEY);
-    expect(held.asked).toContain("1-projects/plan.md");
+    expect(held.asked).not.toContain("1-projects/plan.md");
     held.release();
     await expect(reading).resolves.toMatchObject({ text: "# Plan\n" });
+    expect(held.asked).toContain("1-projects/plan.md");
   });
 
-  test("a note held back is still refused, exactly as a missing one, and none of it leaves", async () => {
+  test("a note held back is refused exactly as a missing one, and its bytes are never fetched", async () => {
     const store = await bucket();
+    const held = holdPrivacy(store);
+    held.release();
     const hidden = await capture(() => readFile(store, { path: "1-projects/pay.md", clearance: TEAM }));
+    expect(held.asked).not.toContain("1-projects/pay.md");
     const missing = await capture(() => readFile(store, { path: "1-projects/nothing.md", clearance: TEAM }));
     expect(hidden.code).toBe("FILE_NOT_FOUND");
     expect({ code: hidden.code, message: hidden.message }).toEqual({ code: missing.code, message: missing.message });
     expect(JSON.stringify(hidden)).not.toContain("salaries");
-  });
-
-  test("an early GET that fails is asked again, never the reason a read fails", async () => {
-    const store = await bucket();
-    const get = store.get.bind(store);
-    let failures = 1;
-    store.get = (async (key: string) => {
-      if (key === "1-projects/plan.md" && failures > 0) {
-        failures -= 1;
-        throw new Error("transient");
-      }
-      return get(key);
-    }) as FileStore["get"];
-    await expect(readFile(store, { path: "1-projects/plan.md", clearance: TEAM })).resolves.toMatchObject({ text: "# Plan\n" });
   });
 });

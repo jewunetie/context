@@ -458,11 +458,14 @@ over a list on its way somewhere asks for nothing.
 
 **On the server, nothing an open waits on is asked for one after another
 without a reason.** `runFileOperation` asks for the binding, the note cap and
-the encryption key together, and `readFile` asks for the note while
-`privacy.md` is on its way; `canSee` still decides against the manifest before
-a byte is returned. A hidden note is therefore fetched into the action's memory
-and dropped, which no caller can observe; a "simplification" back to sequential
-reads costs a round trip per open and fails `readFileOverlap.test.ts`.
+the encryption key together. `readFile` once also asked for the note while
+`privacy.md` was on its way; that early fetch was dropped on purpose (owner
+decision, link-graph stack re-integration, 2026-10-15) for privacy parity: a
+hidden path must cost the same storage calls as a missing one without fetching
+a hidden note's bytes, so the note is asked for only after `canSee` passes.
+Do not reintroduce it in a later merge; `readFileOverlap.test.ts` and
+`moveOverlay.test.ts` ("a hidden path costs what an absent path costs") fail
+if it returns.
 
 **A folder page draws its name and description once.** A front-note heading
 that is only the folder's name on disk with a sort number ("1-areas" over

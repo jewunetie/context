@@ -41,6 +41,7 @@ export function PhoneBack({
   const colors = useColors();
   const nearest = levels[levels.length - 1]!;
   const home = levels[0]!;
+  const labelled = nearest.view !== undefined;
   return (
     <View style={styles.row}>
       <Pressable
@@ -51,13 +52,15 @@ export function PhoneBack({
         accessibilityRole="button"
         accessibilityLabel={`Back to ${nearest.label}`}
         accessibilityHint={home === nearest ? undefined : `Hold to go to ${home.label}`}
-        style={({ pressed }) => [styles.press, pressed ? styles.pressed : null]}
+        // Labelled, ‹ and its word are one capsule: the page scrolls under the
+        // top bar, and a bare word there is drawn over the folder's title.
+        style={({ pressed }) => [styles.press, labelled ? styles.capsule : null, pressed ? styles.pressed : null]}
         testID="phone-back"
       >
-        <View style={styles.key}>
+        <View style={[styles.key, labelled ? styles.keyInCapsule : null]}>
           <Icon name="chevronLeft" size={20} color={colors.accent} />
         </View>
-        {nearest.view === undefined ? null : (
+        {!labelled ? null : (
           <Text style={styles.label} numberOfLines={1}>
             {nearest.label}
           </Text>
@@ -82,6 +85,14 @@ const makeStyles = (colors: Colors, shadows: Shadows) =>
       backgroundColor: colors.chrome,
       boxShadow: shadows.floating,
     },
+    capsule: {
+      gap: 0,
+      paddingRight: space.x4,
+      borderRadius: radii.pill,
+      backgroundColor: colors.chrome,
+      boxShadow: shadows.floating,
+    },
+    keyInCapsule: { backgroundColor: "transparent", boxShadow: "none" },
     label: { fontFamily: fonts.body, fontSize: touchType.lede, color: colors.accentText },
     pressed: { opacity: 0.7 },
   });
